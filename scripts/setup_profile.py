@@ -5,6 +5,8 @@ Run:   uv run --python 3.15 scripts/setup_profile.py [--profile DIR] [--browser 
 Default profile: ~/.local/share/foxreach/profile, a dedicated one with no logins or history.
 Refuses a profile that is in use. An existing user.js and prefs.js are backed up beside themselves
 as <name>.bak-<date>.
+It also puts back the profile's "restore previous session" data and startup-crash counters, which its
+own headless starts would otherwise disturb.
 Undo:  delete the dedicated profile. For another profile, close the browser, remove the add-on in
        about:addons, and remove the two prefs below from user.js and prefs.js.
 Expected: "verified" and exit 0.
@@ -20,6 +22,7 @@ import datetime
 import json
 import os
 import pathlib
+import re
 import shutil
 import signal
 import subprocess
@@ -37,6 +40,9 @@ PREFS = {
 }
 SETTLE_S = 3
 ADDON_ID = "foxreach@foxreach.local"
+SESSION_FILES = ("sessionstore.jsonlz4", "sessionstore-backups")
+LAST_SUCCESS = "toolkit.startup.last_success"
+RECENT_CRASHES = "toolkit.startup.recent_crashes"
 DETECT_TIMEOUT_S = 25
 START_TIMEOUT_S = 60
 START_ATTEMPTS = 3
@@ -50,6 +56,27 @@ def in_use(profile):
         return False
     pid = os.readlink(lock).rpartition("+")[2]
     return pid.isdigit() and pathlib.Path(f"/proc/{pid}").exists()
+
+
+def refuse_copy(profile):
+    """A copy of a profile keeps its profile-group ID. Starting one makes the browser list the copy as
+    the user's default in the real profiles.ini; delete the copy and the browser won't open. Refuse a
+    profile that shares a group ID with a registered profile but is not itself registered."""
+    prefs = profile / "prefs.js"
+    if not prefs.exists():
+        return
+    found = re.search(r'"toolkit\.profiles\.storeID",\s*"([^"]+)"', prefs.read_text())
+    ini = pathlib.Path.home() / ".config/librewolf/librewolf/profiles.ini"
+    if not found or not ini.exists():
+        return
+    lines = ini.read_text().splitlines()
+    if f"StoreID={found.group(1)}" not in lines:
+        return
+    if not any(line in (f"Path={profile.name}", f"Path={profile}") for line in lines) or profile.parent != ini.parent:
+        raise SystemExit(
+            f"{profile} is a copy of a profile in your profile group. Starting it would change your real "
+            "profiles.ini. Remove toolkit.profiles.storeID from its prefs.js first."
+        )
 
 
 def write_prefs(profile, extra=()):
@@ -67,6 +94,44 @@ def forget_pref(profile, name):
     if path.exists():
         lines = path.read_text().splitlines(keepends=True)
         path.write_text("".join(l for l in lines if f'"{name}"' not in l))
+
+
+def save_session(profile, folder):
+    """Headless starts would replace what "restore previous session" brings back."""
+    for name in SESSION_FILES:
+        source = profile / name
+        if source.is_dir():
+            shutil.copytree(source, folder / name, symlinks=True)
+        elif source.exists():
+            shutil.copy2(source, folder / name)
+
+
+def restore_session(profile, folder):
+    for name in SESSION_FILES:
+        target = profile / name
+        if target.is_dir():
+            shutil.rmtree(target)
+        else:
+            target.unlink(missing_ok=True)
+        saved = folder / name
+        if saved.is_dir():
+            shutil.copytree(saved, target, symlinks=True)
+        elif saved.exists():
+            shutil.copy2(saved, target)
+
+
+def clear_startup_tracking(profile):
+    """Headless starts never record a finished startup, so each looks like a failed one. Enough of
+    those make the next normal start offer Troubleshoot Mode. The start was fine: say so."""
+    path = profile / "prefs.js"
+    if not path.exists():
+        return
+    lines = path.read_text().splitlines(keepends=True)
+    tracked = any(f'"{LAST_SUCCESS}"' in l for l in lines)
+    kept = [l for l in lines if f'"{LAST_SUCCESS}"' not in l and f'"{RECENT_CRASHES}"' not in l]
+    if tracked:
+        kept.append(f'user_pref("{LAST_SUCCESS}", {int(time.time()) + 1});\n')
+    path.write_text("".join(kept))
 
 
 def stop(profile, proc):
@@ -114,6 +179,7 @@ def main():
     profile = args.profile.expanduser().resolve()
     if in_use(profile):
         raise SystemExit(f"{profile} is in use. Close that browser first.")
+    refuse_copy(profile)
 
     subprocess.run(["uv", "run", "--python", "3.15", str(ROOT / "scripts/build_install.py")], check=True, capture_output=True)
     profile.mkdir(parents=True, exist_ok=True)
@@ -127,43 +193,51 @@ def main():
     # Setup uses its own socket, so it cannot disturb a foxreach browser that is already open.
     with tempfile.TemporaryDirectory(prefix="foxreach-setup-") as d:
         socket_path = f"{d}/s.sock"
+        session = pathlib.Path(d, "session")
+        session.mkdir()
+        save_session(profile, session)
         (profile / "extensions").mkdir(exist_ok=True)
         write_prefs(profile, [f'user_pref("{ALLOW_ONCE}", 0);'])
         shutil.copyfile(ROOT / "dist/foxreach.xpi", profile / "extensions" / f"{ADDON_ID}.xpi")
-        # First start: the browser detects the add-on. It may record it as active without running it
-        # until the next start, so no answer here is not a failure; the starts below decide.
-        proc = start(args.browser, profile, socket_path)
         try:
-            answer_status(socket_path, DETECT_TIMEOUT_S)
-            print("detected and running on the first start")
-        except TimeoutError:
-            print("detected; it runs from the next start")
-        finally:
-            time.sleep(SETTLE_S)
-            stop(profile, proc)
-            write_prefs(profile)
-            forget_pref(profile, ALLOW_ONCE)
-
-        # Normal settings from here. It must answer, then answer again after one more restart.
-        status = None
-        answered = 0
-        for attempt in range(1, START_ATTEMPTS + 2):
-            time.sleep(1)
+            # First start: the browser detects the add-on. It may record it as active without running it
+            # until the next start, so no answer here is not a failure; the starts below decide.
             proc = start(args.browser, profile, socket_path)
             try:
-                status = answer_status(socket_path, START_TIMEOUT_S)
-                answered += 1
-                print(f"start {attempt}: answered")
-                time.sleep(SETTLE_S)
-            except TimeoutError as e:
-                print(f"start {attempt}: {e}")
-                answered = 0
+                answer_status(socket_path, DETECT_TIMEOUT_S)
+                print("detected and running on the first start")
+            except TimeoutError:
+                print("detected; it runs from the next start")
             finally:
+                time.sleep(SETTLE_S)
                 stop(profile, proc)
-            if answered == 2:
-                break
-        if answered < 2:
-            raise SystemExit("Installed, but it did not answer on two starts in a row. Nothing further was changed.")
+                write_prefs(profile)
+                forget_pref(profile, ALLOW_ONCE)
+
+            # Normal settings from here. It must answer, then answer again after one more restart.
+            status = None
+            answered = 0
+            for attempt in range(1, START_ATTEMPTS + 2):
+                time.sleep(1)
+                proc = start(args.browser, profile, socket_path)
+                try:
+                    status = answer_status(socket_path, START_TIMEOUT_S)
+                    answered += 1
+                    print(f"start {attempt}: answered")
+                    time.sleep(SETTLE_S)
+                except TimeoutError as e:
+                    print(f"start {attempt}: {e}")
+                    answered = 0
+                finally:
+                    stop(profile, proc)
+                if answered == 2:
+                    break
+            if answered < 2:
+                raise SystemExit("Installed, but it did not answer on two starts in a row. Nothing further was changed.")
+        finally:
+            # Runs even if a start failed, so a failed setup cannot cause the prompt either.
+            restore_session(profile, session)
+            clear_startup_tracking(profile)
     if not status["trustedInput"]:
         raise SystemExit(f"Installed, but trusted input is off: {status}")
     print(f"verified: {profile} v{status['version']} trusted input on, after a restart")

@@ -21,9 +21,14 @@ uv run --python 3.15 scripts/setup_profile.py --profile /path/to/profile
 ```
 
 Setup backs up that profile's `user.js` and `prefs.js` beside themselves. It uses no automation:
-Marionette deletes a user's own values for the prefs it manages. A headless start can also replace
-"restore previous session" data, so on a profile you use, back up `sessionstore.jsonlz4` and
-`sessionstore-backups` first and put them back after.
+Marionette deletes a user's own values for the prefs it manages. Its headless starts would disturb
+"restore previous session" data and make the next normal start offer Troubleshoot Mode, so setup saves
+the session and resets the startup-crash counters when it finishes.
+
+Never start a copy of a profile that belongs to a profile group: the browser lists the copy as your
+default in `profiles.ini`, and it won't open once the copy is gone. Setup refuses such a copy.
+
+If LibreWolf ever offers **Refresh**, don't accept it to fix foxreach: it removes add-ons and customizations.
 
 Only one running browser can serve agents: the first one opened. Close it to switch.
 
