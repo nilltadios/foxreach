@@ -1,0 +1,10 @@
+#!/bin/sh
+# Open the dedicated foxreach profile, alongside any LibreWolf you already have open.
+# Create the profile first: uv run --python 3.15 ~/Documents/foxreach/scripts/setup_profile.py
+unset LD_PRELOAD
+PROFILE="${FOXREACH_PROFILE:-$HOME/.local/share/foxreach/profile}"
+if [ ! -d "$PROFILE" ]; then
+    echo "No profile at $PROFILE. Run scripts/setup_profile.py first." >&2
+    exit 1
+fi
+exec "$HOME/AppImages/librewolf.appimage" --no-remote --profile "$PROFILE" "$@"

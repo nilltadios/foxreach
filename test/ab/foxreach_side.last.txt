@@ -1,0 +1,11 @@
+read_page chars, /main: 646
+find 'the field for typing your name': - textbox "Your name" #name [r4]
+find 'name': - textbox "Your name" #name [r4]
+console: [log] hello from page {"a":1} (http://127.0.0.1:47852/main:30) | [error] page console error (http://127.0.0.1:47852/main:31) | [error] Error: uncaught boom (http://127.0.0.1:47852/main:32)
+js last expression: 6
+js top-level await: 6
+native drag and drop: "dragstart:true,drop:true:payload"
+https://en.wikipedia.org/wiki/Red_fox: nav 0.67s, read 0.44s 5447 chars, shot 0.08s 101885 bytes
+  find search bar: ['- searchbox "Search Wikipedia" #searchInput [r3]']
+https://news.ycombinator.com/: nav 0.54s, read 0.03s 7760 chars, shot 0.02s 75583 bytes
+  find search bar: ['Nothing matches "search bar".']

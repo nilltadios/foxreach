@@ -1,0 +1,26 @@
+[
+  {
+    "namespace": "foxinput",
+    "functions": [
+      {
+        "name": "click",
+        "type": "function",
+        "async": true,
+        "parameters": [
+          { "name": "tabId", "type": "integer" },
+          { "name": "x", "type": "number" },
+          { "name": "y", "type": "number" }
+        ]
+      },
+      {
+        "name": "typeText",
+        "type": "function",
+        "async": true,
+        "parameters": [
+          { "name": "tabId", "type": "integer" },
+          { "name": "text", "type": "string" }
+        ]
+      }
+    ]
+  }
+]

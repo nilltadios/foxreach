@@ -1,0 +1,19 @@
+[
+  {
+    "namespace": "foxreachInput",
+    "functions": [
+      {
+        "name": "call",
+        "type": "function",
+        "async": true,
+        "parameters": [
+          {
+            "name": "request",
+            "type": "object",
+            "additionalProperties": { "type": "any" }
+          }
+        ]
+      }
+    ]
+  }
+]

@@ -1,0 +1,2 @@
+node v22.23.1: start-up 140 ms, memory 50 MiB PSS (medians of 10)
+bun 1.4.4: start-up 28 ms, memory 23 MiB PSS (medians of 10)

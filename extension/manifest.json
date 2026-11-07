@@ -1,0 +1,38 @@
+{
+  "manifest_version": 2,
+  "name": "foxreach",
+  "version": "0.1.0",
+  "description": "Lets any local MCP agent operate browser tabs you share with it. No telemetry, no network service.",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "foxreach@foxreach.local",
+      "data_collection_permissions": { "required": ["none"] }
+    }
+  },
+  "icons": { "48": "icons/icon.svg", "96": "icons/icon.svg" },
+  "permissions": [
+    "<all_urls>",
+    "nativeMessaging",
+    "storage",
+    "tabGroups",
+    "tabs",
+    "webNavigation",
+    "webRequest"
+  ],
+  "background": { "scripts": ["gif.js", "background.js"], "persistent": true },
+  "browser_action": {
+    "default_title": "foxreach",
+    "default_icon": "icons/icon.svg",
+    "default_popup": "popup/popup.html"
+  },
+  "experiment_apis": {
+    "foxreachInput": {
+      "schema": "experiment/schema.json",
+      "parent": {
+        "scopes": ["addon_parent"],
+        "paths": [["foxreachInput"]],
+        "script": "experiment/parent.js"
+      }
+    }
+  }
+}

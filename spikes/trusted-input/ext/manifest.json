@@ -1,0 +1,18 @@
+{
+  "manifest_version": 2,
+  "name": "foxreach trusted-input spike",
+  "version": "0.0.1",
+  "browser_specific_settings": { "gecko": { "id": "trusted-input-spike@foxreach.local" } },
+  "permissions": ["tabs", "<all_urls>"],
+  "background": { "scripts": ["background.js"], "persistent": true },
+  "experiment_apis": {
+    "foxinput": {
+      "schema": "schema.json",
+      "parent": {
+        "scopes": ["addon_parent"],
+        "paths": [["foxinput"]],
+        "script": "api.js"
+      }
+    }
+  }
+}
