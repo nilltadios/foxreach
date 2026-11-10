@@ -1,0 +1,18 @@
+{
+  "addons": {
+    "foxreach@foxreach.local": {
+      "updates": [
+        {
+          "version": "0.2.0",
+          "update_link": "https://nilltadios.github.io/foxreach/foxreach-0.2.0.xpi",
+          "update_hash": "sha256:2f32b56c36bced4cf6c838c6c5a2299650fe1b2a843843013e2c57f827880193",
+          "applications": {
+            "gecko": {
+              "strict_min_version": "159.0"
+            }
+          }
+        }
+      ]
+    }
+  }
+}
