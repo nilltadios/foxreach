@@ -321,6 +321,28 @@ async function eachFrame(tabId, op, args) {
   return results;
 }
 
+/**
+ * The element keyboard input would reach now, across frames, or null when it cannot be told
+ * (for example focus sits in a frame agents may not read). Never throws: it only informs and guards.
+ */
+async function focusTarget(tabId) {
+  try {
+    const results = await eachFrame(tabId, "focusInfo", {});
+    const hit = results.find((r) => r.value?.focused) ?? null;
+    return hit && { ...hit.value, frameId: hit.frame.frameId };
+  } catch {
+    return null;
+  }
+}
+
+const describeFocus = (f) => (f ? `${f.desc}${f.frameId ? ` in frame ${f.frameId}` : ""}` : "an element foxreach cannot see");
+
+/** Keys that delete or replace content: harmless in a text field, destructive as page shortcuts. */
+const DESTRUCTIVE_KEY = /^(?:.*\+)?(?:delete|del|backspace)$/i;
+
+const NOT_TEXT_HINT = "Click the field (or pass ref), check with read_page that it has focus, then retry. " +
+  "If the keys are meant for the page itself, pass allow_non_text: true.";
+
 /** Point for an input action: an explicit viewport point, or the centre of a ref. */
 async function targetPoint(tabId, args) {
   if (args.ref) {
@@ -607,7 +629,7 @@ const TOOLS = {
     return { text: `Dragged to ${res.target ?? "the release point"} at (${to_x}, ${to_y}).${kind}` };
   },
 
-  async type_text({ tabId, text, ref }) {
+  async type_text({ tabId, text, ref, allow_non_text = false }) {
     await accessibleTab(tabId);
     await assertNoDialog(tabId);
     if (typeof text !== "string") throw new Error("text is required.");
@@ -615,22 +637,43 @@ const TOOLS = {
       const point = await targetPoint(tabId, { ref });
       await dispatchMouse(tabId, point, { action: "click" });
     }
+    const target = await focusTarget(tabId);
+    if (target && !target.editable && !allow_non_text) {
+      throw new Error(`Nothing was typed: focus is on ${describeFocus(target)}, which is not a text field. ${NOT_TEXT_HINT}`);
+    }
     const res = trusted
       ? await privileged(tabId, "type", { text })
       : await contentCall(tabId, 0, "untrustedType", { text });
     if (res.blockedByDialog) return { text: `Typing was interrupted.${DIALOG_NOTE}` };
-    return { text: `Typed ${res.typed} characters.${trusted ? "" : " (untrusted)"}` };
+    const after = await focusTarget(tabId);
+    let note = "";
+    if (target?.editable && after && after.desc === target.desc && after.frameId === target.frameId &&
+        text.replace(/\n/g, "") && after.value === target.value && after.length === target.length) {
+      note = " Warning: the field's value did not change, so the page may be ignoring these keys. Check it with read_page, or try form_input.";
+    } else if (after && target && (after.desc !== target.desc || after.frameId !== target.frameId) && !text.includes("\n")) {
+      note = ` Focus has moved to ${describeFocus(after)}.`;
+    }
+    return { text: `Typed ${res.typed} characters into ${describeFocus(target)}.${trusted ? "" : " (untrusted)"}${note}` };
   },
 
-  async press_key({ tabId, keys, repeat = 1 }) {
+  async press_key({ tabId, keys, repeat = 1, allow_non_text = false }) {
     const before = await accessibleTab(tabId);
     await assertNoDialog(tabId);
     if (!keys) throw new Error("keys is required, for example \"Enter\" or \"ctrl+a Delete\".");
+    const target = await focusTarget(tabId);
+    const destructive = keys.trim().split(/\s+/).find((k) => DESTRUCTIVE_KEY.test(k));
+    if (destructive && target && !target.editable && !allow_non_text) {
+      throw new Error(`Nothing was pressed: "${destructive}" would go to ${describeFocus(target)}, not a text field, ` +
+        `where it can delete page content (in mail apps it deletes messages). ${NOT_TEXT_HINT}`);
+    }
     const res = trusted
       ? await privileged(tabId, "keys", { keys, repeat })
       : await contentCall(tabId, 0, "untrustedKeys", { keys });
     const moved = res.blockedByDialog ? "" : await afterInput(tabId, before);
-    return { text: `Pressed ${keys}${repeat > 1 ? ` x${repeat}` : ""}.${trusted ? "" : " (untrusted)"}${res.blockedByDialog ? DIALOG_NOTE : moved}` };
+    return {
+      text: `Pressed ${keys}${repeat > 1 ? ` x${repeat}` : ""} in ${describeFocus(target)}.${trusted ? "" : " (untrusted)"}` +
+        `${res.blockedByDialog ? DIALOG_NOTE : moved}`,
+    };
   },
 
   async scroll(args) {

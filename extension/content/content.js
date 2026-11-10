@@ -342,8 +342,36 @@
     }
   }
 
+  const TEXT_INPUTS = new Set(["text", "search", "email", "url", "tel", "password", "number", ""]);
+
+  function isTextEntry(el) {
+    if (!el) return false;
+    if (el.isContentEditable) return true;
+    if (el.localName === "textarea") return !el.readOnly && !el.disabled;
+    if (el.localName === "input") return TEXT_INPUTS.has(el.type) && !el.readOnly && !el.disabled;
+    return false;
+  }
+
+  /**
+   * Where keys typed now would go in this frame: the deepest focused element, through shadow roots.
+   * `focused` is false when this frame does not have focus, or hands it on to a child frame.
+   */
+  function focusInfo() {
+    let el = document.activeElement;
+    while (el && shadow(el)?.activeElement) el = shadow(el).activeElement;
+    const inChild = !!el && ["iframe", "frame"].includes(el.localName);
+    const focused = document.hasFocus() && !inChild;
+    if (!el || el === document.body || el === document.documentElement) {
+      return { focused, editable: false, desc: "the page body (no element has focus)", value: null };
+    }
+    const value = el.isContentEditable ? el.textContent
+      : "value" in el && typeof el.value === "string" && el.type !== "password" ? el.value : null;
+    const desc = line(el, roleOf(el), 0).replace(/^- /, "");
+    return { focused, editable: isTextEntry(el), desc, value, length: el.type === "password" ? el.value.length : value?.length };
+  }
+
   const OPS = {
-    readPage, evaluate, find, pageText, point, formInput, setFiles, viewport, waitCheck,
+    readPage, evaluate, find, pageText, point, formInput, setFiles, viewport, waitCheck, focusInfo,
     untrustedMouse, untrustedType, untrustedKeys, untrustedScroll,
     ping: () => ({ ok: true }),
     scrollTo: ({ ref }) => ({ ...point({ ref }), ...viewport() }),

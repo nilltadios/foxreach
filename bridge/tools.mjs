@@ -57,15 +57,19 @@ export const TOOLS = [
     from_x: x, from_y: y, to_x: x, to_y: y,
     modifiers,
   }, ["tabId", "from_x", "from_y", "to_x", "to_y"]),
-  tool("type_text", "Type text with real key events into the focused element, or click ref first. Use \\n for Enter. Non-Latin text and emoji are supported.", {
+  tool("type_text", "Type text with real key events into the focused element, or click ref first. Use \\n for Enter. Non-Latin text and emoji are supported. " +
+    "The reply names the element that received the text and warns when its value did not change. Refuses when focus is not on a text field.", {
     tabId,
     text: { type: "string" },
     ref: { ...ref, description: "Click this element first." },
+    allow_non_text: { type: "boolean", description: "Type even though focus is not on a text field, for keyboard-driven pages. Default false." },
   }, ["tabId", "text"]),
-  tool("press_key", 'Press keys with real events. Space-separated sequence, + for combos: "Enter", "ctrl+a Delete", "shift+Tab".', {
+  tool("press_key", 'Press keys with real events. Space-separated sequence, + for combos: "Enter", "ctrl+a Delete", "shift+Tab". ' +
+    "The reply names the focused element. Refuses Delete and Backspace when focus is not on a text field.", {
     tabId,
     keys: { type: "string" },
     repeat: { type: "integer", description: "Default 1." },
+    allow_non_text: { type: "boolean", description: "Send Delete or Backspace even though focus is not on a text field. Default false." },
   }, ["tabId", "keys"]),
   tool("scroll", "Scroll at a point or the viewport centre by a pixel amount, and return a screenshot of the result.", {
     tabId, ref, x, y,

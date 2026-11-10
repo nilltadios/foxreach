@@ -224,6 +224,11 @@ have that folder). For a Flatpak browser, remove `~/.var/app/<id>/foxreach` and 
 
 Each tool's description is in [bridge/tools.mjs](bridge/tools.mjs).
 
+`type_text` and `press_key` say which element received the keys. They refuse to type, or to send
+Delete or Backspace, when focus is not on a text field, so keys meant for a search box cannot act
+as page shortcuts (such as deleting the selected messages in a mail app). `allow_non_text: true`
+overrides this for keyboard-driven pages. `type_text` also warns when the field's value did not change.
+
 ## What you control
 
 The toolbar button shows the bridge's status and recent agent activity, and it has these controls:

@@ -54,6 +54,7 @@ PAGES = {
 <input id=range type=range min=0 max=100 value=0 style="width:200px">
 <p id=visible>Some visible paragraph text.</p>
 <div style="display:none"><button id=hidden>Hidden button</button></div>
+<input id=locked aria-label="Locked field" onkeydown="event.preventDefault()">
 </div>
 <script>
 document.getElementById('host').attachShadow({{mode:'closed'}}).innerHTML='<button id=inshadow>Shadow button</button>';
@@ -270,6 +271,25 @@ def t_keyboard(mcp):
     mcp.call("press_key", tabId=tab, keys="Tab")
     check("Tab moves focus", js(mcp, tab, "document.activeElement.id") == "pw", js(mcp, tab, "document.activeElement.id"))
     check("unknown key is an error", expect_error(lambda: mcp.call("press_key", tabId=tab, keys="ctrl+Nope"), "Unknown key"))
+
+    # Focus reporting and the guard against keys landing outside a text field.
+    out = mcp.call("type_text", tabId=tab, ref=name, text="x")
+    check("type_text names the field it typed into", 'textbox "Your name"' in out, out)
+    out = mcp.call("press_key", tabId=tab, keys="End")
+    check("press_key names the focused element", 'textbox "Your name"' in out, out)
+    mcp.call("click", tabId=tab, ref=ref_of(tree, "Press me"))
+    clear(mcp, tab)
+    check("Delete outside a text field is refused",
+          expect_error(lambda: mcp.call("press_key", tabId=tab, keys="ctrl+a Delete"), "not a text field"))
+    check("typing outside a text field is refused",
+          expect_error(lambda: mcp.call("type_text", tabId=tab, text="abc"), "Nothing was typed"))
+    check("refused keys never reach the page", not [e for e in events(mcp, tab) if e["type"] == "keydown"],
+          events(mcp, tab)[:4])
+    out = mcp.call("press_key", tabId=tab, keys="Delete", allow_non_text=True)
+    check("allow_non_text lets Delete through", "Pressed Delete" in out and 'button "Press me"' in out, out)
+    check("Escape outside a text field still works", "Pressed Escape" in mcp.call("press_key", tabId=tab, keys="Escape"))
+    out = mcp.call("type_text", tabId=tab, ref=ref_of(tree, "Locked field"), text="abc")
+    check("a field that ignores keys gets a warning", "did not change" in out, out)
     mcp.call("tabs_close", tabId=tab)
 
 
