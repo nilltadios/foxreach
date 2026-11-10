@@ -51,10 +51,13 @@ class Browser:
             'user_pref("browser.aboutwelcome.enabled", false);\n'
             'user_pref("browser.shell.checkDefaultBrowser", false);\n'
             'user_pref("browser.startup.homepage_override.mstone", "ignore");\n'
+            # Grant what the add-on asks the browser for without the browser's own prompt: nobody is
+            # there to answer it. The add-on's popup still has to ask.
+            'user_pref("extensions.webextOptionalPermissionPrompts", false);\n'
         )
 
-    def start(self, marionette):
-        env = {"FOXREACH_SOCKET": self.socket, "FOXREACH_HOST_LOG": str(self.dir / "host.log")}
+    def start(self, marionette, env=None):
+        env = {"FOXREACH_SOCKET": self.socket, "FOXREACH_HOST_LOG": str(self.dir / "host.log")} | (env or {})
         args = ["--no-remote", "--new-instance", "--profile", self.profile]
         if self.headless:
             args.append("--headless")
@@ -65,10 +68,26 @@ class Browser:
             args, env, stdout=open(self.log, "ab"), stderr=subprocess.STDOUT, start_new_session=True
         )
 
-    def install(self):
+    def install(self, ask_approval=False):
+        """Install the add-on. Unless ask_approval, also answer for the user that agents need no
+        approval, as the tests' own agents have nobody to click Allow for them."""
         self.marionette = Marionette()
         self.marionette.command("WebDriver:NewSession", {})
-        return self.marionette.command("Addon:Install", {"path": str(self.xpi), "temporary": False})["value"]
+        addon = self.marionette.command("Addon:Install", {"path": str(self.xpi), "temporary": False})["value"]
+        if not ask_approval:
+            self.popup_message({"popup": "setAsk", "value": False})
+            # Leave the add-on's page: it closes when the add-on is updated or reloaded.
+            self.marionette.command("WebDriver:Navigate", {"url": "about:blank"})
+        return addon
+
+    def open_popup(self):
+        return open_popup(self.marionette)
+
+    def click(self, selector):
+        click(self.marionette, selector)
+
+    def popup_message(self, message):
+        return popup_message(self.marionette, message)
 
     def install_and_restart(self):
         """Install, then restart with no automation attached: the daily-use state."""
@@ -135,6 +154,34 @@ class Browser:
             print("kept", self.dir)
 
 
+def open_popup(m):
+    """Show the toolbar popup's page in the Marionette tab; returns a function that runs a script
+    there and gives back what the script passes to arguments[0]."""
+    m.command("Marionette:SetContext", {"value": "chrome"})
+    uuid = m.command("WebDriver:ExecuteScript", {"args": [], "script":
+        'return JSON.parse(Services.prefs.getStringPref("extensions.webextensions.uuids"))["foxreach@foxreach.local"];'})["value"]
+    m.command("Marionette:SetContext", {"value": "content"})
+    m.command("WebDriver:Navigate", {"url": f"moz-extension://{uuid}/popup/popup.html"})
+    return lambda code: m.command("WebDriver:ExecuteAsyncScript", {"script": code, "args": [], "scriptTimeout": 8000})["value"]
+
+
+def click(m, selector):
+    """A real click in the Marionette tab, as the browser wants for a permission request."""
+    element = m.command("WebDriver:FindElement", {"using": "css selector", "value": selector})["value"]
+    m.command("WebDriver:ElementClick", {"id": next(iter(element.values()))})
+
+
+def popup_message(m, message):
+    """Send what the popup sends for a click, and return the add-on's state after it."""
+    run = open_popup(m)
+    deadline = time.time() + 20
+    while True:  # the background page may still be starting
+        state = run(f"browser.runtime.sendMessage({json.dumps(message)}).then(arguments[0], () => arguments[0](null))")
+        if state or time.time() > deadline:
+            return state
+        time.sleep(0.3)
+
+
 class Marionette:
     """Test-only client, for the steps a tool call cannot do: install and the toolbar popup."""
 
@@ -176,12 +223,12 @@ class Marionette:
 class McpClient:
     """A plain MCP client: the same stdio conversation any agent has with the server."""
 
-    def __init__(self, socket_path=None, name="foxreach-test"):
+    def __init__(self, socket_path=None, name="foxreach-test", command=None):
         env = dict(os.environ)
         if socket_path:
             env["FOXREACH_SOCKET"] = socket_path
         self.proc = subprocess.Popen(
-            [RUNTIME, str(ROOT / "bridge/mcp.mjs")],
+            command or [RUNTIME, str(ROOT / "bridge/mcp.mjs")],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, env=env,
         )
         self.seq = 0

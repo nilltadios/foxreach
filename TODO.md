@@ -2,19 +2,23 @@
 
 Open items, newest first. Remove an item when it is done.
 
-## Make foxreach installable on normal Firefox, and more trustworthy (noted 2026-11-09)
+## Publish 0.3.0 (prepared 2026-11-10; each step sends something out, so each waits for the owner)
 
-1. **Sign the untrusted build through addons.mozilla.org**, unlisted first (`web-ext sign` with an
-   AMO API key). A signed build installs permanently on release Firefox with no prefs changed. Do
-   this first: it is small.
-2. **Decide on WebDriver BiDi for release Firefox.** The full build cannot be signed (Mozilla keeps
-   the Experiment privilege for its own add-ons), so release Firefox loses trusted input, `drag`,
-   `read_console`, `handle_dialog` and file drops. BiDi could give them back; it needs the browser
-   started with a flag, opens a local port, and shows `navigator.webdriver` to pages. Not tested.
-3. **List on AMO**, so users get Mozilla's review and updates through the store instead of GitHub Pages.
-4. **No Bun or `uv` for users:** compile the bridge to one binary; ship an installer or packages that
-   register the native host.
-5. **Narrower permissions:** site access per site or on demand instead of `<all_urls>` up front.
-6. **Per-agent approval:** today any program running as the user can drive shared tabs through the
-   socket. Add an approval prompt in the popup.
-7. **Verifiable releases:** tags, checksums, and a build that reproduces the published file.
+1. **Sign the build for release Firefox.** Make an API key at
+   https://addons.mozilla.org/developers/addon/api/key/ and save it in `~/.config/foxreach/amo.env`
+   (two lines, see `scripts/sign.py --help`; `chmod 600`). Then `uv run --python 3.15 scripts/sign.py`.
+   Not run yet: it needs the key and uploads the add-on to Mozilla. `--dry-run` passes.
+2. **Release.** Commit, then `uv run --python 3.15 scripts/release.py` and the commands it prints
+   (tag and push). The release workflow has never run: watch its first run.
+3. **Enable GitHub Pages** for `docs/` (the command is in `release.py`'s output). Until then no
+   installed add-on can update itself.
+4. **List on addons.mozilla.org:** `scripts/sign.py --channel listed`, with the next version number
+   (a version can be submitted once). Text and reviewer notes are in `amo/`. Mozilla reviews it.
+
+## Later
+
+- Packages (deb, rpm, Flatpak extension) for the `foxreach` program; today it is one file and
+  `install.sh`.
+- Signed tags.
+- The limits listed under "What would change this" in `spikes/bidi/FINDINGS.md`: watch for a way to
+  get trusted input on release Firefox.

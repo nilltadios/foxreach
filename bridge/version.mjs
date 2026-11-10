@@ -1,4 +1,5 @@
-// The checkout's version: the bridge and the add-on built from the same folder share it.
-import fs from "node:fs";
+// The checkout's version: the bridge and the add-on built from the same folder share it. Imported,
+// not read at run time, so the single-file build carries it.
+import manifest from "../extension/manifest.json" with { type: "json" };
 
-export const VERSION = JSON.parse(fs.readFileSync(new URL("../extension/manifest.json", import.meta.url), "utf8")).version;
+export const VERSION = manifest.version;

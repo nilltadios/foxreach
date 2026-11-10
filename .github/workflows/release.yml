@@ -1,0 +1,38 @@
+# Builds a release's files from the tag and publishes them, so that what people download was built
+# from the source they can read, by a machine that is not the maintainer's. The files are attested:
+# `gh attestation verify <file> --repo nilltadios/foxreach` shows this workflow built them.
+# scripts/verify_release.py rebuilds them anywhere and compares.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+      - uses: astral-sh/setup-uv@v6
+      - name: The tag is the add-on's version
+        run: test "v$(jq -r .version extension/manifest.json)" = "$GITHUB_REF_NAME"
+      - name: Build the release's files
+        run: uv run --python 3.15 scripts/release.py --files-only dist/release
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/release/*
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 ||
+            gh release create "$GITHUB_REF_NAME" --verify-tag --title "foxreach ${GITHUB_REF_NAME#v}" --notes-file dist/release/BUILDINFO.txt
+          gh release upload "$GITHUB_REF_NAME" dist/release/* --clobber

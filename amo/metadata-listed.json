@@ -1,0 +1,13 @@
+{
+  "summary": {
+    "en-US": "Lets AI agents on your own computer (any MCP client) operate the browser tabs you share with them. No cloud service, no telemetry."
+  },
+  "categories": { "firefox": ["web-development"] },
+  "homepage": { "en-US": "https://github.com/nilltadios/foxreach" },
+  "requires_payment": false,
+  "version": {
+    "license": "MIT",
+    "compatibility": ["firefox"],
+    "approval_notes": "foxreach connects local AI agents (MCP clients) to tabs the user shares. It talks only to a native messaging host on the same machine (source: bridge/ in https://github.com/nilltadios/foxreach, MIT); it makes no network requests of its own and collects no data. To test: install the host with the 'foxreach' program from the GitHub releases page ('foxreach install'), then run 'foxreach mcp' as an MCP server. Without the host the popup shows 'Bridge not connected'. content/content.js uses window.eval in one place: it is the 'javascript' tool, which runs a script the user's agent supplies in the page's own world, like the developer console. background.js mentions browser.foxreachInput: that is a privileged API of a separate, unsigned build and is absent here (guarded by 'typeof browser.foxreachInput'). No code is minified or generated; the package is the repository's extension/ folder minus experiment/. Site access is optional: the user grants single sites or all sites from the popup."
+  }
+}

@@ -2,15 +2,69 @@
 
 const $ = (id) => document.getElementById(id);
 const ask = (msg) => browser.runtime.sendMessage(msg);
+const originsOf = (host) => (host === "*" ? ["<all_urls>"] : [`*://${host}/*`, `*://*.${host}/*`]);
+let state = null;
 
-function render(state) {
+function item(text, title, ...buttons) {
+  const li = document.createElement("li");
+  li.className = "line";
+  const span = document.createElement("span");
+  span.textContent = text;
+  span.title = title ?? text;
+  li.append(span, ...buttons);
+  return li;
+}
+
+function button(label, onClick) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.textContent = label;
+  b.addEventListener("click", onClick);
+  return b;
+}
+
+const send = async (msg) => render(await ask(msg));
+
+/**
+ * Let agents use a site ("*": every site). Where the browser hands out sites one by one, it is
+ * asked here, in the click itself: it accepts the question only from a click, and its own prompt
+ * may close this popup, so the background page finishes the job when the answer arrives.
+ */
+function allowSite(host) {
+  const sent = send({ popup: "wantSite", host });
+  if (state?.asksBrowser) browser.permissions.request({ origins: originsOf(host) }).then(() => send({ popup: "state" }), () => {});
+  return sent;
+}
+
+// Opened by the background page as a window of its own, to show a request. It closes once
+// nothing is left to answer.
+const requestWindow = location.search === "?requests";
+
+function render(next) {
+  state = next;
+  if (requestWindow && !state.agentRequests.length && !state.siteRequests.length) {
+    browser.windows.getCurrent().then((w) => browser.windows.remove(w.id)); // window.close() is refused here
+  }
   const status = $("status");
   status.textContent = !state.connected
     ? `Bridge not connected${state.hostError ? `: ${state.hostError}` : ""}`
     : `Connected, ${state.trusted ? "trusted input" : "untrusted input only"}, v${state.version}`;
   status.className = state.connected ? "ok" : "bad";
   $("paused").checked = state.paused;
+  $("ask").checked = state.askApproval;
   if (document.activeElement !== $("blocked")) $("blocked").value = state.blockedHosts.join(", ");
+
+  $("agent-requests").replaceChildren(
+    ...state.agentRequests.map((r) => item(
+      `${r.name} asks to use the browser`, `Asked at ${new Date(r.time).toLocaleTimeString()}. The name is what the program calls itself.`,
+      button("Allow", () => send({ popup: "answerAgent", conn: r.conn, mode: "once" })),
+      button("Always", () => send({ popup: "answerAgent", conn: r.conn, mode: "always" })),
+      button("Refuse", () => send({ popup: "answerAgent", conn: r.conn, mode: "deny" })),
+    ))
+  );
+  $("agents").replaceChildren(
+    ...state.approvedAgents.map((name) => item(`${name}: always allowed`, null, button("Remove", () => send({ popup: "forgetAgent", name }))))
+  );
 
   $("tabs").replaceChildren(
     ...state.tabs.map((tab) => {
@@ -20,8 +74,10 @@ function render(state) {
       box.type = "checkbox";
       box.checked = tab.shared;
       box.dataset.tabId = tab.id;
-      box.addEventListener("change", async () => {
-        render(await ask({ popup: "share", tabId: tab.id, value: box.checked }));
+      box.addEventListener("change", () => {
+        // Sharing a tab says the agent may use its site.
+        if (box.checked && tab.host && !tab.allowed) allowSite(tab.host);
+        send({ popup: "share", tabId: tab.id, value: box.checked });
       });
       const title = document.createElement("span");
       title.textContent = tab.title || tab.url;
@@ -31,6 +87,26 @@ function render(state) {
       return li;
     })
   );
+
+  const all = state.siteAccess === "all";
+  $("access-all").checked = all;
+  $("access-listed").checked = !all;
+  $("site-requests").replaceChildren(
+    ...state.siteRequests.map((host) => item(
+      `An agent asks for ${host}`, null,
+      button("Allow", () => allowSite(host)),
+      button("Dismiss", () => send({ popup: "dismissSite", host })),
+    ))
+  );
+  $("sites").replaceChildren(
+    ...state.allowedHosts.map(({ host, granted }) => item(
+      granted ? host : `${host}: the browser has not granted it`, all ? "Used when only listed sites are allowed." : null,
+      ...(granted ? [] : [button("Grant", () => allowSite(host))]),
+      button("Remove", () => send({ popup: "removeSite", host })),
+    ))
+  );
+  $("sites").className = all ? "unused" : "";
+  if (all && !state.everySiteGranted) $("sites").replaceChildren(item("The browser has not granted every site.", null, button("Grant", () => allowSite("*"))));
 
   $("activity").replaceChildren(
     ...state.activity.map((a) => {
@@ -47,8 +123,23 @@ function render(state) {
   );
 }
 
-$("paused").addEventListener("change", async (e) => render(await ask({ popup: "setPaused", value: e.target.checked })));
-$("save-blocked").addEventListener("click", async () => render(await ask({ popup: "setBlocked", value: $("blocked").value })));
+$("paused").addEventListener("change", (e) => send({ popup: "setPaused", value: e.target.checked }));
+$("ask").addEventListener("change", (e) => send({ popup: "setAsk", value: e.target.checked }));
+$("save-blocked").addEventListener("click", () => send({ popup: "setBlocked", value: $("blocked").value }));
+$("access-all").addEventListener("click", () => allowSite("*"));
+$("access-listed").addEventListener("click", () => send({ popup: "listedOnly" }));
+$("add-site").addEventListener("submit", (e) => {
+  e.preventDefault();
+  // What the user typed, as a host name, the way the background page will store it.
+  const typed = $("site").value.trim().replace(/^\*\./, "");
+  if (!typed) return;
+  let host = typed;
+  try {
+    host = new URL(typed.includes("://") ? typed : `http://${typed}`).hostname;
+  } catch {}
+  $("site").value = "";
+  allowSite(host.toLowerCase().replace(/\.+$/, ""));
+});
 
 ask({ popup: "state" }).then(render);
 setInterval(async () => render(await ask({ popup: "state" })), 2000);

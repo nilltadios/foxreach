@@ -4,23 +4,54 @@ Lets any local agent that speaks MCP operate the tabs of a Firefox-based browser
 has no telemetry, no account, no vendor lock-in and no open network port.
 
 ```
-agent ── stdio MCP ── bridge/mcp.mjs ── private Unix socket ── bridge/host.mjs ── native messaging ── extension
-(one server per agent)                  (mode 0600)            (started by the browser)
+agent ── stdio MCP ── foxreach mcp ── private Unix socket ── foxreach host ── native messaging ── add-on
+(one server per agent)                (mode 0600)            (started by the browser)
 ```
 
-## Setup
+There are two builds of the add-on. Pick by browser:
 
-Needs Linux, `uv`, Bun or Node.js, and a Firefox-based browser that accepts unsigned add-ons:
+| Browser | Build | Input |
+|---|---|---|
+| Firefox release and beta, distro `firefox` packages, the Firefox Flatpak | Signed build, see [Install](#install) | Script events (`isTrusted=false`), which a few sites ignore; no `drag`, `read_console`, `handle_dialog`, file drops |
+| LibreWolf; Firefox Developer Edition, Nightly | Full build, see [Setup from a checkout](#setup-from-a-checkout). Tested: LibreWolf 159.0.1 (AppImage, Flatpak), Developer Edition 161.0b1 | Real input, all tools |
+| Firefox ESR, Floorp, Waterfox, Zen | Either; the full build is expected to work, since they honor the same two prefs, but is not tested | |
 
-| Browser | Works |
-|---|---|
-| LibreWolf | Yes. Tested: 159.0.1, AppImage and Flatpak |
-| Firefox Developer Edition, Nightly | Yes. Tested: Developer Edition 161.0b1, Mozilla's tarball |
-| Firefox ESR, Floorp, Waterfox, Zen | Expected to, since they honor the same two prefs; not tested |
-| Firefox release and beta, most distro `firefox` packages, the Firefox Snap and Flatpak | No: they refuse unsigned add-ons. See [Limits](#limits) |
+Mozilla signs privileged code only for its own add-ons, so the full build cannot be signed, and
+browsers that insist on signatures get the build without it.
 
-How the browser was installed does not matter: a distro package, a tarball, an AppImage, or a Flatpak
-(Flatpak has its own section below). List what the scripts find on this machine:
+## Install
+
+For any Firefox-based browser on Linux (x86-64 or arm64). Nothing else is needed: no Bun, no `uv`.
+
+1. **The program.** One file, which is the MCP server and the part the browser starts. Download
+   [install.sh](install.sh), read it, and run it:
+
+   ```bash
+   sh install.sh
+   ```
+
+   It downloads `foxreach` from the latest [release](https://github.com/nilltadios/foxreach/releases)
+   into `~/.local/bin`, checks it against the release's checksums, and runs `foxreach install`,
+   which writes the native messaging manifest that lets the browser start it. Installed Flatpak
+   browsers are prepared too ([how](#flatpak-browsers)). Or download `foxreach-linux-x64` or
+   `foxreach-linux-arm64` yourself, make it executable, and run `./foxreach install`.
+2. **The add-on.** Open `foxreach-<version>-signed.xpi` from the release in the browser and accept.
+   Then click the foxreach toolbar button and choose the sites agents may use.
+3. **The agent.** `foxreach install` prints the command for your agent; it is `foxreach mcp`:
+
+   ```bash
+   claude mcp add foxreach -- ~/.local/bin/foxreach mcp
+   ```
+
+The first time an agent calls, the toolbar button shows a request; allow it there.
+`foxreach uninstall` removes what `foxreach install` wrote.
+
+## Setup from a checkout
+
+For the full build, with real input. Needs Linux, `uv`, Bun or Node.js, and a browser that accepts
+unsigned add-ons (the table above). How the browser was installed does not matter: a distro package,
+a tarball, an AppImage, or a Flatpak (Flatpak has its own section below). List what the scripts find
+on this machine:
 
 ```bash
 uv run --python 3.15 scripts/browsers.py
@@ -73,6 +104,9 @@ For other agents, use the same command as a stdio MCP server.
 uv run --python 3.15 scripts/setup_profile.py --browser flatpak:io.gitlab.librewolf-community
 ```
 
+`foxreach install` does the same with a copy of the program itself, for the Flatpak browsers it
+finds; `foxreach install --browser flatpak:<id>` prepares only that one.
+
 A Flatpak browser starts the native host inside its sandbox, which sees neither this folder nor your
 Bun. So setup copies the bridge and Bun into `~/.var/app/<id>/foxreach`, registers the host in the
 Flatpak's own `native-messaging-hosts` folder, and gives the Flatpak one permission: the folder
@@ -87,7 +121,11 @@ starts the host in its sandbox, and an agent outside reads a page, clicks and ta
 - **LibreWolf 159.0.1-1** (`io.gitlab.librewolf-community`): the full add-on, with trusted input.
   `setup_profile.py` installed and verified its dedicated profile.
 - **Firefox 159.0.1** (`org.mozilla.firefox`): an official release, which refuses unsigned add-ons. The
-  test loads the untrusted build for the run; `setup_profile.py` cannot install into it.
+  test loads the build without privileged code for the run; `setup_profile.py` cannot install into
+  it. It takes the signed build.
+
+Both also pass with the single-file program in place of the checkout's bridge
+(`test/flatpak_browser.py flatpak:<id> --program dist/foxreach`).
 
 ### Runtime
 
@@ -118,20 +156,50 @@ native host) runs from this folder. They should be the same version.
 If the add-on has updated itself but this folder has not, the `status` tool shows both versions and a
 `warning`, and the first tool call of each agent session ends with a note saying so. Run the updater.
 
-The untrusted build has no `update_url`, so it never replaces itself with the full build.
+The signed build updates the same way from its own list, `docs/updates-signed.json`, which holds
+only signed builds: neither build ever replaces the other. A build made here and not signed has no
+`update_url`. The `foxreach` program does not update itself: run `install.sh` again.
 
 ## Releasing
 
 1. Raise `version` in `extension/manifest.json` (the bridge reads it from there too), commit.
-2. `uv run --python 3.15 scripts/release.py` adds `docs/foxreach-<version>.xpi` and an entry in
-   `docs/updates.json`, and prints the commit, tag and push commands. It changes no remote.
-3. Once per repository, serve `docs/` from `main` with GitHub Pages.
-4. After the push, `uv run --python 3.15 scripts/release.py --verify` checks that Pages serves the new
-   entry and that the file's hash matches it.
+2. For release Firefox, have Mozilla sign that version: `uv run --python 3.15 scripts/sign.py`
+   (`--dry-run` checks without sending). It needs an API key from addons.mozilla.org and sends the
+   add-on's files there; the signed file lands in `dist/signed/`. `--channel listed` submits it for
+   the public listing instead, with the text in [amo/](amo/LISTING.md).
+3. `uv run --python 3.15 scripts/release.py` adds the add-ons and their update entries to `docs/`,
+   builds the release's files into `dist/release/`, and prints the commit, tag and push commands.
+   It changes no remote.
+4. Pushing the tag starts [the release workflow](.github/workflows/release.yml), which builds the
+   same files from the tag on GitHub's machines, attests them, and publishes the release.
+5. Once per repository, serve `docs/` from `main` with GitHub Pages.
+6. After the push, `uv run --python 3.15 scripts/release.py --verify` checks that Pages serves the new
+   entries and that the files' hashes match, and `scripts/verify_release.py` checks the release
+   against its source.
 
-[test/update.py](test/update.py) proves the path on a throwaway profile: the browser's background check
-installs a newer version from an `updates.json` of the same layout, and the bridge warns that the
-versions differ.
+[test/update.py](test/update.py) proves the update path on a throwaway profile: the browser's
+background check installs a newer version from an `updates.json` of the same layout, and the bridge
+warns that the versions differ. [test/release.py](test/release.py) runs steps 3 and 6 in a throwaway
+copy of the repository, publishing nothing.
+
+## Checking a release
+
+Builds are reproducible: the same commit gives the same add-on, byte for byte, and with the Bun
+version in [.bun-version](.bun-version) the same `foxreach` program.
+
+```bash
+uv run --python 3.15 scripts/verify_release.py 0.3.0
+```
+
+That downloads the release, rebuilds every file from the tag, and compares. The signed add-on must
+hold exactly the files the source builds, plus Mozilla's signature. Each release has `SHA256SUMS`,
+and `BUILDINFO.txt` with the commit and the Bun version. To check who built a file:
+
+```bash
+gh attestation verify foxreach-linux-x64 --repo nilltadios/foxreach
+```
+
+Releases up to 0.2.0 predate this and cannot be rebuilt byte for byte. Tags are not signed.
 
 ## Undo
 
@@ -161,6 +229,17 @@ Each tool's description is in [bridge/tools.mjs](bridge/tools.mjs).
 The toolbar button shows the bridge's status and recent agent activity, and it has these controls:
 
 - **Pause** stops all agent access at once.
+- **Agents:** a program that connects for the first time waits until you answer its request there:
+  Allow (until it disconnects), Always (that name, from now on), or Refuse. Its call waits up to a
+  minute, then fails and says why. The request opens a small window of its own, since the browser
+  may keep the button in its extensions menu; the button also shows `?`. The name is what
+  the program calls itself, so this keeps out an agent you did not mean to let in, not a program
+  that lies about its name. You can switch asking off.
+- **Sites agents may use:** every site, or only the ones you list (with their subdomains). On any
+  other site an agent can neither open a page nor read or act on one, and a frame from such a site
+  is skipped. A refused site shows as a request you can allow with one click. Sharing a tab allows
+  its site. The list limits what agents read and operate; it does not stop a listed page from
+  loading its own images or scripts from elsewhere.
 - **Tabs:** agents only see tabs they opened, tabs those tabs opened, and tabs you tick. Other tabs
   stay hidden, including their titles and URLs. Agent tabs are in an orange `agent` tab group.
 - **Blocked sites** keeps agents off those sites and their subdomains. A tab agents can use loads
@@ -180,8 +259,9 @@ Read this before installing into a profile you browse with.
   Experiments run with full browser privileges.
 - foxreach itself is such an add-on. Its privileged code is
   [parent.js](extension/experiment/parent.js) and [child.sys.mjs](extension/experiment/child.sys.mjs).
-- Any process running as your user can connect to the socket and use the tabs agents can reach. The
-  socket keeps out other users and websites, not your own programs. The host and the MCP server
+- Any process running as your user can connect to the socket. It then has to be allowed from the
+  toolbar button, by the name it gives itself (see above); a program that takes an allowed name
+  gets in. The socket keeps out other users and websites. The host and the MCP server
   refuse a socket folder that another user owns or can write (this matters where `XDG_RUNTIME_DIR`
   is not set and the socket falls back to the shared temporary folder).
 - **Local files.** `file_upload` reads files on the agent's machine and hands them to a page, and a
@@ -203,14 +283,24 @@ Read this before installing into a profile you browse with.
   open in a frame of a tab is no longer read, but it still shows in screenshots until the tab reloads.
 - In the build without privileged code, `javascript` runs in the page's own world. A page whose
   security policy forbids `eval` refuses it.
+- **That build asks for no site at install.** You grant single sites, or all, from the toolbar
+  button, and the browser enforces it. With single sites granted the browser gives no pictures of
+  pages (`screenshot`, `record`): it offers those only to an add-on that holds every site. Blocked
+  sites are then enforced by not being granted, not per request.
+- The full build holds every site as far as the browser is concerned, because its privileged code
+  could reach them anyway; there the list of sites is enforced by foxreach itself.
 
 ## Limits
 
 - **Firefox release and beta** (and distro packages, the Snap and the Flatpak built from them) require
-  signed add-ons and ignore the Experiments pref, so they get only `dist/foxreach-untrusted.xpi`. Its
-  input has `isTrusted=false`, which some sites reject, and `drag`, `read_console`, `handle_dialog`
-  and file drops are unavailable. It also needs signing to install permanently, so
-  `setup_profile.py` cannot install it.
+  signed add-ons and ignore the Experiments pref, so they get only the signed build without
+  privileged code. Its input has `isTrusted=false`, which some sites reject, and `drag`,
+  `read_console`, `handle_dialog` and file drops are unavailable. `setup_profile.py` cannot install
+  it; it is installed by opening the signed file. The browser's own automation protocol could give
+  some of this back, and was tested and turned down: it shows every site that the browser is
+  automated, and opens every tab and cookie to any local program
+  ([spikes/bidi/FINDINGS.md](spikes/bidi/FINDINGS.md)).
+- **The program** is built for glibc Linux on x86-64 and arm64. No packages (deb, rpm) are made.
 - **Linux only.** The scripts read `/proc` and use Linux paths. macOS and Windows are not supported.
 - **Snap browsers** are not handled.
 - **A new profile in Mozilla's own builds opens first-run prompts** (terms of use, welcome). While one
@@ -231,7 +321,7 @@ Read this before installing into a profile you browse with.
 ## Tests
 
 ```bash
-uv run --python 3.15 test/e2e.py             # expect: 159 passed, 0 failed, exit 0
+uv run --python 3.15 test/e2e.py             # expect: 184 passed, 0 failed, exit 0
 ```
 
 The tests use `FOXREACH_BROWSER` (a path or a command), else the only browser installed.
@@ -239,7 +329,9 @@ The tests use `FOXREACH_BROWSER` (a path or a command), else the only browser in
 | Command | What it shows |
 |---|---|
 | `test/e2e.py --visible` | The same suite in a real window |
-| `test/untrusted.py` | The no-privilege build loads and says its input is untrusted |
+| `test/untrusted.py` | The build without privileged code: holds no site until granted one, and says its input is untrusted |
+| `test/binary.py` | The single-file program builds the same twice, installs, and serves a real browser |
+| `test/release.py` | A release prepared in a throwaway copy matches a rebuild from its tag; damaged files are reported; `install.sh` checks checksums |
 | `test/restart_loop.py` | The add-on returns after every restart |
 | `test/real_site.py` | Search and read a real site (Wikipedia, needs internet) |
 | `test/real_agents.py` | Claude Code and Codex each finish a task; uses a little quota |
@@ -257,7 +349,8 @@ tests against an extracted copy: `/path/to/browser.AppImage --appimage-extract`,
 `FOXREACH_BROWSER=<dir>/squashfs-root/usr/bin/<browser>`.
 
 The comparison with Claude in Chrome is in [test/ab/RESULTS.md](test/ab/RESULTS.md). Earlier feasibility
-tests are in [spikes/trusted-input/FINDINGS.md](spikes/trusted-input/FINDINGS.md).
+tests are in [spikes/trusted-input/FINDINGS.md](spikes/trusted-input/FINDINGS.md) and
+[spikes/bidi/FINDINGS.md](spikes/bidi/FINDINGS.md).
 
 ## License
 

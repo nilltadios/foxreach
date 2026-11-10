@@ -42,7 +42,8 @@ def version():
 
 
 def build(path, trusted, version=None, update_url=None):
-    """version and update_url replace the manifest's, for tests of the update path."""
+    """version and update_url replace the manifest's: for tests of the update path, and for the
+    signed build, which has its own list of updates."""
     manifest = json.loads((EXT / "manifest.json").read_text())
     gecko = manifest["browser_specific_settings"]["gecko"]
     if version:
@@ -51,16 +52,26 @@ def build(path, trusted, version=None, update_url=None):
         gecko["update_url"] = update_url
     if not trusted:
         manifest.pop("experiment_apis")
-        manifest["name"] = "foxreach (untrusted input)"
-        # The published updates are the full build; they must not replace this one.
-        gecko.pop("update_url", None)
-    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
-        z.writestr("manifest.json", json.dumps(manifest, indent=2))
-        for f in sorted(EXT.rglob("*")):
-            rel = f.relative_to(EXT)
-            if f.is_file() and rel.name != "manifest.json":
-                if trusted or rel.parts[0] != "experiment":
-                    z.write(f, rel)
+        # No site up front: the user grants each one, or all, from the popup.
+        manifest["permissions"].remove("<all_urls>")
+        manifest["optional_permissions"] = ["<all_urls>"]
+        # The published updates are the full build; they must not replace this one. The signed
+        # copy names its own list of updates (scripts/sign.py).
+        if not update_url:
+            gecko.pop("update_url", None)
+    # Same source, same file: no clock, no file modes and no folder order in the archive, so anyone
+    # can rebuild a published add-on and compare (scripts/verify_release.py).
+    files = {"manifest.json": json.dumps(manifest, indent=2).encode()}
+    for f in EXT.rglob("*"):
+        rel = f.relative_to(EXT)
+        if f.is_file() and rel.name != "manifest.json" and (trusted or rel.parts[0] != "experiment"):
+            files[rel.as_posix()] = f.read_bytes()
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as z:
+        for name in sorted(files):
+            info = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
+            info.compress_type = zipfile.ZIP_DEFLATED
+            info.external_attr = 0o644 << 16
+            z.writestr(info, files[name])
     return path
 
 

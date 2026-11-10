@@ -28,7 +28,8 @@ const agentTabs = new Set();
 const network = new Map();
 const activity = [];
 const partial = new Map();
-let settings = { paused: false, blockedHosts: [] };
+// siteAccess: "all", or "listed" for only the sites in allowedHosts. Set at first start.
+let settings = { paused: false, blockedHosts: [], siteAccess: null, allowedHosts: [], askApproval: true, approvedAgents: [] };
 let port = null;
 let hostError = null;
 let agentGroupId = null;
@@ -53,14 +54,124 @@ function withTimeout(promise, ms, message) {
 // "bank.example." is the same site as "bank.example"; compare without the trailing dot.
 const plainHost = (host) => host.toLowerCase().replace(/\.+$/, "");
 
-function hostBlocked(url) {
-  let host;
+function hostOf(url) {
   try {
-    host = plainHost(new URL(url).hostname);
+    return plainHost(new URL(url).hostname);
   } catch {
-    return false;
+    return "";
   }
-  return settings.blockedHosts.some((b) => host === b || host.endsWith(`.${b}`));
+}
+
+/** A listed host covers its subdomains. */
+const inList = (host, list) => !!host && list.some((b) => host === b || host.endsWith(`.${b}`));
+
+const hostBlocked = (url) => inList(hostOf(url), settings.blockedHosts);
+
+/* A request the user has to answer opens its own small window: the toolbar button may be tucked
+   away in the browser's extensions menu, where a badge on it is never seen. One window at most. */
+let requestWindow = null;
+
+async function showRequests() {
+  try {
+    if (requestWindow !== null && (await browser.windows.get(requestWindow).catch(() => null))) {
+      await browser.windows.update(requestWindow, { focused: true });
+      return;
+    }
+    requestWindow = -1; // being opened: a second request in the same moment must not open another
+    requestWindow = (await browser.windows.create({ type: "popup", url: "/popup/popup.html?requests", width: 420, height: 560 })).id;
+  } catch (e) {
+    requestWindow = null;
+    console.error("foxreach: could not show the request window", e);
+  }
+}
+
+/* Site access. The user either lets agents use every site, or only the ones on a list. Under that,
+   the browser must have given this add-on the site: the full build has every site from the start,
+   the build without privileged code asks the user for each one (or for all) from the popup. */
+
+const SITE_REQUEST_LIMIT = 20;
+const siteRequests = new Map(); // host -> when an agent was last refused there, for the popup
+const wantedSites = new Set(); // hosts (or "*") the user is granting from the popup right now
+const originsOf = (host) => (host === "*" ? ["<all_urls>"] : [`*://${host}/*`, `*://*.${host}/*`]);
+const isWeb = (url) => /^https?:/.test(url);
+const browserGrants = (host) => browser.permissions.contains({ origins: [originsOf(host)[0]] });
+
+/** Other addresses (about:blank, a frame's srcdoc) belong to no site; reading them fails or not by itself. */
+async function siteAllowed(url) {
+  if (!isWeb(url)) return true;
+  return siteListed(url) && browserGrants(hostOf(url));
+}
+
+async function assertSiteAllowed(url) {
+  if (await siteAllowed(url)) return;
+  const host = hostOf(url);
+  if (!siteRequests.has(host)) showRequests();
+  siteRequests.delete(host);
+  siteRequests.set(host, Date.now());
+  if (siteRequests.size > SITE_REQUEST_LIMIT) siteRequests.delete(siteRequests.keys().next().value);
+  updateBadge();
+  throw new Error(`Agents are not allowed on ${host} yet. It now shows as a request under the foxreach toolbar button: ask the user to allow it there, then try again.`);
+}
+
+/** Move what the user asked for into the settings, once the browser has granted it. */
+async function applyWanted() {
+  for (const host of [...wantedSites]) {
+    if (!(await browserGrants(host))) continue;
+    wantedSites.delete(host);
+    if (host === "*") settings.siteAccess = "all";
+    else if (!settings.allowedHosts.includes(host)) settings.allowedHosts.push(host);
+    // What was asked for and is now allowed needs no answer any more.
+    for (const asked of [...siteRequests.keys()]) if (siteListed(`http://${asked}/`)) siteRequests.delete(asked);
+  }
+  await browser.storage.local.set({ settings });
+  updateBadge();
+}
+browser.permissions.onAdded.addListener(applyWanted);
+
+/* Agents. Any program of this user can reach the socket, so a new one waits for the user's yes.
+   The name is what the program calls itself: this guards against an agent the user did not mean to
+   let in, not against a program that lies. */
+
+const APPROVAL_WAIT_MS = 60000;
+const allowedConns = new Set(); // connections allowed until they close
+const deniedConns = new Set();
+const agentRequests = new Map(); // connection -> { name, time, waiters }
+
+async function assertAgentAllowed(conn, name) {
+  if (!settings.askApproval || allowedConns.has(conn) || settings.approvedAgents.includes(name)) return;
+  if (deniedConns.has(conn)) throw new Error(`The user refused the agent "${name}".`);
+  let request = agentRequests.get(conn);
+  if (!request) {
+    request = { name, time: Date.now(), waiters: [] };
+    agentRequests.set(conn, request);
+    updateBadge();
+    showRequests();
+  }
+  const answer = await new Promise((resolve) => {
+    request.waiters.push(resolve);
+    setTimeout(() => resolve("unanswered"), APPROVAL_WAIT_MS);
+  });
+  if (answer === "allow") return;
+  if (answer === "deny") throw new Error(`The user refused the agent "${name}".`);
+  throw new Error(`The user has not yet allowed the agent "${name}" to use the browser. A request is waiting under the foxreach toolbar button: ask the user to answer it, then try again.`);
+}
+
+function answerAgent(conn, mode) {
+  const request = agentRequests.get(conn);
+  if (!request) return;
+  agentRequests.delete(conn);
+  if (mode === "deny") deniedConns.add(conn);
+  else allowedConns.add(conn);
+  if (mode === "always" && !settings.approvedAgents.includes(request.name)) settings.approvedAgents.push(request.name);
+  for (const done of request.waiters) done(mode === "deny" ? "deny" : "allow");
+}
+
+function forgetConnection(conn) {
+  agentRequests.get(conn)?.waiters.forEach((done) => done("unanswered"));
+  agentRequests.delete(conn);
+  allowedConns.delete(conn);
+  deniedConns.delete(conn);
+  updateBadge();
 }
 
 /** What the user typed, as host names: "https://Bank.example:443/login" and "*.bank.example" both mean bank.example. */
@@ -77,14 +188,27 @@ function parseBlocked(value) {
   return [...new Set(hosts.filter(Boolean))];
 }
 
-/** A tab as shown to agents. A blocked site's title can itself be private ("Inbox (3) - name@..."). */
-const tabLine = (tab) => (hostBlocked(tab.url) ? "a site the user has blocked for agents" : `${tab.title} <${tab.url}>`);
+/** Whether the user's own list lets agents on this address (the browser's grant is asked separately). */
+const siteListed = (url) => !isWeb(url) || settings.siteAccess === "all" || inList(hostOf(url), settings.allowedHosts);
+
+/**
+ * A tab as shown to agents. A title can itself be private ("Inbox (3) - name@..."), so a site
+ * agents may not use shows without it: a blocked one not at all, an unlisted one by host, which
+ * is what the agent has to ask the user for.
+ */
+function tabLine(tab) {
+  if (hostBlocked(tab.url)) return "a site the user has blocked for agents";
+  if (!siteListed(tab.url)) return `a site agents are not allowed on yet (${hostOf(tab.url)})`;
+  return `${tab.title} <${tab.url}>`;
+}
 
 /** A frame keeps its own site: a blocked one stays unreadable inside a page that is allowed. */
 async function assertFrameAllowed(tabId, frameId) {
   if (!frameId) return;
   const frame = await browser.webNavigation.getFrame({ tabId, frameId }).catch(() => null);
-  if (frame && hostBlocked(frame.url)) throw new Error("The user has blocked agents on this frame's site.");
+  if (!frame) return;
+  if (hostBlocked(frame.url)) throw new Error("The user has blocked agents on this frame's site.");
+  await assertSiteAllowed(frame.url);
 }
 
 async function accessibleTab(tabId) {
@@ -98,6 +222,7 @@ async function accessibleTab(tabId) {
     throw new Error(`Tab ${tabId} no longer exists.`);
   }
   if (hostBlocked(tab.url)) throw new Error(`The user has blocked agents on this site (${new URL(tab.url).hostname}).`);
+  await assertSiteAllowed(tab.url);
   return tab;
 }
 
@@ -119,7 +244,9 @@ async function adoptTab(tab) {
       if (!exists || exists.windowId !== tab.windowId) agentGroupId = null;
     }
     const groupId = await browser.tabs.group(
-      agentGroupId === null ? { tabIds: [tab.id] } : { tabIds: [tab.id], groupId: agentGroupId }
+      // A new group goes into the tab's own window: the default is the window in front, which may
+      // be foxreach's request window, and the tab would move there and close with it.
+      agentGroupId === null ? { tabIds: [tab.id], createProperties: { windowId: tab.windowId } } : { tabIds: [tab.id], groupId: agentGroupId }
     );
     if (agentGroupId === null) {
       agentGroupId = groupId;
@@ -132,7 +259,8 @@ async function adoptTab(tab) {
 
 function updateBadge() {
   browser.browserAction.setBadgeBackgroundColor({ color: settings.paused ? "#c92a2a" : "#d9480f" });
-  browser.browserAction.setBadgeText({ text: settings.paused ? "||" : agentTabs.size ? String(agentTabs.size) : "" });
+  const asking = agentRequests.size || siteRequests.size;
+  browser.browserAction.setBadgeText({ text: settings.paused ? "||" : asking ? "?" : agentTabs.size ? String(agentTabs.size) : "" });
 }
 
 /* ---------- content script calls ---------- */
@@ -177,6 +305,7 @@ async function eachFrame(tabId, op, args) {
   const results = await Promise.all(
     frames.map(async (f) => {
       if (f.frameId && hostBlocked(f.url)) return { frame: { frameId: f.frameId, url: "blocked site" }, error: "the user has blocked agents on this frame's site" };
+      if (f.frameId && !(await siteAllowed(f.url))) return { frame: f, error: "agents are not allowed on this frame's site" };
       try {
         const value = await withTimeout(
           browser.tabs.sendMessage(tabId, { foxreachOp: op, args }, { frameId: f.frameId }),
@@ -291,7 +420,7 @@ async function settle(tabId, options) {
   return `Tab ${tabId}: ${tabLine(tab)}.${suffix}`;
 }
 
-function checkUrl(url) {
+async function checkUrl(url) {
   let parsed;
   try {
     parsed = new URL(url);
@@ -302,7 +431,16 @@ function checkUrl(url) {
     throw new Error(`Agents may only open http, https and about:blank, not ${parsed.protocol}`);
   }
   if (hostBlocked(parsed.href)) throw new Error(`The user has blocked agents on this site (${parsed.hostname}).`);
+  await assertSiteAllowed(parsed.href);
   return parsed.href;
+}
+
+/** A picture of a tab. The browser offers this only to an add-on that holds every site. */
+async function capture(tabId, options) {
+  if (!browser.tabs.captureTab) {
+    throw new Error("The browser gives pictures of pages only to an add-on that is allowed on every site, and the user has allowed single sites. read_page and find work without pictures; for pictures, ask the user to choose \"Every site\" under the foxreach toolbar button.");
+  }
+  return browser.tabs.captureTab(tabId, options);
 }
 
 /* ---------- tools ---------- */
@@ -315,6 +453,7 @@ const TOOLS = {
         browser: await browser.runtime.getBrowserInfo(),
         trustedInput: trusted,
         paused: settings.paused,
+        siteAccess: settings.siteAccess,
         agentTabs: agentTabs.size,
       }),
     };
@@ -328,8 +467,12 @@ const TOOLS = {
   },
 
   async tabs_create({ url = "about:blank", active = true }) {
-    const target = checkUrl(url);
-    const tab = await browser.tabs.create({ url: "about:blank", active });
+    const target = await checkUrl(url);
+    // In an ordinary browser window: the window in front may be foxreach's own request window,
+    // and a tab put there would close with it.
+    const windows = (await browser.windows.getAll()).filter((w) => w.type === "normal"); // the windowTypes filter is ignored
+    const home = windows.find((w) => w.focused) ?? windows[0];
+    const tab = await browser.tabs.create({ url: "about:blank", active, ...(home ? { windowId: home.id } : {}) });
     // Adopt before loading, so network capture sees the first request.
     await adoptTab(tab);
     await untilIdle(tab.id);
@@ -368,7 +511,7 @@ const TOOLS = {
       await { back: browser.tabs.goBack, forward: browser.tabs.goForward, reload: browser.tabs.reload }[url](tabId);
       return { text: await done };
     }
-    const target = checkUrl(url);
+    const target = await checkUrl(url);
     const done = settle(tabId, { leavingBlank: target !== "about:blank" });
     await browser.tabs.update(tabId, { url: target });
     return { text: await done };
@@ -511,7 +654,7 @@ const TOOLS = {
       : res.moved
         ? `Scrolled to (${res.scrollLeft}, ${res.scrollTop}).`
         : "Nothing scrolled: already at the limit, or nothing scrollable here.";
-    if (!screenshot) return { text };
+    if (!screenshot || !browser.tabs.captureTab) return { text };
     // The scroll happened, so a failed picture must not turn it into a failed call.
     const shot = await TOOLS.screenshot({ tabId }).catch((e) => ({ text: `Screenshot failed: ${e.message}` }));
     return { image: shot.image, text: `${text} ${shot.text}` };
@@ -560,7 +703,7 @@ const TOOLS = {
       // captureTab's rect is document-relative; agents think in viewport coordinates.
       options.rect = { x: region.x + v.scrollX, y: region.y + v.scrollY, width: region.width, height: region.height };
     }
-    let dataUrl = await browser.tabs.captureTab(tabId, options);
+    let dataUrl = await capture(tabId, options);
     const pointer = pointers.get(tabId);
     if (show_pointer && pointer) dataUrl = await withPointer(dataUrl, pointer, region, scale, format, quality);
     const [header, data] = dataUrl.split(",", 2);
@@ -662,13 +805,13 @@ const TOOLS = {
     return { gif: bytesToBase64(encodeGif(rec.frames)), frames: rec.frames.length, text: `Recorded ${rec.frames.length} frames.` };
   },
 
-  async batch({ actions, stop_on_error = true }) {
+  async batch({ actions, stop_on_error = true }, client) {
     if (!Array.isArray(actions) || !actions.length) throw new Error("actions must be a non-empty list.");
     const parts = [];
     for (const [index, action] of actions.entries()) {
       if (action.tool === "batch") throw new Error("batch cannot be nested.");
       try {
-        const result = await runTool(action.tool, action.args ?? {});
+        const result = await runTool(action.tool, action.args ?? {}, client);
         parts.push({ index, tool: action.tool, ...result });
       } catch (e) {
         parts.push({ index, tool: action.tool, error: e.message });
@@ -707,15 +850,12 @@ function logActivity(client, tool, args, ok, ms, error) {
   if (activity.length > LOG_LIMIT) activity.shift();
 }
 
-let currentClient = "agent";
-
-async function runTool(tool, args) {
+async function runTool(tool, args, client) {
   const started = Date.now();
-  const client = currentClient;
   try {
     if (settings.paused && tool !== "status") throw new Error("The user has paused agent access from the foxreach toolbar button.");
     if (!Object.hasOwn(TOOLS, tool)) throw new Error(`Unknown tool ${tool}.`);
-    const result = await TOOLS[tool](args);
+    const result = await TOOLS[tool](args, client);
     logActivity(client, tool, args, true, Date.now() - started);
     if (RECORDED_TOOLS.has(tool) && recordings.has(args.tabId)) {
       recordings.get(args.tabId).label = tool;
@@ -729,9 +869,15 @@ async function runTool(tool, args) {
 }
 
 async function handleRequest({ id, client, tool, args }) {
-  currentClient = client;
   try {
-    send({ id, result: await runTool(tool, args ?? {}) });
+    // The part of the id before the colon is the connection, numbered by the host, not by the agent.
+    if (tool !== "status") {
+      await assertAgentAllowed(String(id).split(":")[0], client).catch((e) => {
+        logActivity(client, tool, args, false, 0, e.message);
+        throw e;
+      });
+    }
+    send({ id, result: await runTool(tool, args ?? {}, client) });
   } catch (e) {
     send({ id, error: e.message });
   }
@@ -782,7 +928,7 @@ async function withPointer(dataUrl, pointer, region, scale, format, quality) {
 async function captureFrame(tabId) {
   const rec = recordings.get(tabId);
   if (!rec || rec.frames.length >= RECORD_MAX_FRAMES) return;
-  const url = await browser.tabs.captureTab(tabId, { format: "png", scale: 1 });
+  const url = await capture(tabId, { format: "png", scale: 1 });
   const image = await decodeImage(url);
   const scale = Math.min(1, RECORD_WIDTH / image.width);
   const canvas = document.createElement("canvas");
@@ -833,6 +979,10 @@ function onHostMessage(message) {
     hostError = message.hostError;
     return;
   }
+  if (message.closed !== undefined) {
+    forgetConnection(String(message.closed));
+    return;
+  }
   handleRequest(message);
 }
 
@@ -844,6 +994,8 @@ function connectHost() {
     const busy = hostError !== null;
     hostError = hostError ?? p.error?.message ?? "The native host exited.";
     port = null;
+    // A new host numbers its connections from 1 again.
+    for (const conn of [...agentRequests.keys(), ...allowedConns, ...deniedConns]) forgetConnection(conn);
     setTimeout(() => {
       hostError = null;
       connectHost();
@@ -856,6 +1008,7 @@ function connectHost() {
 
 async function popupState() {
   const tabs = await browser.tabs.query({});
+  const shown = tabs.filter((t) => /^https?:|^about:blank/.test(t.url));
   return {
     version: VERSION,
     trusted,
@@ -863,9 +1016,20 @@ async function popupState() {
     hostError,
     paused: settings.paused,
     blockedHosts: settings.blockedHosts,
-    tabs: tabs
-      .filter((t) => /^https?:|^about:blank/.test(t.url))
-      .map((t) => ({ id: t.id, title: t.title, url: t.url, shared: agentTabs.has(t.id), active: t.active })),
+    // Whether the browser hands out sites one by one (the build without privileged code), so the
+    // popup has to ask it for each.
+    asksBrowser: (browser.runtime.getManifest().optional_permissions ?? []).includes("<all_urls>"),
+    siteAccess: settings.siteAccess,
+    allowedHosts: await Promise.all(settings.allowedHosts.map(async (host) => ({ host, granted: await browserGrants(host) }))),
+    everySiteGranted: await browserGrants("*"),
+    siteRequests: [...siteRequests.keys()].reverse(),
+    askApproval: settings.askApproval,
+    approvedAgents: settings.approvedAgents,
+    agentRequests: [...agentRequests].map(([conn, r]) => ({ conn, name: r.name, time: r.time })),
+    tabs: await Promise.all(shown.map(async (t) => ({
+      id: t.id, title: t.title, url: t.url, shared: agentTabs.has(t.id), active: t.active,
+      host: isWeb(t.url) ? hostOf(t.url) : "", allowed: await siteAllowed(t.url),
+    }))),
     activity: activity.slice(-40).reverse(),
   };
 }
@@ -884,6 +1048,35 @@ browser.runtime.onMessage.addListener(async (msg, sender) => {
     case "share":
       if (msg.value) await adoptTab(await browser.tabs.get(msg.tabId));
       else agentTabs.delete(msg.tabId);
+      break;
+    case "wantSite": {
+      // The popup asks the browser for the site at the same moment; applyWanted runs again once
+      // the user has answered that.
+      const host = msg.host === "*" ? "*" : parseBlocked(msg.host)[0];
+      if (host) wantedSites.add(host);
+      await applyWanted();
+      break;
+    }
+    case "removeSite":
+      settings.allowedHosts = settings.allowedHosts.filter((h) => h !== msg.host);
+      await browser.permissions.remove({ origins: originsOf(msg.host) }).catch(() => {}); // not ours to drop in the full build
+      break;
+    case "listedOnly":
+      settings.siteAccess = "listed";
+      await browser.permissions.remove({ origins: originsOf("*") }).catch(() => {});
+      break;
+    case "dismissSite":
+      siteRequests.delete(msg.host);
+      break;
+    case "setAsk":
+      settings.askApproval = !!msg.value;
+      if (!settings.askApproval) for (const conn of [...agentRequests.keys()]) answerAgent(conn, "once");
+      break;
+    case "answerAgent":
+      answerAgent(String(msg.conn), msg.mode);
+      break;
+    case "forgetAgent":
+      settings.approvedAgents = settings.approvedAgents.filter((n) => n !== msg.name);
       break;
     default:
       return undefined;
@@ -954,6 +1147,8 @@ browser.webRequest.onErrorOccurred.addListener((d) => {
   const stored = await browser.storage.local.get("settings");
   settings = { ...settings, ...stored.settings };
   settings.blockedHosts = parseBlocked((settings.blockedHosts ?? []).join(" ")); // entries saved by older versions
+  // First start: every site if the browser already grants that (the full build), else a list to fill.
+  settings.siteAccess ??= (await browserGrants("*")) ? "all" : "listed";
   updateBadge();
   connectHost();
 })();

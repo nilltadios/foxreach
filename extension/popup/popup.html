@@ -11,8 +11,21 @@
   <span id="status"></span>
 </header>
 <label class="row"><input type="checkbox" id="paused"> Pause all agent access</label>
+<h2>Agents</h2>
+<ul id="agent-requests"></ul>
+<ul id="agents"></ul>
+<label class="row"><input type="checkbox" id="ask"> Ask me before a new agent may use the browser</label>
 <h2>Tabs agents can use</h2>
 <ul id="tabs"></ul>
+<h2>Sites agents may use</h2>
+<label class="row"><input type="radio" name="access" id="access-all"> Every site</label>
+<label class="row"><input type="radio" name="access" id="access-listed"> Only these sites</label>
+<ul id="site-requests"></ul>
+<ul id="sites"></ul>
+<form id="add-site" class="row">
+  <input id="site" placeholder="example.org" spellcheck="false">
+  <button>Allow</button>
+</form>
 <h2>Blocked sites</h2>
 <textarea id="blocked" rows="2" placeholder="bank.example, mail.example" spellcheck="false"></textarea>
 <button id="save-blocked">Save</button>

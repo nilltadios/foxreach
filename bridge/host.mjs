@@ -95,8 +95,11 @@ function serveClient(conn) {
       sendRequest({ id: `${clientId}:${id}`, client: String(client ?? "agent").slice(0, 80), tool: String(tool), args });
     }
   });
-  conn.on("close", () => clients.delete(clientId));
-  conn.on("error", () => clients.delete(clientId));
+  // The add-on keeps what the user allowed per connection; tell it when one ends.
+  conn.on("close", () => {
+    if (clients.delete(clientId)) toBrowser({ closed: clientId });
+  });
+  conn.on("error", () => {});
 }
 
 function isAlive(file) {

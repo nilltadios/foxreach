@@ -28,7 +28,36 @@ try:
     with zipfile.ZipFile(ROOT / "dist/foxreach-untrusted.xpi") as z:
         gecko = json.loads(z.read("manifest.json"))["browser_specific_settings"]["gecko"]
     check("has no update_url, so the full build never replaces it", "update_url" not in gecko, gecko)
-    tab = int(m.call("tabs_create", url=f"http://127.0.0.1:{PORT}/").split()[1].rstrip(":"))
+    # This build holds no site until the user grants one: nothing to read, and no pictures.
+    url = f"http://127.0.0.1:{PORT}/"
+    def refused(call):
+        try:
+            return f"no error: {call()}"
+        except ToolError as e:
+            return str(e)
+    with zipfile.ZipFile(ROOT / "dist/foxreach-untrusted.xpi") as z:
+        manifest = json.loads(z.read("manifest.json"))
+    check("asks for no site at install", "<all_urls>" not in manifest["permissions"] and manifest["optional_permissions"] == ["<all_urls>"], manifest["permissions"])
+    check("starts with a list of sites, which is empty", json.loads(m.call("status"))["siteAccess"] == "listed")
+    check("a site not granted is refused", "not allowed on 127.0.0.1 yet" in refused(lambda: m.call("tabs_create", url=url)))
+    run = b.open_popup(); time.sleep(2.5)
+    b.click("#site-requests button")  # Allow, with a real click: the browser takes the request only from one
+    time.sleep(1)
+    held = run("browser.permissions.getAll().then((p) => arguments[0](p.origins))")
+    check("allowing the request grants that site only", held == ["*://127.0.0.1/*", "*://*.127.0.0.1/*"], held)
+    tab = int(m.call("tabs_create", url=url).split()[1].rstrip(":"))
+    check("the granted site can be read", "Go" in m.call("read_page", tabId=tab))
+    check("a picture explains that it needs every site", "Every site" in refused(lambda: m.image(tabId=tab)))
+    check("a click still works without the picture", "Clicked" in m.call("click", tabId=tab, x=50, y=30))
+    run("document.getElementById('site').value = 'example.org'; arguments[0](1)")
+    b.click("#access-all"); time.sleep(1)
+    check("choosing every site grants every site", "<all_urls>" in run("browser.permissions.getAll().then((p) => arguments[0](p.origins))"))
+    b.click("#add-site button"); time.sleep(1)
+    b.click("#access-listed"); time.sleep(1)
+    held = run("browser.permissions.getAll().then((p) => arguments[0](p.origins))")
+    check("back to the list, the browser's grant is narrowed to the list", "<all_urls>" not in held and "*://example.org/*" in held and "*://127.0.0.1/*" in held, held)
+    b.click("#access-all"); time.sleep(1)  # the rest of this test is about input, with every site
+    m.call("javascript", tabId=tab, code="window.events.length = 0")
     check("read_page works", "Go" in m.call("read_page", tabId=tab))
     out = m.call("click", tabId=tab, x=50, y=30)
     check("click warns it is untrusted", "untrusted" in out, out)

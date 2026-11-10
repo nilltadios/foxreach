@@ -779,6 +779,90 @@ def popup_tests(browser, mcp):
         const row = document.querySelector('#tabs input[data-tab-id="{share}"]');
         row.click(); setTimeout(() => done(1), 300);""")
     check("user can stop sharing", expect_error(lambda: mcp.call("read_page", tabId=share), "not available to agents"))
+
+    # Only listed sites. In this build the browser grants every site, so the list alone decides.
+    text_of = lambda element: run(f"setTimeout(() => arguments[0](document.getElementById('{element}').textContent), 300)")  # noqa: E731
+    redrawn = lambda: time.sleep(2.3)  # the popup asks for news every 2 s; its own clicks show at once  # noqa: E731
+    press = lambda element, label: run(  # noqa: E731
+        f"""[...document.querySelectorAll('#{element} button')].find((b) => b.textContent === {label!r}).click();
+        setTimeout(() => arguments[0](1), 300)""")
+    run("document.getElementById('access-listed').click(); setTimeout(() => arguments[0](1), 300)")
+    check("with an empty list, a site is refused", expect_error(lambda: mcp.call("read_page", tabId=page), "not allowed on 127.0.0.1 yet"))
+    listed = mcp.call("tabs_list")
+    check("its title and path are not listed, its host is", "not allowed on yet (127.0.0.1)" in listed and "Main page" not in listed, listed)
+    check("...and so is opening it", expect_error(lambda: mcp.call("tabs_create", url=f"{MAIN}/second"), "not allowed on 127.0.0.1 yet"))
+    redrawn()
+    check("the refused site shows as a request", "An agent asks for 127.0.0.1" in text_of("site-requests"), text_of("site-requests"))
+    press("site-requests", "Allow")
+    check("allowing the request lets the agent in", "Press me" in mcp.call("read_page", tabId=page))
+    check("the site is on the list", "127.0.0.1" in text_of("sites") and not text_of("site-requests"), text_of("sites"))
+    mcp.call("navigate", tabId=page, url=f"{MAIN}/frames")
+    tree = mcp.call("read_page", tabId=page)
+    check("a frame from a site not on the list is not read", "Frames" in tree and "Inner button" not in tree and "not allowed on this frame" in tree, tree)
+    check("navigating to a site not on the list is refused", expect_error(lambda: mcp.call("navigate", tabId=page, url=f"{OTHER_SITE}/second"), "not allowed on localhost yet"))
+    run("document.getElementById('site').value = 'HTTP://LocalHost:1/x'; document.querySelector('#add-site button').click(); setTimeout(() => arguments[0](1), 300)")
+    check("a site typed into the popup is added as a host name", "Inner button" in mcp.call("read_page", tabId=page) and "localhost" in text_of("sites"), text_of("sites"))
+    mcp.call("navigate", tabId=page, url=f"{MAIN}/main")
+    run("""[...document.querySelectorAll('#sites li')].find((li) => li.textContent.startsWith('127.0.0.1')).querySelector('button').click();
+        setTimeout(() => arguments[0](1), 300)""")
+    check("removing a site refuses it again", expect_error(lambda: mcp.call("read_page", tabId=page), "not allowed on 127.0.0.1 yet"))
+    run("document.getElementById('access-all').click(); setTimeout(() => arguments[0](1), 300)")
+    check("every site again", "Press me" in mcp.call("read_page", tabId=page) and json.loads(mcp.call("status"))["siteAccess"] == "all")
+
+    # A new agent waits for the user.
+    run("document.getElementById('ask').click(); setTimeout(() => arguments[0](1), 300)")
+    answers = {}
+
+    def attempt(key, client, tool="tabs_list"):
+        try:
+            answers[key] = client.call(tool)
+        except (ToolError, RuntimeError) as e:  # RuntimeError: the test ended this agent itself
+            answers[key] = f"ERROR {e}"
+
+    def asking(name, key):
+        client = McpClient(mcp_socket, name=name)
+        thread = threading.Thread(target=attempt, args=(key, client))
+        thread.start()
+        redrawn()
+        return client, thread
+
+    one, thread = asking("newcomer", "one")
+    check("a new agent's call waits", "one" not in answers and "newcomer asks to use the browser" in text_of("agent-requests"), answers)
+    request_windows = lambda: run("browser.windows.getAll({ populate: true }).then((all) => arguments[0](all.filter((w) => w.tabs.some((t) => t.url.endsWith('?requests'))).length))")  # noqa: E731
+    check("the request opens a window of its own, since the toolbar button may be hidden", request_windows() == 1, request_windows())
+    check("status needs no approval", json.loads(one.__class__(mcp_socket, name="looker").call("status"))["version"])
+    press("agent-requests", "Allow")
+    thread.join(10)
+    check("Allow lets the waiting call through", "other tabs" in answers.get("one", ""), answers)
+    redrawn()
+    check("the request window closes once nothing is left to answer", request_windows() == 0, request_windows())
+    check("...and the agent's later calls", "other tabs" in one.call("tabs_list"))
+    one.close()
+    two, thread = asking("newcomer", "two")
+    check("the same name on a new connection asks again", "two" not in answers, answers)
+    press("agent-requests", "Refuse")
+    thread.join(10)
+    check("Refuse fails the call", "refused" in answers.get("two", ""), answers)
+    check("...and the agent's later calls, without asking", expect_error(lambda: two.call("tabs_list"), "refused") and not text_of("agent-requests"))
+    two.close()
+    three, thread = asking("regular", "three")
+    press("agent-requests", "Always")
+    thread.join(10)
+    three.close()
+    again = McpClient(mcp_socket, name="regular")
+    check("Always lets that name in on later connections", "other tabs" in again.call("tabs_list") and "regular: always allowed" in text_of("agents"), text_of("agents"))
+    press("agents", "Remove")
+    again.close()
+    four, thread = asking("regular", "four")
+    check("removing the name makes it ask again", "four" not in answers and "regular asks" in text_of("agent-requests"), answers)
+    four.proc.kill()
+    redrawn()
+    check("a request goes away when its agent does", not text_of("agent-requests"), text_of("agent-requests"))
+    thread.join(10)
+    log = run("setTimeout(() => arguments[0](document.getElementById('activity').textContent), 2200)")
+    check("the activity log shows who was refused", "newcomer: tabs_list" in log, log[:300])
+    run("document.getElementById('ask').click(); setTimeout(() => arguments[0](1), 300)")
+    check("with asking off, the test's own agent works again", "Press me" in mcp.call("read_page", tabId=page))
     mcp.call("tabs_close", tabId=page)
 
 

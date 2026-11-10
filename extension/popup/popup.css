@@ -32,3 +32,11 @@ li { padding: 3px 0; border-bottom: 1px solid var(--line); overflow: hidden; tex
 #activity time { color: var(--muted); margin-right: 6px; }
 textarea { width: 100%; box-sizing: border-box; font: inherit; background: transparent; color: inherit; border: 1px solid var(--line); border-radius: 4px; padding: 4px; }
 button { margin-top: 4px; font: inherit; }
+.line { display: flex; gap: 6px; align-items: center; }
+.line span { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+.line button { margin-top: 0; font-size: 12px; }
+#agent-requests .line, #site-requests .line { font-weight: 600; }
+.unused { opacity: 0.55; }
+#add-site { margin-top: 4px; }
+#add-site input { flex: 1; font: inherit; background: transparent; color: inherit; border: 1px solid var(--line); border-radius: 4px; padding: 3px 4px; }
+#add-site button { margin-top: 0; }
