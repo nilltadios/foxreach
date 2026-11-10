@@ -16,7 +16,7 @@ const tool = (name, description, properties = {}, required = []) => ({
 });
 
 export const TOOLS = [
-  tool("status", "Report whether the browser is connected, its version, and whether input is trusted (isTrusted=true)."),
+  tool("status", "Report whether the browser is connected, the add-on and bridge versions (with a warning if they differ), and whether input is trusted (isTrusted=true)."),
   tool("tabs_list", "List the tabs agents may use: ones created by agents or shared by the user. Other tabs stay private."),
   tool("tabs_create", "Open a new tab, wait for it to load, and return its id.", {
     url: { type: "string", description: "http(s) URL. Default about:blank." },

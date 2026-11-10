@@ -50,6 +50,42 @@ missing; to choose it, run `FOXREACH_RUNTIME=node uv run --python 3.15 scripts/b
 `node` in the commands above. The host's path is written at build time, so rerun that script if the
 runtime or this folder moves.
 
+## Updating
+
+foxreach has two parts. The add-on lives in the browser profile; the bridge (the MCP server and the
+native host) runs from this folder. They should be the same version.
+
+- **The add-on updates itself.** Its `update_url` points at `docs/updates.json` on GitHub Pages. The
+  browser checks it about once a day and installs a newer version in the background, without a
+  restart. LibreWolf leaves this on, as Firefox does (`extensions.update.enabled`).
+- **The bridge updates with this folder.** Run the updater with the browser closed:
+
+  ```bash
+  uv run --python 3.15 scripts/update.py            # --dry-run to preview
+  ```
+
+  It pulls, rebuilds, re-registers the native host, and reinstalls the add-on in every profile that
+  setup installed into (recorded in `~/.local/state/foxreach/profiles`) whose copy is older. Agents
+  use the new bridge from their next session.
+
+If the add-on has updated itself but this folder has not, the `status` tool shows both versions and a
+`warning`, and the first tool call of each agent session ends with a note saying so. Run the updater.
+
+The untrusted build has no `update_url`, so it never replaces itself with the full build.
+
+## Releasing
+
+1. Raise `version` in `extension/manifest.json` (the bridge reads it from there too), commit.
+2. `uv run --python 3.15 scripts/release.py` adds `docs/foxreach-<version>.xpi` and an entry in
+   `docs/updates.json`, and prints the commit, tag and push commands. It changes no remote.
+3. Once per repository, serve `docs/` from `main` with GitHub Pages.
+4. After the push, `uv run --python 3.15 scripts/release.py --verify` checks that Pages serves the new
+   entry and that the file's hash matches it.
+
+[test/update.py](test/update.py) proves the path on a throwaway profile: the browser's background check
+installs a newer version from an `updates.json` of the same layout, and the bridge warns that the
+versions differ.
+
 ## Undo
 
 With the browser closed, this removes the add-on and both prefs. Leave out `--apply` to preview it.

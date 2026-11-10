@@ -9,6 +9,7 @@ It also puts back the profile's "restore previous session" data and startup-cras
 own headless starts would otherwise disturb.
 Undo:  delete the dedicated profile. For another profile, close the browser, remove the add-on in
        about:addons, and remove the two prefs below from user.js and prefs.js.
+Records the profile in ~/.local/state/foxreach/profiles, the list scripts/update.py updates.
 Expected: "verified" and exit 0.
 
 No automation is used on the profile. Marionette must not run on a profile someone uses: it applies
@@ -48,6 +49,22 @@ START_TIMEOUT_S = 60
 START_ATTEMPTS = 3
 # Only for the one start that detects the add-on, so a folder drop elsewhere never self-enables.
 ALLOW_ONCE = "extensions.autoDisableScopes"
+
+
+# Profiles foxreach was installed into, one path per line, for scripts/update.py.
+RECORD = pathlib.Path.home() / ".local/state/foxreach/profiles"
+
+
+def recorded_profiles():
+    if not RECORD.exists():
+        return []
+    return [pathlib.Path(l) for l in dict.fromkeys(RECORD.read_text().splitlines()) if l.strip()]
+
+
+def record_profile(profile, keep=True):
+    others = [p for p in recorded_profiles() if p != profile]
+    RECORD.parent.mkdir(parents=True, exist_ok=True)
+    RECORD.write_text("".join(f"{p}\n" for p in others + ([profile] if keep else [])))
 
 
 def in_use(profile):
@@ -240,6 +257,7 @@ def main():
             clear_startup_tracking(profile)
     if not status["trustedInput"]:
         raise SystemExit(f"Installed, but trusted input is off: {status}")
+    record_profile(profile)
     print(f"verified: {profile} v{status['version']} trusted input on, after a restart")
     return 0
 

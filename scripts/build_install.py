@@ -24,11 +24,23 @@ HOST_NAME = "foxreach"
 NATIVE_DIR = pathlib.Path.home() / ".mozilla/native-messaging-hosts"
 
 
-def build(path, trusted):
+def version():
+    return json.loads((EXT / "manifest.json").read_text())["version"]
+
+
+def build(path, trusted, version=None, update_url=None):
+    """version and update_url replace the manifest's, for tests of the update path."""
     manifest = json.loads((EXT / "manifest.json").read_text())
+    gecko = manifest["browser_specific_settings"]["gecko"]
+    if version:
+        manifest["version"] = version
+    if update_url:
+        gecko["update_url"] = update_url
     if not trusted:
         manifest.pop("experiment_apis")
         manifest["name"] = "foxreach (untrusted input)"
+        # The published updates are the full build; they must not replace this one.
+        gecko.pop("update_url", None)
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
         z.writestr("manifest.json", json.dumps(manifest, indent=2))
         for f in sorted(EXT.rglob("*")):

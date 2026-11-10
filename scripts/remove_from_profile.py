@@ -3,7 +3,8 @@
 
 Run:   uv run --python 3.15 scripts/remove_from_profile.py --profile DIR [--apply]
 Without --apply it only prints what it would change. Refuses a profile that is in use.
-Removes: the add-on file, and the two prefs that scripts/setup_profile.py set.
+Removes: the add-on file, the two prefs that scripts/setup_profile.py set, and the profile from
+         the list scripts/update.py updates.
 Expected after --apply: exit 0, and on the next start foxreach is gone from about:addons.
 Warning: any other unsigned add-on in the profile stops loading once signatures are required again.
 """
@@ -12,7 +13,7 @@ import pathlib
 import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-from setup_profile import ADDON_ID, PREFS, in_use  # noqa: E402
+from setup_profile import ADDON_ID, PREFS, in_use, record_profile  # noqa: E402
 
 
 def main():
@@ -37,6 +38,8 @@ def main():
         print(("removing" if args.apply else "would remove"), len(lines) - len(kept), "lines from", path)
         if args.apply:
             path.write_text("".join(kept))
+    if args.apply:
+        record_profile(profile, keep=False)  # scripts/update.py no longer updates it
     if not args.apply:
         print("Nothing changed. Add --apply to do this.")
     return 0

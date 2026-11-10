@@ -190,6 +190,8 @@ def t_protocol(mcp):
     check("trusted input is active", status["trustedInput"] is True, status)
     # LibreWolf reports itself as Firefox here (librewolf.getBrowserInfo.setToFirefoxDefaults).
     check("browser reports a version", status["browser"]["version"], status)
+    check("status reports matching add-on and bridge versions",
+          status["version"] == status.get("bridgeVersion") and "warning" not in status, status)
 
 
 def t_click_trusted(mcp):

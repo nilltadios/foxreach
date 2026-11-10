@@ -4,7 +4,7 @@
 Run: uv run --python 3.15 test/untrusted.py    Expected: all PASS, exit 0.
 Signature checks are off here only because unsigned add-ons need that outside AMO.
 """
-import http.server, json, pathlib, subprocess, sys, threading, time
+import http.server, json, pathlib, subprocess, sys, threading, time, zipfile
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 from harness import ROOT, Browser, McpClient, ToolError
 PORT = 47854
@@ -24,6 +24,9 @@ try:
     b.start(marionette=True); b.install(); b.wait_for_socket()
     m = McpClient(b.socket)
     check("reports untrusted input", json.loads(m.call("status"))["trustedInput"] is False)
+    with zipfile.ZipFile(ROOT / "dist/foxreach-untrusted.xpi") as z:
+        gecko = json.loads(z.read("manifest.json"))["browser_specific_settings"]["gecko"]
+    check("has no update_url, so the full build never replaces it", "update_url" not in gecko, gecko)
     tab = int(m.call("tabs_create", url=f"http://127.0.0.1:{PORT}/").split()[1].rstrip(":"))
     check("read_page works", "Go" in m.call("read_page", tabId=tab))
     out = m.call("click", tabId=tab, x=50, y=30)
