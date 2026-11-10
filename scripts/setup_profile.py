@@ -33,7 +33,7 @@ import time
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "test"))
-from harness import APPIMAGE, McpClient  # noqa: E402
+from harness import APPIMAGE, McpClient, ToolError  # noqa: E402
 
 PREFS = {
     "extensions.experiments.enabled": "true",
@@ -51,20 +51,35 @@ START_ATTEMPTS = 3
 ALLOW_ONCE = "extensions.autoDisableScopes"
 
 
-# Profiles foxreach was installed into, one path per line, for scripts/update.py.
+# Profiles foxreach was installed into, one per line as "<path>\t<version setup verified>", for
+# scripts/update.py. A setup that stops early has copied the add-on but verified nothing; the
+# version here is what tells the updater that.
 RECORD = pathlib.Path.home() / ".local/state/foxreach/profiles"
 
 
-def recorded_profiles():
+def read_record():
+    """{profile path: verified version or None}, in the order recorded."""
     if not RECORD.exists():
-        return []
-    return [pathlib.Path(l) for l in dict.fromkeys(RECORD.read_text().splitlines()) if l.strip()]
+        return {}
+    out = {}
+    for line in RECORD.read_text().splitlines():
+        path, _, ver = line.partition("\t")
+        if path.strip():
+            out[pathlib.Path(path)] = ver or None
+    return out
 
 
-def record_profile(profile, keep=True):
-    others = [p for p in recorded_profiles() if p != profile]
+def recorded_profiles():
+    return list(read_record())
+
+
+def record_profile(profile, verified=None, keep=True):
+    """Remember the profile; verified is the add-on version setup proved working there."""
+    record = {p: v for p, v in read_record().items() if p != profile}
+    if keep:
+        record[profile] = verified
     RECORD.parent.mkdir(parents=True, exist_ok=True)
-    RECORD.write_text("".join(f"{p}\n" for p in others + ([profile] if keep else [])))
+    RECORD.write_text("".join(f"{p}\t{v or ''}\n" for p, v in record.items()))
 
 
 def in_use(profile):
@@ -178,12 +193,18 @@ def answer_status(socket_path, timeout):
     signal.signal(signal.SIGALRM, too_long)
     signal.alarm(timeout)
     try:
-        while not os.path.exists(socket_path):
-            time.sleep(0.2)
-        client = McpClient(socket_path)
-        status = json.loads(client.call("status"))
-        client.close()
-        return status
+        while True:
+            while not os.path.exists(socket_path):
+                time.sleep(0.2)
+            client = McpClient(socket_path)
+            try:
+                return json.loads(client.call("status"))
+            except ToolError:
+                # When the add-on file changed, the browser can start the old copy's host and then
+                # restart it for the new one, so the socket comes and goes once. Ask again.
+                time.sleep(0.5)
+            finally:
+                client.close()
     finally:
         signal.alarm(0)
 
@@ -215,6 +236,7 @@ def main():
         save_session(profile, session)
         (profile / "extensions").mkdir(exist_ok=True)
         write_prefs(profile, [f'user_pref("{ALLOW_ONCE}", 0);'])
+        record_profile(profile)  # not verified until the end
         shutil.copyfile(ROOT / "dist/foxreach.xpi", profile / "extensions" / f"{ADDON_ID}.xpi")
         try:
             # First start: the browser detects the add-on. It may record it as active without running it
@@ -257,7 +279,7 @@ def main():
             clear_startup_tracking(profile)
     if not status["trustedInput"]:
         raise SystemExit(f"Installed, but trusted input is off: {status}")
-    record_profile(profile)
+    record_profile(profile, status["version"])
     print(f"verified: {profile} v{status['version']} trusted input on, after a restart")
     return 0
 

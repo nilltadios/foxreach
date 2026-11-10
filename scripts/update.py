@@ -6,7 +6,7 @@ Profiles: the ones scripts/setup_profile.py recorded in ~/.local/state/foxreach/
           --profile is given.
 Steps:    refuse while one of those profiles is open; `git pull --ff-only`; rebuild and re-register
           the native host; reinstall the add-on (scripts/setup_profile.py) in each profile whose
-          copy is older than this folder. A profile whose add-on already updated itself to a newer
+          copy is older than this folder, or which setup never verified (a setup that stopped early). A profile whose add-on already updated itself to a newer
           version is left alone (that would be a downgrade); the pull is what brings the bridge level.
           Agents pick up the new bridge in their next session.
 Expected: a before/after table, "up to date" and exit 0. Exit 1 if a version still differs.
@@ -22,7 +22,7 @@ import zipfile
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
 from build_install import version  # noqa: E402
-from setup_profile import ADDON_ID, in_use, recorded_profiles  # noqa: E402
+from setup_profile import ADDON_ID, in_use, read_record, recorded_profiles  # noqa: E402
 
 UV = ["uv", "run", "--python", "3.15"]
 
@@ -46,10 +46,12 @@ def git(*args):
 def table(title, profiles):
     print(f"{title}: bridge {version()} ({git('rev-parse', '--short', 'HEAD')})")
     for p in profiles:
-        print(f"  add-on {installed_version(p) or 'not installed'}  {p}")
+        verified = read_record().get(p)
+        print(f"  add-on {installed_version(p) or 'not installed'} (setup verified {verified or 'nothing'})  {p}")
 
 
 def main():
+    sys.stdout.reconfigure(line_buffering=True)  # keep our lines in order with setup's output
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--profile", type=pathlib.Path, action="append")
     parser.add_argument("--dry-run", action="store_true", help="show what would happen, change nothing")
@@ -84,7 +86,7 @@ def main():
         have = installed_version(p)
         if have and key(have) > key(current):
             print(f"{p}: add-on {have} is newer than this folder ({current}); left alone")
-        elif have == current:
+        elif have == current and read_record().get(p) == current:
             print(f"{p}: add-on already {current}")
         elif args.dry_run:
             print(f"{p}: would install {current} (now {have or 'none'})")
@@ -96,7 +98,8 @@ def main():
         print("Dry run: nothing changed.")
         return 0
     table("after", profiles)
-    behind = [p for p in profiles if installed_version(p) != version()]
+    record = read_record()
+    behind = [p for p in profiles if installed_version(p) != version() or record.get(p) != version()]
     if behind:
         print("versions still differ for:", ", ".join(map(str, behind)))
         return 1
