@@ -433,6 +433,16 @@ def t_devtools(mcp):
     check("js semicolon in a string", js(mcp, tab, "const s = 'a;b'; await 0; s.length") == 3)
     check("js runs only once", js(mcp, tab, "window.ran = (window.ran || 0) + 1; window.ran") == 1)
     check("js for loop then value", js(mcp, tab, "let n = 0;\nfor (let i = 0; i < 3; i++) { n += i; }\nn") == 3)
+    # A regex literal holding a quote or an unpaired bracket once hid the last expression: the
+    # call returned undefined instead of the value.
+    check("js regex with a quote, then await",
+          js(mcp, tab, "const m = 'say \"hi\"'.match(/\"([^\"]+)\"/); await 0;\nm[1]") == "hi")
+    check("js regex with an unpaired bracket, then await",
+          js(mcp, tab, "const t = 'a (feat. b)'.replace(/\\s*\\((feat)[^)]*\\)/g, ''); await 0; t") == "a")
+    check("js division is not a regex", js(mcp, tab, "const a = 6, b = 2; await 0; a / b / 1") == 3)
+    check("js template substitution with braces",
+          js(mcp, tab, "const x = `a${ {k: 1}.k }b;`; await 0; x") == "a1b;")
+    check("js comment with a semicolon", js(mcp, tab, "let n = 4; // a ; comment\nawait 0\nn") == 4)
     check("js sees page globals", js(mcp, tab, "typeof window.events") == "object")
     err = mcp.call("javascript", tabId=tab, code="throw new Error('nope')")
     check("js errors are reported", "nope" in err, err)

@@ -150,28 +150,88 @@ function scrollableAncestor(el, win) {
 }
 
 /** Split off the last top-level statement, so "const a = await f(); a * 2" can return a * 2. */
+// Words after which "/" starts a regex literal rather than a division.
+const REGEX_AFTER_WORD = new Set([
+  "return", "typeof", "instanceof", "in", "of", "new", "delete", "void", "throw",
+  "case", "do", "else", "yield", "await",
+]);
+
+// Skips a regex literal starting at code[i] === "/"; returns the index of its last character
+// (the end of its flags), or -1 if no closing "/" comes before the end of the line.
+function skipRegex(code, i) {
+  let inClass = false;
+  for (let j = i + 1; j < code.length; j++) {
+    const ch = code[j];
+    if (ch === "\n") return -1;
+    if (ch === "\\") j++;
+    else if (ch === "[") inClass = true;
+    else if (ch === "]") inClass = false;
+    else if (ch === "/" && !inClass) {
+      while (/[a-z]/i.test(code[j + 1] ?? "")) j++;
+      return j;
+    }
+  }
+  return -1;
+}
+
 function splitLastStatement(code) {
-  let depth = 0;
+  // Open brackets; "${" marks a template substitution, whose "}" resumes the template string.
+  const stack = [];
   let quote = null;
   let last = 0;
+  // What came before the current character, to tell a regex "/" from a division "/":
+  // "value" after a name, number, string, regex, ")" or "]"; "op" after anything else,
+  // including keywords such as return and typeof.
+  let prev = "op";
+  let word = "";
   for (let i = 0; i < code.length; i++) {
     const ch = code[i];
     if (quote) {
       if (ch === "\\") i++;
-      else if (ch === quote) quote = null;
-    } else if (ch === '"' || ch === "'" || ch === "`") {
+      else if (quote === "`" && ch === "$" && code[i + 1] === "{") {
+        stack.push("${");
+        quote = null;
+        prev = "op";
+        i++;
+      } else if (ch === quote) {
+        quote = null;
+        prev = "value";
+      }
+      continue;
+    }
+    if (/[\w$]/.test(ch)) {
+      word += ch;
+      continue;
+    }
+    if (word) {
+      prev = REGEX_AFTER_WORD.has(word) ? "op" : "value";
+      word = "";
+    }
+    if (ch === '"' || ch === "'" || ch === "`") {
       quote = ch;
     } else if (ch === "/" && code[i + 1] === "/") {
       while (i < code.length && code[i] !== "\n") i++;
+      i--; // let the newline itself be seen as a statement boundary
     } else if (ch === "/" && code[i + 1] === "*") {
       i = code.indexOf("*/", i + 2);
       if (i < 0) return null;
       i++;
+    } else if (ch === "/" && prev !== "value") {
+      const end = skipRegex(code, i);
+      if (end < 0) return null;
+      i = end;
+      prev = "value";
     } else if ("([{".includes(ch)) {
-      depth++;
+      stack.push(ch);
+      prev = "op";
     } else if (")]}".includes(ch)) {
-      depth--;
-    } else if (depth === 0 && (ch === ";" || ch === "\n") && code.slice(i + 1).trim()) {
+      if (stack.pop() === "${") quote = "`";
+      // After "}" a "/" is more likely a regex (end of a block) than a division.
+      prev = ch === "}" ? "op" : "value";
+    } else if (!/\s/.test(ch)) {
+      prev = "op";
+    }
+    if (!stack.length && !quote && (ch === ";" || ch === "\n") && code.slice(i + 1).trim()) {
       last = i + 1;
     }
   }
