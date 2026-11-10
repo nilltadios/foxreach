@@ -32,6 +32,12 @@ If LibreWolf ever offers **Refresh**, don't accept it to fix foxreach: it remove
 
 Only one running browser can serve agents: the first one opened. Close it to switch.
 
+If a tool says it cannot reach the browser, the message names the cause it found: no Firefox-based
+browser running (open it), or one running whose add-on has not connected (wrong profile, add-on
+disabled or paused, or still starting). It recognizes Firefox, LibreWolf, Floorp, Waterfox, Zen and
+other Firefox derivatives by their executable; [test/connect_errors.py](test/connect_errors.py) checks
+each case.
+
 Then connect an agent, using full paths. Apps started from the desktop may not have Bun on `PATH`.
 
 ```bash

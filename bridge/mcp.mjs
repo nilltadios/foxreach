@@ -4,6 +4,7 @@ import fs from "node:fs/promises";
 import net from "node:net";
 import path from "node:path";
 import readline from "node:readline";
+import { notConnectedMessage } from "./browsers.mjs";
 import { socketPath } from "./socket.mjs";
 import { TOOLS } from "./tools.mjs";
 import { VERSION } from "./version.mjs";
@@ -45,7 +46,7 @@ function connect() {
     });
     c.on("error", (e) => {
       if (!conn) {
-        reject(new Error(`The browser is not connected (${e.code} on ${SOCKET}). Start the browser profile that has the foxreach add-on.`));
+        reject(new Error(notConnectedMessage(e.code, SOCKET)));
       }
     });
     c.on("close", () => {
