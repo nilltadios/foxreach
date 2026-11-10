@@ -22,7 +22,7 @@ import zipfile
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
 from build_install import version  # noqa: E402
-from setup_profile import ADDON_ID, in_use, read_record, recorded_profiles  # noqa: E402
+from setup_profile import ADDON_ID, in_use, read_record, recorded_browser, recorded_profiles  # noqa: E402
 
 UV = ["uv", "run", "--python", "3.15"]
 
@@ -63,9 +63,9 @@ def main():
     table("before", profiles)
     busy = [p for p in profiles if in_use(p)]
     if busy and args.dry_run:
-        print("would refuse: close LibreWolf first; in use:", ", ".join(map(str, busy)))
+        print("would refuse: close the browser first; in use:", ", ".join(map(str, busy)))
     elif busy:
-        raise SystemExit("Close LibreWolf first; in use: " + ", ".join(map(str, busy)) + "\nNothing was changed.")
+        raise SystemExit("Close the browser first; in use: " + ", ".join(map(str, busy)) + "\nNothing was changed.")
 
     old = git("rev-parse", "--short", "HEAD")
     if args.no_pull:
@@ -81,7 +81,10 @@ def main():
     if args.dry_run:
         print(f"would rebuild the add-on and the native host ({current} in this folder now)")
     else:
-        subprocess.run([*UV, str(ROOT / "scripts/build_install.py")], check=True, capture_output=True)
+        # A Flatpak browser runs its own copy of the bridge, which has to follow this folder too.
+        flatpaks = sorted({b for p in profiles if (b := recorded_browser(p) or "").startswith("flatpak:")})
+        subprocess.run([*UV, str(ROOT / "scripts/build_install.py"), *[a for b in flatpaks for a in ("--browser", b)]],
+                       check=True, capture_output=True)
     for p in profiles:
         have = installed_version(p)
         if have and key(have) > key(current):

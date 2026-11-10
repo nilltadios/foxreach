@@ -1,10 +1,21 @@
 #!/bin/sh
-# Open the dedicated foxreach profile, alongside any LibreWolf you already have open.
-# Create the profile first: uv run --python 3.15 ~/Documents/foxreach/scripts/setup_profile.py
+# Open the dedicated foxreach profile, alongside any browser you already have open.
+# Create the profile first: uv run --python 3.15 scripts/setup_profile.py
+# Profile: FOXREACH_PROFILE, else ~/.local/share/foxreach/profile.
+# Browser: FOXREACH_BROWSER, else the one setup used for that profile (recorded in
+#          ~/.local/state/foxreach/profiles). A path, a command, or flatpak:<application id>.
 unset LD_PRELOAD
 PROFILE="${FOXREACH_PROFILE:-$HOME/.local/share/foxreach/profile}"
 if [ ! -d "$PROFILE" ]; then
     echo "No profile at $PROFILE. Run scripts/setup_profile.py first." >&2
     exit 1
 fi
-exec "$HOME/AppImages/librewolf.appimage" --no-remote --profile "$PROFILE" "$@"
+BROWSER="${FOXREACH_BROWSER:-$(awk -F'\t' -v p="$PROFILE" '$1 == p { print $3 }' "$HOME/.local/state/foxreach/profiles" 2>/dev/null)}"
+if [ -z "$BROWSER" ]; then
+    echo "No browser is recorded for $PROFILE. Set FOXREACH_BROWSER, or run scripts/setup_profile.py again." >&2
+    exit 1
+fi
+case "$BROWSER" in
+    flatpak:*) exec flatpak run "${BROWSER#flatpak:}" --no-remote --profile "$PROFILE" "$@" ;;
+    *) exec "$BROWSER" --no-remote --profile "$PROFILE" "$@" ;;
+esac

@@ -78,7 +78,7 @@ export const TOOLS = [
     tabId, ref,
     value: { description: "String, or boolean for a checkbox or radio. For a select, the option's value or text." },
   }, ["tabId", "ref", "value"]),
-  tool("file_upload", "Attach local files to a file input (ref), or drop them on a drop zone (x and y). The agent's machine reads the files.", {
+  tool("file_upload", "Attach local files to a file input (ref), or drop them on a drop zone (x and y). The agent's machine reads the files. Hidden files and folders (a name starting with a dot) are refused.", {
     tabId, ref, x, y,
     paths: { type: "array", items: { type: "string" }, description: "Absolute file paths." },
   }, ["tabId", "paths"]),
@@ -93,7 +93,7 @@ export const TOOLS = [
     format: { type: "string", enum: ["jpeg", "png"], description: "Default jpeg." },
     quality: { type: "integer", description: "JPEG quality 1-100. Default 75." },
     scale: { type: "number", description: "Image pixels per CSS pixel. Default 1." },
-    save_to: { type: "string", description: "Also save the image to this absolute path, for example to upload it with file_upload." },
+    save_to: { type: "string", description: "Also save the image to this absolute path, which must end in .png, .jpg, .jpeg or .webp, for example to upload it with file_upload." },
     show_pointer: { type: "boolean", description: "Draw the agent's pointer, with its tip at the last position used. Default true." },
   }, ["tabId"]),
   tool("wait", "Wait a number of seconds, at most 60.", { seconds: { type: "number" } }),
@@ -129,7 +129,7 @@ export const TOOLS = [
   tool("record", "Record a tab's actions as an animated GIF, with click marks and action labels. Start, act, then stop with a path to save it.", {
     tabId,
     action: { type: "string", enum: ["start", "stop", "discard"] },
-    save_to: { type: "string", description: "With stop: absolute path for the GIF." },
+    save_to: { type: "string", description: "With stop: absolute path for the GIF, ending in .gif." },
   }, ["tabId", "action"]),
   tool("batch", "Run several tools in one round trip, in order, stopping at the first error. Much faster than separate calls when the next steps are predictable.", {
     actions: {

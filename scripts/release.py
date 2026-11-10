@@ -41,7 +41,7 @@ def sha256(path):
 
 
 def updates_entry(ver, link, xpi):
-    """One entry of an updates.json, in the format Firefox and LibreWolf read."""
+    """One entry of an updates.json, in the format Firefox-based browsers read."""
     return {
         "version": ver,
         "update_link": link,

@@ -321,8 +321,29 @@
     return { method: "scrollBy", moved: true };
   }
 
+  /**
+   * Agent code for builds without the Experiment. It runs in the page's own world (window.eval),
+   * never as this content script: a content script's requests cross sites with the add-on's
+   * permissions and are not tied to the tab, so they would reach sites the user has blocked.
+   */
+  async function evaluate({ code }) {
+    const source = `(async () => {
+      const value = await (0, eval)(${JSON.stringify(code)});
+      const text = JSON.stringify(value);
+      return text === undefined ? "undefined" : text;
+    })()`;
+    try {
+      return { text: String(await window.eval(source)) };
+    } catch (e) {
+      const message = String(e?.message ?? e);
+      throw new Error(/content security policy|blocked by csp|unsafe-eval/i.test(message)
+        ? `This page's security policy does not allow running scripts on it without trusted input. (${message})`
+        : message);
+    }
+  }
+
   const OPS = {
-    readPage, find, pageText, point, formInput, setFiles, viewport, waitCheck,
+    readPage, evaluate, find, pageText, point, formInput, setFiles, viewport, waitCheck,
     untrustedMouse, untrustedType, untrustedKeys, untrustedScroll,
     ping: () => ({ ok: true }),
     scrollTo: ({ ref }) => ({ ...point({ ref }), ...viewport() }),

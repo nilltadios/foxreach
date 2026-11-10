@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Remove foxreach from a LibreWolf profile and restore the stricter add-on settings.
+"""Remove foxreach from a browser profile and restore the stricter add-on settings.
 
 Run:   uv run --python 3.15 scripts/remove_from_profile.py --profile DIR [--apply]
 Without --apply it only prints what it would change. Refuses a profile that is in use.

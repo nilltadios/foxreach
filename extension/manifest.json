@@ -18,7 +18,8 @@
     "tabGroups",
     "tabs",
     "webNavigation",
-    "webRequest"
+    "webRequest",
+    "webRequestBlocking"
   ],
   "background": { "scripts": ["gif.js", "background.js"], "persistent": true },
   "browser_action": {

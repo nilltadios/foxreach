@@ -51,7 +51,7 @@ def serve(folder):
 
 
 # Runs in the browser's chrome context: the same check the daily add-on update timer makes.
-# Marionette turns add-on updates off for automation; LibreWolf itself leaves Firefox's default (on),
+# Marionette turns add-on updates off for automation; the browser itself has them on by default,
 # so put that default back first.
 BACKGROUND_CHECK = """
 const [id, want] = arguments;

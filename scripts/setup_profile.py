@@ -1,8 +1,13 @@
 #!/usr/bin/env python3
-"""Install foxreach into a LibreWolf profile, and prove it works after a restart.
+"""Install foxreach into a profile of a Firefox-based browser, and prove it works after a restart.
 
-Run:   uv run --python 3.15 scripts/setup_profile.py [--profile DIR] [--browser PATH]
-Default profile: ~/.local/share/foxreach/profile, a dedicated one with no logins or history.
+Run:   uv run --python 3.15 scripts/setup_profile.py [--profile DIR] [--browser SPEC]
+Browser: a path, a command on PATH, or flatpak:<application id> (scripts/browsers.py lists what is
+         installed). Left out, it is FOXREACH_BROWSER, else the browser the profile belongs to, else
+         the only one installed. It needs a build that accepts unsigned add-ons: LibreWolf, Firefox
+         Developer Edition, Nightly or ESR, and most forks. Official Firefox releases do not.
+Default profile: ~/.local/share/foxreach/profile, a dedicated one with no logins or history
+         (~/.var/app/<id>/foxreach/profile for a Flatpak, which cannot open one elsewhere).
 Refuses a profile that is in use. An existing user.js and prefs.js are backed up beside themselves
 as <name>.bak-<date>.
 It also puts back the profile's "restore previous session" data and startup-crash counters, which its
@@ -33,7 +38,9 @@ import time
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "test"))
-from harness import APPIMAGE, McpClient, ToolError  # noqa: E402
+sys.path.insert(0, str(ROOT / "scripts"))
+import browsers  # noqa: E402
+from harness import McpClient, ToolError  # noqa: E402
 
 PREFS = {
     "extensions.experiments.enabled": "true",
@@ -51,41 +58,60 @@ START_ATTEMPTS = 3
 ALLOW_ONCE = "extensions.autoDisableScopes"
 
 
-# Profiles foxreach was installed into, one per line as "<path>\t<version setup verified>", for
-# scripts/update.py. A setup that stops early has copied the add-on but verified nothing; the
-# version here is what tells the updater that.
+# Profiles foxreach was installed into, one per line as
+# "<path>\t<version setup verified>\t<browser spec>", for scripts/update.py and
+# scripts/foxreach-browser. A setup that stops early has copied the add-on but verified nothing;
+# the version here is what tells the updater that.
 RECORD = pathlib.Path.home() / ".local/state/foxreach/profiles"
 
 
-def read_record():
-    """{profile path: verified version or None}, in the order recorded."""
+def read_rows():
+    """{profile path: (verified version or None, browser spec or None)}, in the order recorded."""
     if not RECORD.exists():
         return {}
     out = {}
     for line in RECORD.read_text().splitlines():
-        path, _, ver = line.partition("\t")
+        path, ver, spec = (line.split("\t") + ["", ""])[:3]
         if path.strip():
-            out[pathlib.Path(path)] = ver or None
+            out[pathlib.Path(path)] = (ver or None, spec or None)
     return out
 
 
+def read_record():
+    """{profile path: verified version or None}, in the order recorded."""
+    return {p: ver for p, (ver, _) in read_rows().items()}
+
+
 def recorded_profiles():
-    return list(read_record())
+    return list(read_rows())
 
 
-def record_profile(profile, verified=None, keep=True):
+def recorded_browser(profile):
+    """The browser setup last used for this profile, as a spec, or None."""
+    return read_rows().get(profile, (None, None))[1]
+
+
+def record_profile(profile, verified=None, keep=True, browser=None):
     """Remember the profile; verified is the add-on version setup proved working there."""
-    record = {p: v for p, v in read_record().items() if p != profile}
+    rows = read_rows()
+    spec = browser or rows.get(profile, (None, None))[1]
+    rows.pop(profile, None)
     if keep:
-        record[profile] = verified
+        rows[profile] = (verified, spec)
     RECORD.parent.mkdir(parents=True, exist_ok=True)
-    RECORD.write_text("".join(f"{p}\t{v or ''}\n" for p, v in record.items()))
+    RECORD.write_text("".join(f"{p}\t{v or ''}\t{b or ''}\n" for p, (v, b) in rows.items()))
 
 
 def in_use(profile):
     lock = profile / "lock"
     if not lock.is_symlink():
         return False
+    apps = pathlib.Path.home() / ".var/app"
+    if profile.is_relative_to(apps):
+        # The lock names a process ID inside the Flatpak's sandbox, which means nothing out here.
+        app = profile.relative_to(apps).parts[0]
+        ps = subprocess.run(["flatpak", "ps", "--columns=application"], capture_output=True, text=True)
+        return app in ps.stdout.split()
     pid = os.readlink(lock).rpartition("+")[2]
     return pid.isdigit() and pathlib.Path(f"/proc/{pid}").exists()
 
@@ -98,17 +124,23 @@ def refuse_copy(profile):
     if not prefs.exists():
         return
     found = re.search(r'"toolkit\.profiles\.storeID",\s*"([^"]+)"', prefs.read_text())
-    ini = pathlib.Path.home() / ".config/librewolf/librewolf/profiles.ini"
-    if not found or not ini.exists():
+    if not found:
         return
-    lines = ini.read_text().splitlines()
-    if f"StoreID={found.group(1)}" not in lines:
-        return
-    if not any(line in (f"Path={profile.name}", f"Path={profile}") for line in lines) or profile.parent != ini.parent:
-        raise SystemExit(
-            f"{profile} is a copy of a profile in your profile group. Starting it would change your real "
-            "profiles.ini. Remove toolkit.profiles.storeID from its prefs.js first."
-        )
+    # Every profiles.ini this user has, whichever browser or packaging it belongs to.
+    home = pathlib.Path.home()
+    homes = [home, *(home / ".var/app").glob("*")]
+    roots = {h / r for h in homes for k in browsers.KINDS for r in k.profile_roots} | {profile.parent}
+    for ini in sorted(r / "profiles.ini" for r in roots):
+        if not ini.exists():
+            continue
+        lines = ini.read_text().splitlines()
+        if f"StoreID={found.group(1)}" not in lines:
+            continue
+        if not any(line in (f"Path={profile.name}", f"Path={profile}") for line in lines) or profile.parent != ini.parent:
+            raise SystemExit(
+                f"{profile} is a copy of a profile in your profile group ({ini}). Starting it would change "
+                "your real profiles.ini. Remove toolkit.profiles.storeID from its prefs.js first."
+            )
 
 
 def write_prefs(profile, extra=()):
@@ -166,23 +198,40 @@ def clear_startup_tracking(profile):
     path.write_text("".join(kept))
 
 
-def stop(profile, proc):
+# Processes that carry the browser rather than being it. Ending one of them kills the browser
+# without letting it save; it exits by itself once the browser has.
+CARRIERS = ("bwrap", "flatpak", "xdg-dbus-proxy")
+
+
+def browser_pids(profile, group):
+    """The browser's own processes: started by us (same process group, so never this script, whose
+    command line can name the profile too) and run on this profile."""
+    pids = []
     for d in pathlib.Path("/proc").iterdir():
         if d.name.isdigit():
             try:
-                # The executable matters too: this script's own command line can name the profile.
-                if os.path.basename(os.readlink(d / "exe")).startswith("librewolf") and not os.readlink(d / "exe").endswith(".appimage") \
-                        and str(profile).encode() in (d / "cmdline").read_bytes():
-                    os.kill(int(d.name), signal.SIGTERM)
+                exe = os.readlink(d / "exe")
+                if os.getpgid(int(d.name)) == group and str(profile).encode() in (d / "cmdline").read_bytes() \
+                        and not exe.lower().endswith(".appimage") and os.path.basename(exe) not in CARRIERS:
+                    pids.append(int(d.name))
             except OSError:
                 pass
+    return pids
+
+
+def stop(profile, proc):
+    for pid in browser_pids(profile, proc.pid):
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            pass
     proc.wait(timeout=30)
 
 
 def start(browser, profile, socket_path):
-    env = {k: v for k, v in os.environ.items() if k != "LD_PRELOAD"} | {"FOXREACH_SOCKET": socket_path}
-    args = [browser, "--headless", "--no-remote", "--new-instance", "--profile", profile]
-    return subprocess.Popen(args, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    args = ["--headless", "--no-remote", "--new-instance", "--profile", profile]
+    return browser.popen(args, {"FOXREACH_SOCKET": socket_path},
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
 
 
 def answer_status(socket_path, timeout):
@@ -211,15 +260,21 @@ def answer_status(socket_path, timeout):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--profile", type=pathlib.Path, default=pathlib.Path.home() / ".local/share/foxreach/profile")
-    parser.add_argument("--browser", type=pathlib.Path, default=pathlib.Path(os.environ.get("FOXREACH_BROWSER") or APPIMAGE))
+    parser.add_argument("--profile", type=pathlib.Path)
+    parser.add_argument("--browser", help="a path, a command on PATH, or flatpak:<application id>")
     args = parser.parse_args()
-    profile = args.profile.expanduser().resolve()
+    profile = args.profile.expanduser().resolve() if args.profile else None
+    browser = browsers.choose(args.browser or (profile and recorded_browser(profile)), profile)
+    profile = profile or browser.default_profile()
+    if browser.app_id and not profile.is_relative_to(browser.home):
+        raise SystemExit(f"{browser.name} is a Flatpak and can only open profiles inside {browser.home}.")
     if in_use(profile):
         raise SystemExit(f"{profile} is in use. Close that browser first.")
     refuse_copy(profile)
+    print(f"browser: {browser.name} ({browser.packaging}) {browser.spec}")
 
-    subprocess.run(["uv", "run", "--python", "3.15", str(ROOT / "scripts/build_install.py")], check=True, capture_output=True)
+    build = ["uv", "run", "--python", "3.15", str(ROOT / "scripts/build_install.py")]
+    subprocess.run(build + (["--browser", browser.spec] if browser.app_id else []), check=True, capture_output=True)
     profile.mkdir(parents=True, exist_ok=True)
     stamp = datetime.date.today().isoformat()
     for name in ("user.js", "prefs.js"):
@@ -229,19 +284,20 @@ def main():
             print("backed up", backup)
 
     # Setup uses its own socket, so it cannot disturb a foxreach browser that is already open.
-    with tempfile.TemporaryDirectory(prefix="foxreach-setup-") as d:
+    # A Flatpak's host can only make it where the sandbox and this script both see it.
+    with tempfile.TemporaryDirectory(prefix="foxreach-setup-", dir=browser.socket_dir()) as d:
         socket_path = f"{d}/s.sock"
         session = pathlib.Path(d, "session")
         session.mkdir()
         save_session(profile, session)
         (profile / "extensions").mkdir(exist_ok=True)
         write_prefs(profile, [f'user_pref("{ALLOW_ONCE}", 0);'])
-        record_profile(profile)  # not verified until the end
+        record_profile(profile, browser=browser.spec)  # not verified until the end
         shutil.copyfile(ROOT / "dist/foxreach.xpi", profile / "extensions" / f"{ADDON_ID}.xpi")
         try:
             # First start: the browser detects the add-on. It may record it as active without running it
             # until the next start, so no answer here is not a failure; the starts below decide.
-            proc = start(args.browser, profile, socket_path)
+            proc = start(browser, profile, socket_path)
             try:
                 answer_status(socket_path, DETECT_TIMEOUT_S)
                 print("detected and running on the first start")
@@ -258,7 +314,7 @@ def main():
             answered = 0
             for attempt in range(1, START_ATTEMPTS + 2):
                 time.sleep(1)
-                proc = start(args.browser, profile, socket_path)
+                proc = start(browser, profile, socket_path)
                 try:
                     status = answer_status(socket_path, START_TIMEOUT_S)
                     answered += 1
@@ -272,14 +328,19 @@ def main():
                 if answered == 2:
                     break
             if answered < 2:
-                raise SystemExit("Installed, but it did not answer on two starts in a row. Nothing further was changed.")
+                raise SystemExit(
+                    "Installed, but it did not answer on two starts in a row. Nothing further was changed.\n"
+                    f"If it never answered: {browser.name} may be a build that refuses unsigned add-ons "
+                    "(official Firefox releases and most distro Firefox packages do), or it does not read "
+                    "the native-messaging manifest that scripts/build_install.py wrote."
+                )
         finally:
             # Runs even if a start failed, so a failed setup cannot cause the prompt either.
             restore_session(profile, session)
             clear_startup_tracking(profile)
     if not status["trustedInput"]:
-        raise SystemExit(f"Installed, but trusted input is off: {status}")
-    record_profile(profile, status["version"])
+        raise SystemExit(f"Installed, but trusted input is off: this build ignores extensions.experiments.enabled. {status}")
+    record_profile(profile, status["version"], browser=browser.spec)
     print(f"verified: {profile} v{status['version']} trusted input on, after a restart")
     return 0
 

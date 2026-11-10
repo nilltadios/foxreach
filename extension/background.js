@@ -50,14 +50,41 @@ function withTimeout(promise, ms, message) {
 
 /* ---------- access policy ---------- */
 
+// "bank.example." is the same site as "bank.example"; compare without the trailing dot.
+const plainHost = (host) => host.toLowerCase().replace(/\.+$/, "");
+
 function hostBlocked(url) {
   let host;
   try {
-    host = new URL(url).hostname;
+    host = plainHost(new URL(url).hostname);
   } catch {
     return false;
   }
   return settings.blockedHosts.some((b) => host === b || host.endsWith(`.${b}`));
+}
+
+/** What the user typed, as host names: "https://Bank.example:443/login" and "*.bank.example" both mean bank.example. */
+function parseBlocked(value) {
+  const hosts = String(value).split(/[\s,]+/).map((entry) => {
+    const bare = entry.trim().replace(/^\*\./, "");
+    if (!bare) return "";
+    try {
+      return plainHost(new URL(bare.includes("://") ? bare : `http://${bare}`).hostname);
+    } catch {
+      return plainHost(bare);
+    }
+  });
+  return [...new Set(hosts.filter(Boolean))];
+}
+
+/** A tab as shown to agents. A blocked site's title can itself be private ("Inbox (3) - name@..."). */
+const tabLine = (tab) => (hostBlocked(tab.url) ? "a site the user has blocked for agents" : `${tab.title} <${tab.url}>`);
+
+/** A frame keeps its own site: a blocked one stays unreadable inside a page that is allowed. */
+async function assertFrameAllowed(tabId, frameId) {
+  if (!frameId) return;
+  const frame = await browser.webNavigation.getFrame({ tabId, frameId }).catch(() => null);
+  if (frame && hostBlocked(frame.url)) throw new Error("The user has blocked agents on this frame's site.");
 }
 
 async function accessibleTab(tabId) {
@@ -120,6 +147,7 @@ async function ensureInjected(tabId) {
 }
 
 async function contentCall(tabId, frameId, op, args) {
+  await assertFrameAllowed(tabId, frameId);
   await assertNoDialog(tabId);
   await ensureInjected(tabId);
   return withTimeout(
@@ -148,6 +176,7 @@ async function eachFrame(tabId, op, args) {
   frames.sort((a, b) => a.frameId - b.frameId);
   const results = await Promise.all(
     frames.map(async (f) => {
+      if (f.frameId && hostBlocked(f.url)) return { frame: { frameId: f.frameId, url: "blocked site" }, error: "the user has blocked agents on this frame's site" };
       try {
         const value = await withTimeout(
           browser.tabs.sendMessage(tabId, { foxreachOp: op, args }, { frameId: f.frameId }),
@@ -239,7 +268,7 @@ async function afterInput(tabId, before) {
   const now = await browser.tabs.get(tabId).catch(() => null);
   const opened = openedBy.get(tabId) ?? [];
   openedBy.delete(tabId);
-  return (now && now.url !== before.url ? ` The page is now ${now.title} <${now.url}>.` : "") +
+  return (now && now.url !== before.url ? ` The page is now ${tabLine(now)}.` : "") +
     (opened.length ? ` This opened new tab ${opened.join(", ")}.` : "");
 }
 
@@ -259,7 +288,7 @@ async function settle(tabId, options) {
   stopWatching.done = true;
   const tab = await browser.tabs.get(tabId);
   const suffix = outcome === "dialog" ? " A dialog is open; use handle_dialog." : outcome === true ? " The page is still loading." : "";
-  return `Tab ${tabId}: ${tab.title} <${tab.url}>.${suffix}`;
+  return `Tab ${tabId}: ${tabLine(tab)}.${suffix}`;
 }
 
 function checkUrl(url) {
@@ -294,7 +323,7 @@ const TOOLS = {
   async tabs_list() {
     const all = await browser.tabs.query({});
     const mine = all.filter((t) => agentTabs.has(t.id));
-    const lines = mine.map((t) => `${t.id}${t.active ? " (active)" : ""}: ${t.title} <${t.url}>`);
+    const lines = mine.map((t) => `${t.id}${t.active ? " (active)" : ""}: ${tabLine(t)}`);
     return { text: `${lines.join("\n") || "No tabs yet. Use tabs_create."}\n(${all.length - mine.length} other tabs are not available to agents.)` };
   },
 
@@ -320,6 +349,11 @@ const TOOLS = {
     const tab = await accessibleTab(tabId);
     await browser.tabs.update(tabId, { active: true });
     await browser.windows.update(tab.windowId, { focused: true });
+    // The browser ignores the request while a prompt of its own covers the window (a first-run
+    // or terms-of-use prompt in a new profile, for one). Tools still work on the tab meanwhile.
+    if (!(await browser.tabs.get(tabId)).active) {
+      return { text: `Tab ${tabId} was not brought to the front: a prompt in the browser window is in the way, and the user has to answer it. Tools still work on the tab in the background.` };
+    }
     return { text: `Selected tab ${tabId}.` };
   },
 
@@ -550,6 +584,7 @@ const TOOLS = {
     if (!selector && !text) throw new Error("Give selector or text.");
     const deadline = Date.now() + Math.min(timeout, 120) * 1000;
     while (Date.now() < deadline) {
+      await accessibleTab(tabId); // the page may have moved to a blocked site while we wait
       await assertNoDialog(tabId);
       const r = await contentCall(tabId, 0, "waitCheck", { selector, text }).catch(() => ({ found: false }));
       if (r.found) return { text: `Found ${selector ?? JSON.stringify(text)}.` };
@@ -562,10 +597,8 @@ const TOOLS = {
     await accessibleTab(tabId);
     await assertNoDialog(tabId);
     if (!code) throw new Error("code is required.");
-    if (!trusted) {
-      const [value] = await browser.tabs.executeScript(tabId, { code, frameId: frame_id });
-      return { text: JSON.stringify(value) ?? "undefined" };
-    }
+    await assertFrameAllowed(tabId, frame_id);
+    if (!trusted) return { text: (await contentCall(tabId, frame_id, "evaluate", { code })).text };
     const value = await privileged(tabId, "evaluate", { frameId: frame_id, code });
     if (value?.blockedByDialog) return { text: `The script has not finished.${DIALOG_NOTE}` };
     const text = String(value);
@@ -664,10 +697,12 @@ const TOOLS = {
 /* ---------- host connection ---------- */
 
 // Log enough to see what an agent did, but not typed text, scripts or file contents.
-const LOGGED_ARGS = ["tabId", "url", "ref", "x", "y", "keys", "query", "selector", "action", "button"];
+const LOGGED_ARGS = ["tabId", "url", "ref", "x", "y", "keys", "query", "selector", "action", "button", "host"];
 
 function logActivity(client, tool, args, ok, ms, error) {
   const details = Object.fromEntries(LOGGED_ARGS.filter((k) => args?.[k] !== undefined).map((k) => [k, args[k]]));
+  // Which local files an agent handed to a page is something the user should be able to see.
+  if (Array.isArray(args?.files)) details.files = args.files.map((f) => f?.name);
   activity.push({ time: Date.now(), client, tool, details, ok, ms, error });
   if (activity.length > LOG_LIMIT) activity.shift();
 }
@@ -844,7 +879,7 @@ browser.runtime.onMessage.addListener(async (msg, sender) => {
       settings.paused = !!msg.value;
       break;
     case "setBlocked":
-      settings.blockedHosts = String(msg.value).split(/[\s,]+/).map((h) => h.toLowerCase().trim()).filter(Boolean);
+      settings.blockedHosts = parseBlocked(msg.value);
       break;
     case "share":
       if (msg.value) await adoptTab(await browser.tabs.get(msg.tabId));
@@ -881,14 +916,21 @@ const FILTER = { urls: ["<all_urls>"] };
 const pending = new Map();
 
 browser.webRequest.onBeforeRequest.addListener((d) => {
-  if (!agentTabs.has(d.tabId)) return;
+  if (!agentTabs.has(d.tabId)) return undefined;
+  // A tab agents can use never loads anything from a blocked site: not as a page, a redirect, a
+  // frame, or a request made by a script. Checking the tab's address alone would miss the last three.
+  if (hostBlocked(d.url)) {
+    if (d.type === "main_frame") logActivity("foxreach", "blocked a page load", { tabId: d.tabId, host: new URL(d.url).hostname }, false, 0, "This site is on the blocked list, and the tab is one agents can use.");
+    return { cancel: true };
+  }
   const entry = { method: d.method, url: d.url, type: d.type, start: d.timeStamp };
   pending.set(d.requestId, entry);
   const list = network.get(d.tabId) ?? [];
   list.push(entry);
   if (list.length > NET_LIMIT) list.shift();
   network.set(d.tabId, list);
-}, FILTER);
+  return undefined;
+}, FILTER, ["blocking"]);
 
 browser.webRequest.onCompleted.addListener((d) => {
   const entry = pending.get(d.requestId);
@@ -911,6 +953,7 @@ browser.webRequest.onErrorOccurred.addListener((d) => {
 (async () => {
   const stored = await browser.storage.local.get("settings");
   settings = { ...settings, ...stored.settings };
+  settings.blockedHosts = parseBlocked((settings.blockedHosts ?? []).join(" ")); // entries saved by older versions
   updateBadge();
   connectHost();
 })();

@@ -3,7 +3,7 @@
 import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
-import { socketPath } from "./socket.mjs";
+import { assertPrivate, socketPath } from "./socket.mjs";
 
 // The browser accepts at most 1 MB per message; 300k UTF-16 units cannot exceed that once encoded.
 const CHUNK_CHARS = 300_000;
@@ -83,8 +83,16 @@ function serveClient(conn) {
       const line = buffer.slice(0, end);
       buffer = buffer.slice(end + 1);
       if (!line.trim()) continue;
-      const request = JSON.parse(line);
-      sendRequest({ ...request, id: `${clientId}:${request.id}` });
+      let request;
+      try {
+        request = JSON.parse(line);
+      } catch {
+        continue; // not ours to crash over: any local program can write to the socket
+      }
+      // Only a tool call goes on to the add-on. Its other messages (hello, chunk, hostError) are
+      // the host's own and must not be forgeable from the socket.
+      const { id, client, tool, args } = request ?? {};
+      sendRequest({ id: `${clientId}:${id}`, client: String(client ?? "agent").slice(0, 80), tool: String(tool), args });
     }
   });
   conn.on("close", () => clients.delete(clientId));
@@ -104,6 +112,13 @@ function isAlive(file) {
 
 (async () => {
   fs.mkdirSync(path.dirname(sock), { recursive: true, mode: 0o700 });
+  try {
+    assertPrivate(path.dirname(sock));
+  } catch (e) {
+    debug(e.message);
+    toBrowser({ hostError: e.message });
+    process.exit(4);
+  }
   if (await isAlive(sock)) {
     // Another browser profile already serves agents. Staying up would steal its socket.
     debug("socket busy");

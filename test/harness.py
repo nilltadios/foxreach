@@ -12,8 +12,8 @@ import tempfile
 import time
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-APPIMAGE = pathlib.Path.home() / "AppImages/librewolf.appimage"
 sys.path.insert(0, str(ROOT / "scripts"))
+import browsers  # noqa: E402
 from build_install import runtime  # noqa: E402
 
 RUNTIME = runtime()
@@ -21,10 +21,15 @@ MARIONETTE_PORT = 47851
 
 
 class Browser:
-    """A separate LibreWolf on its own profile and its own foxreach socket."""
+    """A separate browser on its own profile and its own foxreach socket. Which one: binary, else
+    FOXREACH_BROWSER, else the only one installed (scripts/browsers.py). Not a Flatpak: its sandbox
+    sees neither the throwaway profile nor the socket in /tmp."""
 
     def __init__(self, xpi, binary=None, headless=True):
-        self.binary = pathlib.Path(binary or os.environ.get("FOXREACH_BROWSER") or APPIMAGE)
+        self.browser = browsers.choose(binary)
+        if self.browser.app_id:
+            raise SystemExit("The tests cannot drive a Flatpak browser. Set FOXREACH_BROWSER to another build.")
+        self.binary = pathlib.Path(self.browser.spec)
         self.xpi = xpi
         self.headless = headless
         self.dir = pathlib.Path(tempfile.mkdtemp(prefix="foxreach-test-"))
@@ -39,21 +44,25 @@ class Browser:
             'user_pref("extensions.experiments.enabled", true);\n'
             'user_pref("xpinstall.signatures.required", false);\n'
             'user_pref("browser.sessionstore.resume_from_crash", false);\n'
+            # Mozilla's own builds open first-run prompts in a new profile (terms of use, welcome,
+            # default browser). While one is open the browser refuses to bring any tab to the front.
+            'user_pref("termsofuse.bypassNotification", true);\n'
+            'user_pref("datareporting.policy.dataSubmissionPolicyBypassNotification", true);\n'
+            'user_pref("browser.aboutwelcome.enabled", false);\n'
+            'user_pref("browser.shell.checkDefaultBrowser", false);\n'
+            'user_pref("browser.startup.homepage_override.mstone", "ignore");\n'
         )
 
     def start(self, marionette):
-        env = {k: v for k, v in os.environ.items() if k != "LD_PRELOAD"} | {
-            "FOXREACH_SOCKET": self.socket,
-            "FOXREACH_HOST_LOG": str(self.dir / "host.log"),
-        }
-        args = [self.binary, "--no-remote", "--new-instance", "--profile", self.profile]
+        env = {"FOXREACH_SOCKET": self.socket, "FOXREACH_HOST_LOG": str(self.dir / "host.log")}
+        args = ["--no-remote", "--new-instance", "--profile", self.profile]
         if self.headless:
             args.append("--headless")
         if marionette:
             args.append("--marionette")
             env["MOZ_REMOTE_ALLOW_SYSTEM_ACCESS"] = "1"
-        self.proc = subprocess.Popen(
-            args, env=env, stdout=open(self.log, "ab"), stderr=subprocess.STDOUT, start_new_session=True
+        self.proc = self.browser.popen(
+            args, env, stdout=open(self.log, "ab"), stderr=subprocess.STDOUT, start_new_session=True
         )
 
     def install(self):
@@ -102,7 +111,7 @@ class Browser:
                 try:
                     if str(self.profile).encode() in (d / "cmdline").read_bytes() and not os.readlink(
                         d / "exe"
-                    ).endswith(".appimage"):
+                    ).lower().endswith(".appimage"):
                         pids.append(int(d.name))
                 except OSError:
                     pass

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""End-to-end test: a real MCP client, through the bridge, to a real LibreWolf.
+"""End-to-end test: a real MCP client, through the bridge, to a real Firefox-based browser.
 
 Run:      uv run --python 3.15 test/e2e.py [--visible] [--only NAME]
-Browser:  FOXREACH_BROWSER=/path/to/binary, default ~/AppImages/librewolf.appimage
+Browser:  FOXREACH_BROWSER (a path or a command), default the only Firefox-based browser installed
 Expected: every line PASS, exit 0. The browser is a throwaway instance on a temporary profile;
           it is restarted without Marionette before the tool tests, as in daily use.
 """
@@ -736,6 +736,29 @@ def popup_tests(browser, mcp):
     run("document.getElementById('blocked').value = '127.0.0.1'; document.getElementById('save-blocked').click(); setTimeout(() => arguments[0](1), 200)")
     check("blocked site refuses tools", expect_error(lambda: mcp.call("read_page", tabId=page), "blocked agents"))
     check("blocked site refuses navigation", expect_error(lambda: mcp.call("tabs_create", url=f"{MAIN}/second"), "blocked agents"))
+    listed = mcp.call("tabs_list")
+    check("a blocked site's title and address are not listed", "blocked for agents" in listed and "Main page" not in listed, listed)
+
+    # A blocked site must stay out of reach from a page that is allowed, too.
+    set_blocked = lambda value: run(f"document.getElementById('blocked').value = {value!r}; document.getElementById('save-blocked').click(); setTimeout(() => arguments[0](1), 200)")  # noqa: E731
+    set_blocked(f"HTTP://LocalHost:{PORT}/some/path, *.Example.org, example.org.")
+    saved = run("browser.runtime.sendMessage({popup: 'state'}).then((s) => arguments[0](s.blockedHosts))")
+    check("blocked entries are stored as plain host names", saved == ["localhost", "example.org"], saved)
+    fetched = mcp.call("javascript", tabId=page, code=f"fetch('{OTHER_SITE}/api/data?blockprobe=1').then((r) => r.text())")
+    check("a script in an allowed page cannot fetch a blocked site",
+          fetched.startswith("Error") and not any("blockprobe" in r for r in requests_seen), fetched)
+    mcp.call("javascript", tabId=page, code=f"location.href = '{OTHER_SITE}/second?blocknav=1'; 1")
+    time.sleep(1)
+    listed = mcp.call("tabs_list")
+    check("a page cannot take its tab to a blocked site",
+          "Main page" in listed and not any("blocknav" in r for r in requests_seen), listed)
+    mcp.call("navigate", tabId=page, url=f"{MAIN}/frames")
+    tree = mcp.call("read_page", tabId=page)
+    check("a blocked site in a frame is not loaded or read", "Frames" in tree and "Inner" not in tree, tree)
+    mcp.call("navigate", tabId=page, url=f"{MAIN}/main")
+    log = run("setTimeout(() => arguments[0](document.getElementById('activity').textContent), 2200)")
+    check("the activity log shows the blocked page load", "blocked a page load" in log and "localhost" in log, log[:400])
+    set_blocked("127.0.0.1")
     run("document.getElementById('blocked').value = ''; document.getElementById('save-blocked').click(); setTimeout(() => arguments[0](1), 200)")
     check("unblocking restores access", "Press me" in mcp.call("read_page", tabId=page))
 
@@ -783,10 +806,14 @@ def main():
         browser.start(marionette=True)
         print("installed", browser.install())
         browser.wait_for_socket()
+        mcp = McpClient(browser.socket)
         if not only or "popup" in only:
-            mcp = McpClient(browser.socket)
             popup_tests(browser, mcp)
-            mcp.close()
+        # Stopping the browser just after a first install can leave the add-on recorded as active
+        # but not running at the next start. Stop only once it has answered and the install settled.
+        mcp.call("status")
+        mcp.close()
+        time.sleep(3)
         browser.stop()
         time.sleep(1)
 
