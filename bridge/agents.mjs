@@ -444,6 +444,12 @@ export function agents(h = home()) {
       note: "start a new session",
     },
     {
+      // https://qwenlm.github.io/qwen-code-docs/en/users/features/mcp/ (user scope, the default)
+      id: "qwen", name: "Qwen Code", file: path.join(h, ".qwen/settings.json"),
+      format: jsonFormat(["mcpServers"], commandArgs),
+      detect: () => exists(path.join(h, ".qwen")) || !!onPath("qwen"),
+    },
+    {
       // https://www.kimi.com/code/docs/en/kimi-code-cli/customization/mcp.html
       id: "kimi", name: "Kimi Code", file: path.join(kimiHome, "mcp.json"),
       format: jsonFormat(["mcpServers"], commandArgs),
