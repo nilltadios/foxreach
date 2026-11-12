@@ -26,9 +26,14 @@ Open items, newest first. Remove an item when it is done.
    The program today is Linux-only (`install.sh`, `bridge/install.mjs`); Windows and macOS need the
    host registration and agent paths ported first.
 
-2. **addons.mozilla.org listing: awaiting Mozilla's review** (0.3.1, submitted 2026-11-11).
-   Status and reviewer questions:
+2. **addons.mozilla.org listing: awaiting Mozilla's review.** 0.3.1 submitted 2026-11-11; 0.3.3 (same
+   code as 0.3.2, which the unlisted channel took) submitted listed 2026-11-12 so the public page opens
+   on current code. Status and reviewer questions:
    https://addons.mozilla.org/en-US/developers/addon/fe1f53e268044b529443/versions
+   When 0.3.3 is approved, sync GitHub to it: download the signed file from
+   https://addons.mozilla.org/en-US/developers/addon/fe1f53e268044b529443/versions/6701599 to
+   `dist/signed/foxreach-0.3.3-signed.xpi`, run `scripts/release.py`, then commit, tag v0.3.3 and push
+   (ask first), and `release.py --verify` / `verify_release.py 0.3.3`.
 
 ## Decide
 
