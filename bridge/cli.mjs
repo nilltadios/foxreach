@@ -17,6 +17,10 @@ const USAGE = `foxreach ${VERSION}: lets local MCP agents use browser tabs you s
   foxreach agents [add [--agents LIST] | remove]
                       list the agents foxreach knows (found or not, foxreach set or not);
                       add: only add the MCP server to agents; remove: only take it out
+  foxreach update [--check] [--force]
+                      replace this program with the latest release (checksum checked, the old
+                      one kept as <program>.previous) and refresh what install wrote; --check
+                      only says whether a newer version exists. The add-on updates itself
   foxreach mcp        run the MCP server on stdin/stdout; this is the command agents are given
   foxreach host       run the native messaging host; the browser does this itself
   foxreach version
@@ -37,6 +41,14 @@ if (command === "host" || startedByBrowser) {
   await import("./host.mjs");
 } else if (command === "mcp") {
   await import("./mcp.mjs");
+} else if (command === "update") {
+  const { update } = await import("./update.mjs");
+  try {
+    process.exitCode = await update({ check: rest.includes("--check"), force: rest.includes("--force") });
+  } catch (e) {
+    console.error(`foxreach: ${e.message}`);
+    process.exit(1);
+  }
 } else if (command === "agents") {
   const { describeAgents, registerAgents, unregisterAgents } = await import("./agents.mjs");
   const { mcpCommand } = await import("./install.mjs");

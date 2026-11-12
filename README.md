@@ -156,13 +156,29 @@ runtime or this folder moves.
 
 ## Updating
 
-foxreach has two parts. The add-on lives in the browser profile; the bridge (the MCP server and the
-native host) runs from this folder. They should be the same version.
+foxreach has two parts. The add-on lives in the browser profile; the `foxreach` program (the MCP
+server agents run, the native host the browser runs, and the installer) is one file. They should be
+the same version.
 
-- **The add-on updates itself.** Its `update_url` points at `docs/updates.json` on GitHub Pages. The
-  browser checks it about once a day and installs a newer version in the background, without a
-  restart. Firefox has this on by default and LibreWolf leaves it on (`extensions.update.enabled`).
-- **The bridge updates with this folder.** Run the updater with the browser closed:
+- **The add-on updates itself.** Its `update_url` points at `docs/updates.json` on GitHub Pages
+  (the signed build: `docs/updates-signed.json`, which holds only signed builds, so neither build
+  ever replaces the other). The browser checks about once a day and installs a newer version in the
+  background. Firefox has this on by default and LibreWolf leaves it on (`extensions.update.enabled`).
+- **The program, installed from a release, updates with one command:**
+
+  ```bash
+  foxreach update            # --check only says whether a newer version exists
+  ```
+
+  It downloads the latest release's build for this machine, checks it against the release's
+  `SHA256SUMS` (as `install.sh` does), checks that it runs and reports the expected version, keeps
+  the old program as `foxreach.previous`, and replaces it in one step. Then the new program refreshes
+  what `foxreach install` wrote: the host wrapper, the browsers' manifests and the copies inside
+  Flatpak browsers. Agent settings already point at the program's path and are left alone. Agents
+  that are running keep the program they started and use the new one in their next session. To go
+  back: `mv ~/.local/bin/foxreach.previous ~/.local/bin/foxreach && foxreach install --agents none`.
+  Running `install.sh` again does the same download and check.
+- **A checkout updates with git.** Run the updater with the browser closed:
 
   ```bash
   uv run --python 3.15 scripts/update.py            # --dry-run to preview
@@ -172,12 +188,10 @@ native host) runs from this folder. They should be the same version.
   setup installed into (recorded in `~/.local/state/foxreach/profiles`) whose copy is older. Agents
   use the new bridge from their next session.
 
-If the add-on has updated itself but this folder has not, the `status` tool shows both versions and a
-`warning`, and the first tool call of each agent session ends with a note saying so. Run the updater.
-
-The signed build updates the same way from its own list, `docs/updates-signed.json`, which holds
-only signed builds: neither build ever replaces the other. A build made here and not signed has no
-`update_url`. The `foxreach` program does not update itself: run `install.sh` again.
+If the add-on has updated itself but the program has not, the `status` tool shows both versions and a
+`warning` that names the right command for this install (`foxreach update`, or `scripts/update.py`
+in a checkout), and the first tool call of each agent session ends with the same note. A build made
+here and not signed has no `update_url`.
 
 ## Releasing
 
@@ -360,7 +374,7 @@ Read this before installing into a profile you browse with.
 ## Tests
 
 ```bash
-uv run --python 3.15 test/e2e.py             # expect: 184 passed, 0 failed, exit 0
+uv run --python 3.15 test/e2e.py             # expect: 224 passed, 0 failed, exit 0
 ```
 
 The tests use `FOXREACH_BROWSER` (a path or a command), else the only browser installed.
@@ -379,6 +393,10 @@ The tests use `FOXREACH_BROWSER` (a path or a command), else the only browser in
 | `test/browsers.py` | Browsers are found however installed, and the native host goes where each looks; starts no browser |
 | `test/flatpak_sandbox.py` | The Flatpak copy of the host works inside a real Flatpak sandbox |
 | `test/flatpak_browser.py flatpak:<id>` | A real Flatpak browser starts the host in its sandbox and an agent outside drives a page |
+| `test/install_agents.py` | `foxreach install` adds the MCP server to each agent's settings (JSON, TOML, YAML, opencode's layouts), keeps everything else, backs up, refuses what it cannot edit safely, and `uninstall` takes it out; starts no browser |
+| `test/update_cli.py` | `foxreach update` against a local stand-in release: checksum and version checks refuse bad downloads and change nothing, a good one replaces the program and keeps `.previous`, and the version warning names the right command; starts no browser |
+| `test/signed_firefox.py [--xpi FILE]` | Release Firefox (or LibreWolf, `--browser`) installs the Mozilla-signed build as signed and refuses it unsigned |
+| `test/connect_errors.py` | What an agent is told when the browser cannot be reached, for each cause; starts no browser |
 
 Tests use throwaway profiles and restart the browser with no automation attached before the tool
 checks. They never touch a real profile.

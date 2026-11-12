@@ -8,6 +8,7 @@ import readline from "node:readline";
 import { notConnectedMessage } from "./browsers.mjs";
 import { assertPrivate, socketPath } from "./socket.mjs";
 import { TOOLS } from "./tools.mjs";
+import { updateAdvice } from "./update.mjs";
 import { VERSION } from "./version.mjs";
 
 const SUPPORTED_PROTOCOLS = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
@@ -221,8 +222,7 @@ async function present(name, args, result) {
 /** The add-on can update itself while the bridge stays at the checkout's version, or the other way round. */
 function versionWarning(addonVersion) {
   if (!addonVersion || addonVersion === VERSION) return null;
-  return `foxreach versions differ: add-on ${addonVersion}, bridge ${VERSION}. Some tools may fail. ` +
-    "Update both with: uv run --python 3.15 scripts/update.py (in the foxreach folder).";
+  return `foxreach versions differ: add-on ${addonVersion}, bridge ${VERSION}. Some tools may fail. ${updateAdvice()}`;
 }
 
 // Checked once per session, on the first call that reaches the browser.
