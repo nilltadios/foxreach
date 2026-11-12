@@ -556,6 +556,14 @@ def t_script(mcp):
           js(mcp, tab, "objGlobal = 41 + 1; ({ title: document.title, onWindow: window.objGlobal })") == {"title": "Main page", "onWindow": 42})
     check("js plain script returning an array and a DOM node",
           js(mcp, tab, "const a = [1, 2]; a") == [1, 2] and "<h1>" in js(mcp, tab, "const h = document.querySelector('h1'); JSON.stringify(h.outerHTML)"))
+    # With await, the last value comes after a loop's "}" on the same line; it once came back
+    # undefined because only ";" and newlines split statements.
+    check("js await code ending in a value right after a loop's block",
+          js(mcp, tab, "const xs = []; for (const n of [1, 2]) { xs.push(await n); } ({ xs })") == {"xs": [1, 2]})
+    check("js ...and after if/else and try/catch blocks",
+          js(mcp, tab, "let v = await 1; if (v) { v++ } else { v-- } try { v *= 10 } catch (e) {} v") == 20)
+    check("js an object literal's } does not end a statement",
+          js(mcp, tab, "const o = await { k: 3 }; ({ k: o.k })") == {"k": 3})
     check("js a plain script's const stays local", js(mcp, tab, "const localOnly = 1; localOnly") == 1
           and js(mcp, tab, "typeof window.localOnly") == "undefined")
 
@@ -789,6 +797,31 @@ def t_background_tab(mcp):
     mcp.call("type_text", tabId=back, ref=name, text="bg")
     val = js(mcp, back, "document.getElementById('name').value")
     check("typing works in a background tab", val == "bg", val)
+    # Firefox sends a background tab no focus events; widgets that keep text only after their own
+    # onFocus (MUI's Autocomplete) then dropped everything typed. foxreach sends them, to the agent's
+    # element only: the tab in front must see none.
+    js(mcp, front, "window.seen = []; for (const t of ['focus', 'blur']) addEventListener(t, (e) => seen.push(t), true); 1")
+    js(mcp, back, """document.body.insertAdjacentHTML('afterbegin', '<input id=picker style="margin:20px">');
+        window.pickerLog = []; window.pickerFocused = false;
+        picker.addEventListener('focus', (e) => { pickerFocused = true; pickerLog.push('focus:' + e.isTrusted); });
+        picker.addEventListener('blur', (e) => { pickerFocused = false; pickerLog.push('blur:' + e.isTrusted); });
+        picker.addEventListener('input', () => { if (!pickerFocused) setTimeout(() => { picker.value = ''; }); }); 1""")
+    mcp.call("type_text", tabId=back, ref=ref_of(mcp.call("read_page", tabId=back), "#picker"), text="Kim")
+    got = js(mcp, back, "await new Promise((r) => setTimeout(r, 200)); [picker.value, pickerLog, document.hasFocus()]")
+    check("background tab: a focus-tracking widget keeps typed text", got[0] == "Kim", got)
+    check("...after one trusted focus event, with no real focus taken", got[1] == ["focus:true"] and got[2] is False, got)
+    # The user brings the tab forward and leaves again: the browser blurs the field for real, and
+    # the next agent input must tell the widget it has focus again (it once kept quiet and lost text).
+    mcp.call("tabs_select", tabId=back)
+    mcp.call("tabs_select", tabId=front)
+    js(mcp, front, "seen.length = 0; 1")  # those switches were real; only what follows counts
+    js(mcp, back, "picker.value = ''; pickerLog.length = 0; 1")
+    mcp.call("type_text", tabId=back, text="Riley")
+    got = js(mcp, back, "await new Promise((r) => setTimeout(r, 200)); [picker.value, pickerLog, pickerFocused]")
+    check("background tab: after the user visits and leaves the tab, typing still sticks", got[0] == "Riley" and got[2] is True, got)
+    js(mcp, back, "picker.remove(); 1")
+    seen = js(mcp, front, "seen")
+    check("...and the tab in front saw no focus or blur event", seen == [], seen)
     data, _ = mcp.image(tabId=back, format="png")
     check("screenshot works in a background tab", data[:4] == b"\x89PNG")
     active = mcp.call("tabs_list")

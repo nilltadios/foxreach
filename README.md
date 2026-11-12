@@ -262,6 +262,13 @@ Delete or Backspace, when focus is not on a text field, so keys meant for a sear
 as page shortcuts (such as deleting the selected messages in a mail app). `allow_non_text: true`
 overrides this for keyboard-driven pages. `type_text` also warns when the field's value did not change.
 
+The agent's page gets focus and blur events in a background tab, or while the browser is behind
+another app. Firefox sends none there, so widgets that track focus through those events (MUI's
+Autocomplete, many React comboboxes) dropped typed text. After a click, drag or key moves focus,
+foxreach sends focus and focusin to the element that now has it (and blur and focusout to the one
+it left), in that document only and only while it lacks real focus. The browser window is not
+activated or raised, the user's tabs see nothing, and the app the user is in keeps the keyboard.
+
 `javascript` runs in the page's own world, like the browser's developer console: a bare assignment
 or a `var` sets a global on the page's `window`, so a script started in one call (a loop that counts
 its progress, say) can be read by the next; `let` and `const` stay local to each call. For work that
@@ -374,7 +381,7 @@ Read this before installing into a profile you browse with.
 ## Tests
 
 ```bash
-uv run --python 3.15 test/e2e.py             # expect: 224 passed, 0 failed, exit 0
+uv run --python 3.15 test/e2e.py             # expect: 253 passed, 0 failed, exit 0
 ```
 
 The tests use `FOXREACH_BROWSER` (a path or a command), else the only browser installed.
@@ -397,6 +404,7 @@ The tests use `FOXREACH_BROWSER` (a path or a command), else the only browser in
 | `test/update_cli.py` | `foxreach update` against a local stand-in release: checksum and version checks refuse bad downloads and change nothing, a good one replaces the program and keeps `.previous`, and the version warning names the right command; starts no browser |
 | `test/signed_firefox.py [--xpi FILE]` | Release Firefox (or LibreWolf, `--browser`) installs the Mozilla-signed build as signed and refuses it unsigned |
 | `test/connect_errors.py` | What an agent is told when the browser cannot be reached, for each cause; starts no browser |
+| `test/background_focus.py` | With the browser behind another app, typed text reaches a widget that keeps it only after a focus event, and the user's front tab sees no focus event; needs a running headful browser (see the file) |
 
 Tests use throwaway profiles and restart the browser with no automation attached before the tool
 checks. They never touch a real profile.

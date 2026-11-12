@@ -85,6 +85,69 @@ function describe(el) {
   return `${el.localName}${id}`;
 }
 
+/*
+ * Firefox sends no focus or blur events to a page that does not have the browser's focus: the
+ * tab is in the background, or the browser is behind another app. An element the agent clicks
+ * still becomes document.activeElement, but widgets that track focus through those events (MUI's
+ * Autocomplete, many React comboboxes) never hear of it and throw typed text away. So, only while
+ * this document lacks focus, tell the page what the browser did not: blur and focusout on the
+ * element that had the agent's focus, focus and focusin on the one that has it now. The window,
+ * the user's own tabs and the desktop's focus are untouched. Sent from privileged code, the events
+ * are trusted. Once the document has real focus the browser sends its own, and this stays quiet.
+ */
+const emulatedFocus = new WeakMap(); // document -> element told it has focus
+const watched = new WeakSet();
+let sending = false;
+
+/** A real focus or blur (the user brought the tab or the browser forward, or left it) makes what
+ * the page was told out of date: the next sync tells it again. */
+function watchRealFocus(doc) {
+  if (watched.has(doc)) return;
+  watched.add(doc);
+  const forget = () => {
+    if (!sending) emulatedFocus.delete(doc);
+  };
+  for (const type of ["focus", "blur"]) doc.addEventListener(type, forget, { capture: true, mozSystemGroup: true });
+}
+
+function deepActiveElement(doc) {
+  let el = doc.activeElement;
+  while (el?.openOrClosedShadowRoot?.activeElement) el = el.openOrClosedShadowRoot.activeElement;
+  return el;
+}
+
+function syncFocus(win) {
+  const doc = win.document;
+  watchRealFocus(doc);
+  if (doc.hasFocus()) {
+    emulatedFocus.delete(doc);
+    return;
+  }
+  const now = deepActiveElement(doc);
+  const told = emulatedFocus.get(doc) ?? null;
+  const target = now && now !== doc.body && now !== doc.documentElement ? now : null;
+  if (target === told) return;
+  const send = (el, type, bubbles, relatedTarget) => {
+    sending = true;
+    try {
+      el.dispatchEvent(new win.FocusEvent(type, { bubbles, composed: true, view: win, relatedTarget }));
+    } finally {
+      sending = false;
+    }
+  };
+  if (told?.isConnected) {
+    send(told, "blur", false, target);
+    send(told, "focusout", true, target);
+  }
+  if (target) {
+    emulatedFocus.set(doc, target);
+    send(target, "focus", false, told);
+    send(target, "focusin", true, told);
+  } else {
+    emulatedFocus.delete(doc);
+  }
+}
+
 function textInputProcessor(win) {
   const tip = Cc["@mozilla.org/text-input-processor;1"].createInstance(Ci.nsITextInputProcessor);
   if (!tip.beginInputTransactionForTests(win)) throw new Error("Could not start keyboard input.");
@@ -155,6 +218,8 @@ const REGEX_AFTER_WORD = new Set([
   "return", "typeof", "instanceof", "in", "of", "new", "delete", "void", "throw",
   "case", "do", "else", "yield", "await",
 ]);
+// Words after which "{" opens a statement's block, not an object literal.
+const BLOCK_AFTER_WORD = new Set(["else", "try", "finally", "do"]);
 
 // Skips a regex literal starting at code[i] === "/"; returns the index of its last character
 // (the end of its flags), or -1 if no closing "/" comes before the end of the line.
@@ -184,6 +249,9 @@ function splitLastStatement(code) {
   // including keywords such as return and typeof.
   let prev = "op";
   let word = "";
+  // The token before "{": after ")", else, try, finally or do it opens a statement's block, whose
+  // "}" ends a statement even with no ";" or newline after it, as in "for (...) { ... } result".
+  let lastToken = "";
   for (let i = 0; i < code.length; i++) {
     const ch = code[i];
     if (quote) {
@@ -205,6 +273,7 @@ function splitLastStatement(code) {
     }
     if (word) {
       prev = REGEX_AFTER_WORD.has(word) ? "op" : "value";
+      lastToken = word;
       word = "";
     }
     if (ch === '"' || ch === "'" || ch === "`") {
@@ -222,15 +291,18 @@ function splitLastStatement(code) {
       i = end;
       prev = "value";
     } else if ("([{".includes(ch)) {
-      stack.push(ch);
+      stack.push(ch === "{" && (lastToken === ")" || BLOCK_AFTER_WORD.has(lastToken)) ? "block" : ch);
       prev = "op";
     } else if (")]}".includes(ch)) {
-      if (stack.pop() === "${") quote = "`";
+      const open = stack.pop();
+      if (open === "${") quote = "`";
+      else if (open === "block" && !stack.length && code.slice(i + 1).trim()) last = i + 1;
       // After "}" a "/" is more likely a regex (end of a block) than a division.
       prev = ch === "}" ? "op" : "value";
     } else if (!/\s/.test(ch)) {
       prev = "op";
     }
+    if (!/[\s\w$]/.test(ch)) lastToken = ch;
     if (!stack.length && !quote && (ch === ";" || ch === "\n") && code.slice(i + 1).trim()) {
       last = i + 1;
     }
@@ -441,6 +513,7 @@ const HANDLERS = {
       if (button === 2) fire(win, "contextmenu", x, y, opts);
       fire(win, "mouseup", x, y, { ...opts, buttons: 0 });
     }
+    syncFocus(win);
     return { target, attempts };
   },
 
@@ -472,6 +545,7 @@ const HANDLERS = {
       root.removeEventListener("dragstart", onDragStart, { mozSystemGroup: true });
     }
     fire(win, "mouseup", to.x, to.y, { ...opts, buttons: 0 });
+    syncFocus(win);
     const target = describe(deepElementFromPoint(win.document, to.x, to.y));
     if (!dragged) return { target, attempts, htmlDrag: false };
 
@@ -533,20 +607,26 @@ const HANDLERS = {
 
   keys(win, { keys, repeat = 1 }) {
     const tip = textInputProcessor(win);
+    syncFocus(win);
     for (let i = 0; i < repeat; i++) {
-      for (const combo of keys.trim().split(/\s+/)) pressCombo(win, tip, combo);
+      for (const combo of keys.trim().split(/\s+/)) {
+        pressCombo(win, tip, combo);
+        syncFocus(win); // Tab, Enter and shortcuts can move focus
+      }
     }
     return { pressed: keys, repeat };
   },
 
   async type(win, { text }) {
     const tip = textInputProcessor(win);
+    syncFocus(win);
     let typed = 0;
     for (const ch of text.replace(/\r\n?/g, "\n")) {
       if (ch === "\n" || ch === "\t") {
         const ev = namedKey(win, ch === "\n" ? "Enter" : "Tab");
         tip.keydown(ev);
         tip.keyup(ev);
+        syncFocus(win);
       } else if (/^[\x20-\x7e]$/.test(ch)) {
         const ev = printable(win, ch);
         tip.keydown(ev);
