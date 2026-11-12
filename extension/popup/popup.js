@@ -115,6 +115,7 @@ function render(next) {
   status.className = state.connected ? "ok" : "bad";
   $("paused").checked = state.paused;
   $("ask").checked = state.askApproval;
+  renderHidden();
   if (document.activeElement !== $("blocked")) $("blocked").value = state.blockedHosts.join(", ");
 
   $("agent-requests").replaceChildren(
@@ -184,6 +185,34 @@ function render(next) {
       return li;
     })
   );
+}
+
+const HIDDEN_LABELS = [
+  ["typed", "Anything I type or autofill myself, whatever the field (agents still see what they typed)"],
+  ["cards", "Payment cards (number, security code, expiry)"],
+  ["ids", "ID numbers (SSN, ITIN, national, state or tax ID, passport, driver's license)"],
+  ["answers", "Security question answers (mother's maiden name, first pet...): only when the box's own label names the question"],
+  ["address", "Addresses"],
+  ["phone", "Phone numbers"],
+  ["email", "Email addresses"],
+  ["name", "Names"],
+  ["birthday", "Birth dates"],
+];
+
+function renderHidden() {
+  const box = $("hidden-fields");
+  if (!box.childElementCount) {
+    for (const [kind, text] of HIDDEN_LABELS) {
+      const label = el("label", "row");
+      const input = document.createElement("input");
+      input.type = "checkbox";
+      input.dataset.kind = kind;
+      input.addEventListener("change", () => send({ popup: "setHidden", kind, value: input.checked }));
+      label.append(input, ` ${text}`);
+      box.append(label);
+    }
+  }
+  for (const input of box.querySelectorAll("input")) input.checked = !!state.hiddenFields?.[input.dataset.kind];
 }
 
 $("paused").addEventListener("change", (e) => send({ popup: "setPaused", value: e.target.checked }));

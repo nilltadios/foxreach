@@ -29,7 +29,8 @@ export const TOOLS = [
     url: { type: "string", description: 'A URL, or "back", "forward", "reload".' },
   }, ["url"]),
   tool("read_page", "Read the page as an accessibility-style tree, across iframes and shadow DOM. Each element has a ref for other tools. Prefer this over screenshots. " +
-    "Long link addresses are shortened to where they go (href=→ example.org, or href=→ on the same site); full_links shows them whole.", {
+    "Long link addresses are shortened to where they go (href=→ example.org, or href=→ on the same site); full_links shows them whole. " +
+    "Fields the user keeps from agents (passwords, cards, ID numbers...) show as filled, never their value.", {
     tabId,
     filter: { type: "string", enum: ["all", "interactive"], description: "Default all." },
     scope: { type: "string", enum: ["viewport", "page"], description: "Default viewport for the interactive filter, otherwise page." },
@@ -110,7 +111,7 @@ export const TOOLS = [
     timeout: { type: "number", description: "Seconds. Default 15, at most 120." },
   }, ["tabId"]),
   tool("javascript", "Run JavaScript in the page's own world and return the last expression as JSON. Top-level await works, and page CSP does not block it. let/const are local to the call; a bare assignment or var sets a global on the page's window, which later calls can read. " +
-    "Refused while a password field in the tab holds a value.", {
+    "Refused while a password or another field the user keeps from agents (cards, ID numbers...) holds a value in the tab.", {
     tabId,
     code: { type: "string", description: "The code. Needs code, file, or both." },
     file: { type: "string", description: "Absolute path of a .js/.mjs file on this machine to run first (before code), for example a helper library. Hidden files and folders are refused." },

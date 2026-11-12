@@ -32,7 +32,8 @@ Open items, newest first. Remove an item when it is done.
    object (the published 0.3.0 full add-on has that bug; the signed builds do not contain that
    code). Then (2026-11-12): focus events for unfocused pages (GradForms-style pickers), ZCode in
    `foxreach install`, `javascript`'s last value after a block, `press_key` reporting the value
-   after the keys, `javascript` refused while a password field holds a value, and shorter
+   after the keys, fields agents may not read (passwords, cards, ID numbers, security answers by default;
+   user's choice in the popup: hidden values, blacked out in pictures, no `javascript` while filled), and shorter
    `read_page` replies (`full_links`). Steps: raise the version, `scripts/sign.py` (unlisted),
    `scripts/release.py`, push and tag (watch the workflow start: the first tag push of 0.3.0
    started none), `release.py --verify`, `verify_release.py`. Release users reach `foxreach update` with one last `install.sh` run.

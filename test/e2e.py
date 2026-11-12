@@ -371,12 +371,40 @@ def t_read(mcp):
     check("password value is not exposed", "secret123" not in tree)
     check("find does not expose it either", "secret123" not in mcp.call("find", tabId=tab, query="password"))
     check("javascript is refused while a password field holds a value",
-          expect_error(lambda: js(mcp, tab, "document.getElementById('pw').value"), "password field holds a value"))
+          expect_error(lambda: js(mcp, tab, "document.getElementById('pw').value"), "keeps from agents holds a value"))
     check("...including code saved to a file", expect_error(
         lambda: mcp.call("javascript", tabId=tab, code="document.getElementById('pw').value", save_to="/tmp/foxreach-pw-test.txt"),
-        "password field holds a value") and not pathlib.Path("/tmp/foxreach-pw-test.txt").exists())
+        "keeps from agents holds a value") and not pathlib.Path("/tmp/foxreach-pw-test.txt").exists())
     mcp.call("press_key", tabId=tab, keys="ctrl+a Backspace")
     check("javascript works again once the field is cleared", js(mcp, tab, "document.getElementById('pw').value") == "")
+
+    # Card and ID-number fields are kept from agents by default, found by autofill hint or label.
+    js(mcp, tab, """document.body.insertAdjacentHTML('afterbegin', `<div style="background:#fff;padding:10px">
+        <input id=cc autocomplete="cc-number" style="width:220px;height:30px;color:#000;background:#fff;border:0">
+        <label>Social Security Number <input id=ssn></label>
+        <label>Street address <input id=street></label>
+        <label>Mother's maiden name <input id=maiden></label></div>`); scrollTo(0, 0); 1""")
+    box = js(mcp, tab, "const r = cc.getBoundingClientRect(); ({x: r.left + r.width / 2, y: r.top + r.height / 2})")
+    tree = mcp.call("read_page", tabId=tab)
+    for ref_text, value in (("#cc", "4242 4242 4242 4242"), ("#ssn", "078-05-1120"), ("#street", "12 Elm Street"), ("#maiden", "Kowalski")):
+        mcp.call("form_input", tabId=tab, ref=ref_of(tree, ref_text), value=value)
+    tree = mcp.call("read_page", tabId=tab)
+    check("a card field's value is hidden", "4242" not in tree and "(card, filled)" in tree, [l for l in tree.splitlines() if "#cc" in l])
+    check("an SSN field's value is hidden", "078-05" not in tree and "(ID number, filled)" in tree, [l for l in tree.splitlines() if "#ssn" in l])
+    check("a security answer's value is hidden", "Kowalski" not in tree and "(security answer, filled)" in tree, [l for l in tree.splitlines() if "#maiden" in l])
+    check("an address is shown by default (the user has not chosen to hide it)", "12 Elm Street" in tree, [l for l in tree.splitlines() if "#street" in l])
+    check("find does not show a card number", "4242" not in mcp.call("find", tabId=tab, query="card number"))
+    check("javascript is refused while a card field is filled",
+          expect_error(lambda: js(mcp, tab, "cc.value"), "keeps from agents holds a value"))
+    png, _ = mcp.image(tabId=tab, format="png", show_pointer=False)
+    check("a screenshot blacks out the filled card field", colour_at(png, int(box["x"]), int(box["y"])) == (0, 0, 0),
+          colour_at(png, int(box["x"]), int(box["y"])))
+    for ref_text in ("#cc", "#ssn", "#maiden"):
+        mcp.call("form_input", tabId=tab, ref=ref_of(tree, ref_text), value="")
+    check("javascript works again once they are cleared", js(mcp, tab, "cc.value + ssn.value") == "")
+    png, _ = mcp.image(tabId=tab, format="png", show_pointer=False)
+    check("...and the screenshot is not blacked out", colour_at(png, int(box["x"]), int(box["y"])) != (0, 0, 0))
+    js(mcp, tab, "cc.parentElement.remove(); 1")
     inter = mcp.call("read_page", tabId=tab, filter="interactive")
     check("interactive filter drops text", "Some visible paragraph" not in inter and "Press me" in inter, inter[:400])
     far = tab_id(mcp.call("tabs_create", url=f"{MAIN}/scroll"))
@@ -953,6 +981,39 @@ def popup_tests(browser, mcp):
     check("pause stops agents", expect_error(lambda: mcp.call("read_page", tabId=page), "paused"))
     run("document.getElementById('paused').click(); setTimeout(() => arguments[0](1), 200)")
     check("resume restores agents", "Press me" in mcp.call("read_page", tabId=page))
+
+    # Which kinds of field agents may not read is the user's choice: addresses are off by default.
+    js(mcp, page, "document.body.insertAdjacentHTML('afterbegin', '<label>Street address <input id=street2 value=\"9 Oak Road\"></label>'); 1")
+    check("an address is readable while the user allows it", "9 Oak Road" in mcp.call("read_page", tabId=page))
+    run("document.querySelector('#hidden-fields input[data-kind=address]').click(); setTimeout(() => arguments[0](1), 300)")
+    hidden = mcp.call("read_page", tabId=page)
+    check("ticking Addresses hides it", "9 Oak Road" not in hidden and "(address, filled)" in hidden, [l for l in hidden.splitlines() if "street2" in l])
+    check("...and javascript stops while it is filled", expect_error(lambda: js(mcp, page, "1"), "keeps from agents holds a value"))
+    run("document.querySelector('#hidden-fields input[data-kind=address]').click(); setTimeout(() => arguments[0](1), 300)")
+    check("unticking shows it again", "9 Oak Road" in mcp.call("read_page", tabId=page))
+    js(mcp, page, "street2.parentElement.remove(); 1")
+
+    # "Anything I type or autofill myself": a value the user typed is hidden whatever the field is
+    # called; what the agent typed is not. Marionette's key input stands in for the user here.
+    js(mcp, page, "document.body.insertAdjacentHTML('afterbegin', '<label>Note <input id=note></label><label>Other <input id=other2></label>'); 1")
+    run("document.querySelector('#hidden-fields input[data-kind=typed]').click(); setTimeout(() => arguments[0](1), 300)")
+    unwrap = lambda r: r["value"] if isinstance(r, dict) and "value" in r else r  # noqa: E731
+    popup_handle = unwrap(m.command("WebDriver:GetWindowHandle", {}))
+    page_url = json.loads(mcp.call("javascript", tabId=page, code="location.href"))
+    for handle in unwrap(m.command("WebDriver:GetWindowHandles", {})):
+        m.command("WebDriver:SwitchToWindow", {"handle": handle})
+        if unwrap(m.command("WebDriver:GetCurrentURL", {})) == page_url:
+            break
+    note = unwrap(m.command("WebDriver:FindElement", {"using": "css selector", "value": "#note"}))
+    m.command("WebDriver:ElementSendKeys", {"id": list(note.values())[0], "text": "my own words"})
+    m.command("WebDriver:SwitchToWindow", {"handle": popup_handle})
+    mcp.call("type_text", tabId=page, ref=ref_of(mcp.call("read_page", tabId=page), "#other2"), text="agent words")
+    tree = mcp.call("read_page", tabId=page)
+    check("what the user typed is hidden", "my own words" not in tree and "(filled by the user)" in tree, [l for l in tree.splitlines() if "#note" in l])
+    check("...what the agent typed is not", "agent words" in tree, [l for l in tree.splitlines() if "#other2" in l])
+    run("document.querySelector('#hidden-fields input[data-kind=typed]').click(); setTimeout(() => arguments[0](1), 300)")
+    check("with the option off, the user's text shows", "my own words" in mcp.call("read_page", tabId=page))
+    js(mcp, page, "note.parentElement.remove(); other2.parentElement.remove(); 1")
 
     run("document.getElementById('blocked').value = '127.0.0.1'; document.getElementById('save-blocked').click(); setTimeout(() => arguments[0](1), 200)")
     check("blocked site refuses tools", expect_error(lambda: mcp.call("read_page", tabId=page), "blocked agents"))

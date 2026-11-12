@@ -32,7 +32,9 @@ const network = new Map();
 const activity = [];
 const partial = new Map();
 // siteAccess: "all", or "listed" for only the sites in allowedHosts. Set at first start.
-let settings = { paused: false, blockedHosts: [], siteAccess: null, allowedHosts: [], askApproval: true, approvedAgents: [] };
+// hiddenFields: kinds of form field whose values agents never see (content.js, secretKind).
+const HIDDEN_DEFAULT = { typed: false, cards: true, ids: true, answers: true, address: false, phone: false, email: false, name: false, birthday: false };
+let settings = { paused: false, blockedHosts: [], siteAccess: null, allowedHosts: [], askApproval: true, approvedAgents: [], hiddenFields: { ...HIDDEN_DEFAULT } };
 let port = null;
 let hostError = null;
 let agentGroupId = null;
@@ -410,20 +412,32 @@ async function focusTarget(tabId) {
 const sameElement = (a, b) => !!a && !!b && a.frameId === b.frameId && (a.ref ? a.ref === b.ref : a.desc === b.desc);
 
 /*
- * Agent code runs in the page's own world, where nothing can stop it reading a password field
- * (read_page and find hide the value, but javascript sees what the page sees). So javascript does
- * not run in a tab while any of its frames has a password field holding a value. Clicking and
- * typing still work there. A frame foxreach may not read (another site the user has not allowed)
- * is skipped: agent code in an allowed frame cannot read across sites either.
+ * Agent code runs in the page's own world, where nothing can stop it reading a field there
+ * (read_page and find hide secret values, but javascript sees what the page sees). So javascript
+ * does not run in a tab while any of its frames has a secret field holding a value: a password,
+ * a card number, security code or expiry, a one-time code, or a national ID number (content.js,
+ * secretKind). Clicking and typing still work there. A frame foxreach may not read (another site
+ * the user has not allowed) is skipped: agent code in an allowed frame cannot read across sites.
  */
-async function assertNoFilledPassword(tabId) {
-  const results = await eachFrame(tabId, "filledPassword", {});
+async function assertNoFilledSecret(tabId) {
+  const results = await eachFrame(tabId, "filledSecret", {});
   const hit = results.find((r) => r.value?.field);
   if (!hit) return;
   const where = `${hit.value.field}${hit.frame.frameId ? ` in frame ${hit.frame.frameId}` : ""}`;
-  throw new Error(`javascript does not run in this tab while a password field holds a value (${where}), so agent code ` +
-    "cannot read a password. read_page, find, click and type_text still work. Once the form is submitted or the field " +
-    "is cleared, javascript works again.");
+  throw new Error(`javascript does not run in this tab while a password or another field the user keeps from agents holds a value (${where}), ` +
+    "so agent code cannot read it. read_page, find, click and type_text still work. Once the form is submitted or the " +
+    "field is cleared, javascript works again.");
+}
+
+/** Run agent typing with every frame told it is the agent's, so content.js does not count the
+ * values as the user's ("Anything I type or autofill myself"). */
+async function asAgentInput(tabId, work) {
+  await eachFrame(tabId, "agentInput", { on: true }).catch(() => {});
+  try {
+    return await work();
+  } finally {
+    await eachFrame(tabId, "agentInput", { on: false }).catch(() => {});
+  }
 }
 
 const describeFocus = (f) => (f ? `${f.desc}${f.frameId ? ` in frame ${f.frameId}` : ""}` : "an element foxreach cannot see");
@@ -548,12 +562,57 @@ async function checkUrl(url) {
   return parsed.href;
 }
 
-/** A picture of a tab. The browser offers this only to an add-on that holds every site. */
+/**
+ * Filled secret fields (passwords, cards, ID numbers: content.js, secretKind) as boxes in the
+ * tab's viewport, for capture to paint over. A field in an iframe is placed through the privileged
+ * code; without it, an iframe cannot be placed, so the picture is refused rather than sent.
+ */
+async function secretBoxes(tabId) {
+  const results = await eachFrame(tabId, "secretRects", {}).catch(() => []);
+  const boxes = [];
+  for (const { frame, value } of results) {
+    for (const r of value?.rects ?? []) {
+      if (!frame.frameId) {
+        boxes.push(r);
+        continue;
+      }
+      const at = trusted ? await privileged(tabId, "viewportPoint", { frameId: frame.frameId, x: r.x, y: r.y }).catch(() => null) : null;
+      if (!at) throw new Error("No picture: a password or another field the user keeps from agents, in a frame, holds a value, and foxreach cannot place it to cover it. Use read_page, or take the picture once the field is cleared or submitted.");
+      boxes.push({ ...r, x: at.x, y: at.y });
+    }
+  }
+  return boxes;
+}
+
+/** A picture of a tab, with filled secret fields painted over. The browser offers pictures only
+ * to an add-on that holds every site. */
 async function capture(tabId, options) {
   if (!browser.tabs.captureTab) {
     throw new Error("The browser gives pictures of pages only to an add-on that is allowed on every site, and the user has allowed single sites. read_page and find work without pictures; for pictures, ask the user to choose \"Every site\" under the foxreach toolbar button.");
   }
-  return browser.tabs.captureTab(tabId, options);
+  const boxes = await secretBoxes(tabId);
+  const dataUrl = await browser.tabs.captureTab(tabId, options);
+  if (!boxes.length) return dataUrl;
+  // options.rect is in document coordinates; the boxes are in the viewport's.
+  let left = 0;
+  let top = 0;
+  if (options?.rect) {
+    const v = await contentCall(tabId, 0, "viewport", {});
+    left = options.rect.x - v.scrollX;
+    top = options.rect.y - v.scrollY;
+  }
+  const scale = options?.scale ?? 1;
+  const image = await decodeImage(dataUrl);
+  const canvas = document.createElement("canvas");
+  canvas.width = image.width;
+  canvas.height = image.height;
+  const g = canvas.getContext("2d");
+  g.drawImage(image, 0, 0);
+  g.fillStyle = "#000000";
+  const pad = 2;
+  for (const b of boxes) g.fillRect((b.x - left - pad) * scale, (b.y - top - pad) * scale, (b.width + 2 * pad) * scale, (b.height + 2 * pad) * scale);
+  const format = options?.format === "jpeg" ? "image/jpeg" : "image/png";
+  return canvas.toDataURL(format, (options?.quality ?? 92) / 100);
 }
 
 /* ---------- tools ---------- */
@@ -734,9 +793,9 @@ const TOOLS = {
     if (target && !target.editable && !allow_non_text) {
       throw new Error(`Nothing was typed: focus is on ${describeFocus(target)}, which is not a text field. ${NOT_TEXT_HINT}`);
     }
-    const res = trusted
-      ? await privileged(tabId, "type", { text })
-      : await contentCall(tabId, 0, "untrustedType", { text });
+    const res = await asAgentInput(tabId, () => (trusted
+      ? privileged(tabId, "type", { text })
+      : contentCall(tabId, 0, "untrustedType", { text })));
     if (res.blockedByDialog) return { text: `Typing was interrupted.${DIALOG_NOTE}` };
     const after = await focusTarget(tabId);
     let note = "";
@@ -759,9 +818,9 @@ const TOOLS = {
       throw new Error(`Nothing was pressed: "${destructive}" would go to ${describeFocus(target)}, not a text field, ` +
         `where it can delete page content (in mail apps it deletes messages). ${NOT_TEXT_HINT}`);
     }
-    const res = trusted
-      ? await privileged(tabId, "keys", { keys, repeat })
-      : await contentCall(tabId, 0, "untrustedKeys", { keys });
+    const res = await asAgentInput(tabId, () => (trusted
+      ? privileged(tabId, "keys", { keys, repeat })
+      : contentCall(tabId, 0, "untrustedKeys", { keys })));
     const moved = res.blockedByDialog ? "" : await afterInput(tabId, before);
     // Describe the element as it is now: its value from before the keys would mislead.
     const after = res.blockedByDialog ? null : await focusTarget(tabId);
@@ -882,7 +941,7 @@ const TOOLS = {
     await assertNoDialog(tabId);
     if (!code) throw new Error("code is required.");
     await assertFrameAllowed(tabId, frame_id);
-    await assertNoFilledPassword(tabId);
+    await assertNoFilledSecret(tabId);
     const timeoutMs = Math.round(Math.min(Math.max(Number(timeout) || JS_TIMEOUT_S, 1), JS_TIMEOUT_MAX_S) * 1000);
     // full: the bridge saves the result to a file (save_to), so it may be larger than a reply.
     const limit = full ? SAVED_RESULT_LIMIT : RESULT_LIMIT;
@@ -1170,6 +1229,7 @@ async function popupState() {
     siteRequests: [...siteRequests.keys()].reverse(),
     askApproval: settings.askApproval,
     approvedAgents: settings.approvedAgents,
+    hiddenFields: settings.hiddenFields,
     agentRequests: [...agentRequests].map(([conn, r]) => ({ conn, name: r.name, time: r.time })),
     tabs: await Promise.all(shown.map(async (t) => ({
       id: t.id, title: t.title, url: t.url, shared: agentTabs.has(t.id), active: t.active,
@@ -1216,6 +1276,9 @@ browser.runtime.onMessage.addListener(async (msg, sender) => {
     case "setAsk":
       settings.askApproval = !!msg.value;
       if (!settings.askApproval) for (const conn of [...agentRequests.keys()]) answerAgent(conn, "once");
+      break;
+    case "setHidden":
+      if (Object.hasOwn(HIDDEN_DEFAULT, msg.kind)) settings.hiddenFields = { ...settings.hiddenFields, [msg.kind]: !!msg.value };
       break;
     case "answerAgent":
       answerAgent(String(msg.conn), msg.mode);
@@ -1291,6 +1354,7 @@ browser.webRequest.onErrorOccurred.addListener((d) => {
 (async () => {
   const stored = await browser.storage.local.get("settings");
   settings = { ...settings, ...stored.settings };
+  settings.hiddenFields = { ...HIDDEN_DEFAULT, ...(stored.settings?.hiddenFields ?? {}) };
   settings.blockedHosts = parseBlocked((settings.blockedHosts ?? []).join(" ")); // entries saved by older versions
   // First start: every site if the browser already grants that (the full build), else a list to fill.
   settings.siteAccess ??= (await browserGrants("*")) ? "all" : "listed";

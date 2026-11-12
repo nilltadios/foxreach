@@ -73,3 +73,4 @@ button { margin-top: 4px; font: inherit; }
 .action.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
 .action.primary:hover { filter: brightness(1.08); }
 #request-view .fineprint { margin: 14px 2px 0; font-size: 11.5px; color: var(--muted); }
+.hint { margin: 2px 0 6px; font-size: 0.85em; opacity: 0.75; }

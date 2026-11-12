@@ -113,6 +113,83 @@
     return `href=${clean(raw, SHORT_HREF)}`;
   }
 
+  /*
+   * Fields whose value agents never see: passwords and one-time codes always, and the kinds the
+   * user ticks under the foxreach toolbar button (cards and ID numbers by default). A field is
+   * recognised by its autofill hint (autocomplete="cc-number", "postal-code"...), which forms
+   * built for autofill set, or else by words in its label, name or id. The words are a guess:
+   * a field labelled only "Field 7" is not caught.
+   */
+  const HIDDEN_DEFAULT = { typed: false, cards: true, ids: true, answers: true, address: false, phone: false, email: false, name: false, birthday: false };
+  const words = (src) => new RegExp(`(?<![a-z])(?:${src})(?![a-z])`, "i");
+  const SEP = "[\\s_-]*";
+  const KINDS = [
+    { key: "cards", label: "card", auto: /^cc-(number|csc|exp|exp-month|exp-year)$/,
+      words: words(`cvv2?|cvc2?|card${SEP}(?:number|no)|credit${SEP}card|security${SEP}code`) },
+    { key: "ids", label: "ID number",
+      words: words(`ssn|itin|social${SEP}security|national${SEP}id|tax${SEP}id|taxpayer${SEP}id|passport${SEP}(?:number|no|id)|` +
+        `driver'?s?${SEP}licen[cs]e|state${SEP}id|id${SEP}card${SEP}(?:number|no)|licen[cs]e${SEP}(?:number|no)`) },
+    // Answers to account-recovery questions work like passwords. Only a field whose own label or
+    // name names the question is caught: one labelled just "Answer" under a question list is not.
+    { key: "answers", label: "security answer",
+      words: words(`(?:security|secret|recovery|challenge)${SEP}(?:question|answer)|maiden${SEP}name|` +
+        `(?:first|childhood)${SEP}(?:pet|school|car|teacher|friend|job|street|employer)|pet'?s?${SEP}name|` +
+        `(?:street|town|city)${SEP}(?:you|where${SEP}you)${SEP}grew${SEP}up|city${SEP}(?:of|where${SEP}you${SEP}were)${SEP}born`) },
+    { key: "email", label: "email", type: "email", auto: /^email$/, words: words("e-?mail") },
+    { key: "address", label: "address", auto: /^(street-address|address-line[123]|address-level[1-4]|postal-code|country|country-name)$/,
+      words: words(`(?<!e-?mail${SEP})address|street|zip${SEP}code|post${SEP}code|postal${SEP}code`) },
+    { key: "phone", label: "phone number", type: "tel", auto: /^tel(-.*)?$/, words: words(`phone|telephone|mobile${SEP}(?:number|no)`) },
+    { key: "name", label: "name", auto: /^(name|given-name|family-name|additional-name|honorific-prefix|honorific-suffix)$/,
+      words: words(`full${SEP}name|first${SEP}name|last${SEP}name|surname|given${SEP}name|family${SEP}name`) },
+    { key: "birthday", label: "birth date", auto: /^bday(-day|-month|-year)?$/,
+      words: words(`date${SEP}of${SEP}birth|birth${SEP}date|birthday|dob`) },
+  ];
+  let hiddenFields = { ...HIDDEN_DEFAULT };
+  const useSettings = (stored) => {
+    hiddenFields = { ...HIDDEN_DEFAULT, ...(stored?.hiddenFields ?? {}) };
+  };
+  // Read before any request is answered, and kept current when the user changes it.
+  const settingsReady = browser.storage.local.get("settings").then((r) => useSettings(r.settings), () => {});
+  browser.storage.onChanged.addListener((changes, area) => {
+    if (area === "local" && changes.settings) useSettings(changes.settings.newValue);
+  });
+
+  /*
+   * Fields whose value came from the user: typed, pasted, or filled by the browser or a password
+   * manager (all of which send trusted input events), rather than by an agent. With the "typed"
+   * kind on, those values are hidden whatever the field is called. Agent input is told apart by
+   * background.js marking the time it types (agentInput) and by formInput, which sets values here.
+   */
+  const userFilled = new WeakSet();
+  let agentTyping = 0;
+  document.addEventListener("input", (e) => {
+    const el = e.composedPath()[0];
+    if (!["input", "textarea"].includes(el?.localName)) return;
+    if (agentTyping) userFilled.delete(el);
+    else if (e.isTrusted) userFilled.add(el);
+  }, true);
+  function agentInput({ on }) {
+    agentTyping = Math.max(0, agentTyping + (on ? 1 : -1));
+    return { agentTyping };
+  }
+
+  /** "password", the kind of hidden field ("card", "ID number"...), or null for an ordinary one. */
+  function secretKind(el) {
+    if (!["input", "textarea"].includes(el.localName)) return null;
+    const hints = (el.getAttribute("autocomplete") ?? "").toLowerCase().split(/\s+/);
+    if (el.type === "password" || hints.some((h) => ["one-time-code", "current-password", "new-password"].includes(h))) return "password";
+    if (["hidden", "checkbox", "radio", "button", "submit", "reset", "file", "image", "range", "color"].includes(el.type)) return null;
+    if (hiddenFields.typed && userFilled.has(el) && el.value) return "filled by the user";
+    let said = null;
+    for (const kind of KINDS) {
+      if (!hiddenFields[kind.key]) continue;
+      if ((kind.type && el.type === kind.type) || (kind.auto && hints.some((h) => kind.auto.test(h)))) return kind.label;
+      said ??= [nameOf(el), el.getAttribute("aria-label"), el.placeholder, el.name, el.id].filter(Boolean).join(" ");
+      if (kind.words.test(said)) return kind.label;
+    }
+    return null;
+  }
+
   function stateOf(el, opts = {}) {
     const s = [];
     if (el.localName === "input" && ["checkbox", "radio"].includes(el.type)) s.push(el.checked ? "checked" : "unchecked");
@@ -122,7 +199,8 @@
     if (el.selected) s.push("selected");
     if (el.required) s.push("required");
     if (el.type === "file") s.push("file input");
-    if (el.type === "password") s.push("password");
+    const secret = secretKind(el);
+    if (secret) s.push(secret === "filled by the user" ? secret : el.value ? `${secret}, filled` : secret); // never the value
     else if (el.value !== undefined && el.value !== "" && ["input", "textarea", "select"].includes(el.localName) &&
              !["button", "submit", "reset", "checkbox", "radio"].includes(el.type)) s.push(`value=${JSON.stringify(clean(el.value, 80))}`);
     if (el.href && el.localName === "a") s.push(hrefText(el, opts.fullLinks));
@@ -273,6 +351,7 @@
 
   function formInput({ ref, value }) {
     const el = getRef(ref);
+    userFilled.delete(el); // the agent's own value
     const fire = (type) => el.dispatchEvent(new Event(type, { bubbles: true }));
     if (el.localName === "select") {
       const want = String(value);
@@ -384,11 +463,11 @@
     }
   }
 
-  /** The first password field in this document (shadow roots included) that holds a value. */
-  function filledPassword() {
+  /** The first secret field (see secretKind) in this document, shadow roots included, that holds a value. */
+  function filledSecret() {
     const visit = (root) => {
-      for (const el of root.querySelectorAll("*")) {
-        if (el.localName === "input" && el.type === "password" && el.value) return line(el, roleOf(el), 0).replace(/^- /, "");
+      for (const el of root.querySelectorAll("input, textarea, *")) {
+        if (el.value && secretKind(el)) return line(el, roleOf(el), 0).replace(/^- /, "");
         const inner = shadow(el);
         if (inner) {
           const hit = visit(inner);
@@ -398,6 +477,23 @@
       return null;
     };
     return { field: visit(document) };
+  }
+
+  /** Where this document's filled secret fields are, in its own viewport, for screenshots to cover. */
+  function secretRects() {
+    const rects = [];
+    const visit = (root) => {
+      for (const el of root.querySelectorAll("*")) {
+        if (el.value && secretKind(el)) {
+          const r = el.getBoundingClientRect();
+          if (r.width > 0 && r.height > 0) rects.push({ x: r.left, y: r.top, width: r.width, height: r.height });
+        }
+        const inner = shadow(el);
+        if (inner) visit(inner);
+      }
+    };
+    visit(document);
+    return { rects };
   }
 
   const TEXT_INPUTS = new Set(["text", "search", "email", "url", "tel", "password", "number", ""]);
@@ -426,14 +522,14 @@
       return { focused, ...own, hasElement: false, editable: false, desc: "the page body (no element has focus)", value: null };
     }
     const value = el.isContentEditable ? el.textContent
-      : "value" in el && typeof el.value === "string" && el.type !== "password" ? el.value : null;
+      : "value" in el && typeof el.value === "string" && !secretKind(el) ? el.value : null;
     const desc = line(el, roleOf(el), 0).replace(/^- /, "");
     // ref identifies the element; desc also carries its current value, so it changes as one types.
-    return { focused, ...own, hasElement: !inChild, editable: isTextEntry(el), desc, ref: refFor(el), value, length: el.type === "password" ? el.value.length : value?.length };
+    return { focused, ...own, hasElement: !inChild, editable: isTextEntry(el), desc, ref: refFor(el), value, length: secretKind(el) ? el.value.length : value?.length };
   }
 
   const OPS = {
-    readPage, evaluate, find, pageText, point, formInput, setFiles, viewport, waitCheck, focusInfo, filledPassword,
+    readPage, evaluate, find, pageText, point, formInput, setFiles, viewport, waitCheck, focusInfo, filledSecret, secretRects, agentInput,
     untrustedMouse, untrustedType, untrustedKeys, untrustedScroll,
     ping: () => ({ ok: true }),
     scrollTo: ({ ref }) => ({ ...point({ ref }), ...viewport() }),
@@ -442,6 +538,7 @@
   browser.runtime.onMessage.addListener((msg) => {
     if (!msg?.foxreachOp) return undefined;
     return (async () => {
+      await settingsReady;
       const op = OPS[msg.foxreachOp];
       if (!op) throw new Error(`Unknown operation ${msg.foxreachOp}`);
       return op(msg.args ?? {});

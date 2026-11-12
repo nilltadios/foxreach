@@ -31,6 +31,9 @@
   <input id="site" placeholder="example.org" spellcheck="false">
   <button>Allow</button>
 </form>
+<h2>Fields agents may not read</h2>
+<p class="hint">Agents never see what is typed in these, pictures black them out, and their JavaScript does not run in a tab while one is filled. Passwords and one-time codes are always kept from them. Fields are found by their autofill hint or their label, so an oddly labelled one can be missed.</p>
+<div id="hidden-fields"></div>
 <h2>Blocked sites</h2>
 <textarea id="blocked" rows="2" placeholder="bank.example, mail.example" spellcheck="false"></textarea>
 <button id="save-blocked">Save</button>

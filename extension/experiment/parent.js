@@ -294,6 +294,8 @@ this.foxreachInput = class extends ExtensionAPI {
           .flatMap((r) => (r.status === "fulfilled" ? r.value : []))
           .sort((a, b) => a.time - b.time);
       },
+      // A point in a frame, in the tab's viewport: screenshots cover secret fields inside iframes.
+      viewportPoint: (browser, { frameId, x, y }) => toViewport(frameOf(browser, frameId), x, y),
       dialogState: (browser) => dialogState(browser),
       dialogRespond: (browser, args) => dialogRespond(browser, args),
     };
@@ -309,7 +311,7 @@ this.foxreachInput = class extends ExtensionAPI {
           try {
             const browser = browserOf(tabId);
             const work = handlers[method](browser, args ?? {});
-            return await (method.startsWith("dialog") ? work : orDialog(browser, work));
+            return await (method.startsWith("dialog") || method === "viewportPoint" ? work : orDialog(browser, work));
           } catch (e) {
             if (e instanceof ExtensionError) throw e;
             throw new ExtensionError(`${method}: ${e?.message ?? e}`);

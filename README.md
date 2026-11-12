@@ -342,12 +342,22 @@ Read this before installing into a profile you browse with.
 - Page content is untrusted. A page can try to instruct the agent reading it (prompt injection), and
   no tool can rule that out. In an agent tab, an agent can reach any site the profile is logged in to,
   so block sensitive sites (banking, email, your password manager's site) in the toolbar popup.
-- **Password fields.** `read_page` and `find` never show a password field's value, and `javascript`
-  does not run in a tab while any of its frames has a password field holding a value: agent code
-  runs in the page's own world, where nothing could stop it reading one. Clicking and typing still
-  work. Not covered: code an agent started earlier that is still running (a listener added before
-  you typed sees your keys), and frames on sites agents are not allowed on, which agent code
-  cannot reach either.
+- **Fields agents may not read.** Passwords and one-time codes always, and by default payment
+  cards (number, security code, expiry), ID numbers (SSN, ITIN, national, state or tax ID,
+  passport, driver's license) and security-question answers. Under the toolbar button you can add
+  addresses, phone numbers, email addresses, names and birth dates, or remove the defaults. The
+  widest net is "Anything I type or autofill myself": every value you typed, pasted or had filled
+  by the browser or a password manager is hidden, whatever the field is called (what an agent
+  typed stays visible to it); it is off by default because it also stops `javascript` in any tab
+  where you filled a field. For these, `read_page` and `find` say
+  only that the field is filled, screenshots and recordings black them out, and `javascript` does
+  not run in a tab while one holds a value (agent code runs in the page's own world, where nothing
+  could stop it reading one). Clicking and typing still work. Fields are recognised by their
+  autofill hint (`autocomplete="cc-number"`, `"postal-code"`...) or by words in their label, name or
+  id (except with that last option), so a field labelled only "Field 7", or an "Answer" box under a list of security questions,
+  is missed. Not covered either: code an agent started earlier that is still running (a listener
+  added before you typed sees your keys), and frames on sites agents are not allowed on, which
+  agent code cannot reach. For a page you would rather keep from agents altogether, block its site.
 - How password-manager add-ons behave in agent tabs has not been tested.
 - A tab you share stays shared when it moves to another site, until you untick it or close it.
 - Blocking covers what a tab loads from the moment a site is on the list. A blocked site already
@@ -392,7 +402,7 @@ Read this before installing into a profile you browse with.
 ## Tests
 
 ```bash
-uv run --python 3.15 test/e2e.py             # expect: 269 passed, 0 failed, exit 0
+uv run --python 3.15 test/e2e.py             # expect: 285 passed, 0 failed, exit 0
 ```
 
 The tests use `FOXREACH_BROWSER` (a path or a command), else the only browser installed.
