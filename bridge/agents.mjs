@@ -330,6 +330,14 @@ export function agents(h = home()) {
       format: jsonFormat(["mcpServers"], commandArgs),
       detect: () => exists(path.join(h, ".cursor")),
     },
+    {
+      // Read from ZCode 1.x's bundled CLI (resources/glm/zcode.cjs): user servers live under
+      // mcp.servers, a strict schema, so the entry carries only type, command and args.
+      id: "zcode", name: "ZCode", file: path.join(h, ".zcode/cli/config.json"),
+      format: jsonFormat(["mcp", "servers"], (command) => ({ type: "stdio", ...commandArgs(command) })),
+      detect: () => exists(path.join(h, ".zcode")) || !!onPath("zcode"),
+      note: "start a new session",
+    },
   ];
 }
 

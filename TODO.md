@@ -62,7 +62,6 @@ Open items, newest first. Remove an item when it is done.
   so it shows only in the terminal. A permission prompt is relayed: a `request_access` tool behind a
   hook that forces a prompt would work, but needs the Claude Code plugin route and is weaker in
   bypass mode. Untested.
-- **ZCode** as an agent: its settings path (`~/.zcode/cli/config.json`, `mcp.servers`?) is unconfirmed.
 
 ## Later
 

@@ -65,6 +65,7 @@ def seed(home):
         ".gemini/config/.keep": "",
         ".config/opencode/opencode.json": json.dumps({"$schema": "https://opencode.ai/config.json", "theme": "x"}, indent=2),
         ".pi/agent/.keep": "",
+        ".zcode/cli/config.json": json.dumps({"permission": {"mode": "ask"}, "mcp": {"servers": {"other": {"type": "stdio", "command": "x"}}}}, indent=2),
         ".hermes/config.yaml": "model: hermes-4\nmcp_servers:\n    github:\n        command: npx\n        args: [\"-y\", \"gh\"]\ndisplay:\n  compact: true\n",
     }
     for rel, text in files.items():
@@ -86,6 +87,7 @@ def entries(home):
     out["opencode"] = oc.get("mcp", {}).get("servers", {}).get("foxreach")
     f = home / ".pi/agent/mcp.json"
     out["pi"] = json.loads(f.read_text()).get("mcpServers", {}).get("foxreach") if f.exists() else None
+    out["zcode"] = json.loads((home / ".zcode/cli/config.json").read_text()).get("mcp", {}).get("servers", {}).get("foxreach")
     out["hermes"] = (yaml.safe_load((home / ".hermes/config.yaml").read_text()).get("mcp_servers") or {}).get("foxreach")
     return out
 
@@ -99,7 +101,7 @@ def main():
         code, out = run(home, "agents")
         found = {line.split()[0] for line in out.splitlines() if line.split()[1:2] == ["found"]}
         check("agents: finds every seeded agent and no other",
-              found == {"claude-code", "claude-desktop", "codex", "antigravity", "gemini", "opencode", "pi", "hermes"}, out)
+              found == {"claude-code", "claude-desktop", "codex", "antigravity", "gemini", "opencode", "pi", "hermes", "zcode"}, out)
 
         code, out = run(home, "install", "--no-flatpak")
         check("install exits 0", code == 0, out)
@@ -110,6 +112,7 @@ def main():
             check(f"{agent}: entry added", e[agent] == want, e[agent])
         check("codex: old entry and its env sub-table replaced", e["codex"] == want, e["codex"])
         check("opencode: 2.x entry under mcp.servers", e["opencode"] == {"type": "local", "command": cmd}, e["opencode"])
+        check("zcode: stdio entry under mcp.servers (its schema is strict)", e["zcode"] == {"type": "stdio", **want}, e["zcode"])
         check("cursor: not installed, so not touched", not (home / ".cursor").exists())
 
         # Everything else in each file is kept.
@@ -125,23 +128,25 @@ def main():
         check("gemini: other servers and settings kept", "web-search" in gs["mcpServers"] and gs["model"] == {"name": "m"})
         oc = json.loads((home / ".config/opencode/opencode.json").read_text())
         check("opencode: other settings kept", oc["theme"] == "x" and oc["$schema"].endswith("config.json"))
+        zc = json.loads((home / ".zcode/cli/config.json").read_text())
+        check("zcode: other servers and settings kept", zc["permission"] == {"mode": "ask"} and "other" in zc["mcp"]["servers"], zc)
         hy = yaml.safe_load((home / ".hermes/config.yaml").read_text())
         check("hermes: other servers and settings kept",
               hy["model"] == "hermes-4" and hy["mcp_servers"]["github"]["command"] == "npx" and hy["display"] == {"compact": True}, hy)
 
         backups = sorted(p.name for p in home.rglob("*.bak-*"))
         check("existing files were backed up before the change",
-              {n.split(".bak-")[0] for n in backups} >= {".claude.json", "claude_desktop_config.json", "config.toml", "settings.json", "opencode.json", "config.yaml"}, backups)
+              {n.split(".bak-")[0] for n in backups} >= {".claude.json", "claude_desktop_config.json", "config.toml", "settings.json", "opencode.json", "config.yaml", "config.json"}, backups)
         check("files that did not exist get no backup", not any(n.startswith("mcp_config.json") or n.startswith("mcp.json") for n in backups), backups)
         check("install names the shared users of a file", "ChatGPT app" in out and "T3 Code" in out, out)
 
         snapshot = {p: p.read_bytes() for p in home.rglob("*") if p.is_file()}
         code, out = run(home, "install", "--no-flatpak")
         again = {p: p.read_bytes() for p in home.rglob("*") if p.is_file()}
-        check("a second install changes nothing", code == 0 and snapshot == again and out.count("already set") >= 8, out)
+        check("a second install changes nothing", code == 0 and snapshot == again and out.count("already set") >= 9, out)
 
         code, out = run(home, "agents")
-        check("agents: reports foxreach set", out.count("foxreach set") == 8, out)
+        check("agents: reports foxreach set", out.count("foxreach set") == 9, out)
 
         # Uninstall: foxreach's entries go, everything else stays.
         code, out = run(home, "uninstall")
