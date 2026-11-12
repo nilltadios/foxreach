@@ -80,9 +80,11 @@ def main():
         source = work / "source"
         with zipfile.ZipFile(build_store(work / "store.xpi", args.channel)) as z:
             z.extractall(source)
-        # Two warnings are expected: the Experiment call the full build uses (absent here, never
-        # reached), and eval, which is what the javascript tool is.
-        if web_ext("lint", "--source-dir", str(source)).returncode:
+        # Expected warnings: the Experiment calls the full build uses (absent here, never reached),
+        # and eval, which is what the javascript tool is. An unlisted copy is self-hosted: it
+        # names its own update_url, which the store rules (the default) reject.
+        lint = ["lint", "--source-dir", str(source)] + (["--self-hosted"] if args.channel == "unlisted" else [])
+        if web_ext(*lint).returncode:
             raise SystemExit("The add-on does not pass Mozilla's checks; nothing was sent.")
         if args.dry_run:
             print(f"dry run: {version()} ({args.channel}) passes the checks; nothing was sent.")
