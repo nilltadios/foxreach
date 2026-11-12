@@ -26,19 +26,7 @@ Open items, newest first. Remove an item when it is done.
    The program today is Linux-only (`install.sh`, `bridge/install.mjs`); Windows and macOS need the
    host registration and agent paths ported first.
 
-2. **Release 0.3.2** (0.3.1 is taken at Mozilla). Since 0.3.0, local commits a06394d..39b1d6c (not
-   pushed): the multi-agent install (`foxreach install`/`agents`), `foxreach update`, background tabs
-   by default with the keyboard guard fixed for them, and the fix for plain scripts that return an
-   object (the published 0.3.0 full add-on has that bug; the signed builds do not contain that
-   code). Then (2026-11-12): focus events for unfocused pages (GradForms-style pickers), ZCode in
-   `foxreach install`, `javascript`'s last value after a block, `press_key` reporting the value
-   after the keys, fields agents may not read (passwords, cards, ID numbers, security answers by default;
-   user's choice in the popup: hidden values, blacked out in pictures, no `javascript` while filled), and shorter
-   `read_page` replies (`full_links`). Steps: raise the version, `scripts/sign.py` (unlisted),
-   `scripts/release.py`, push and tag (watch the workflow start: the first tag push of 0.3.0
-   started none), `release.py --verify`, `verify_release.py`. Release users reach `foxreach update` with one last `install.sh` run.
-
-3. **addons.mozilla.org listing: awaiting Mozilla's review** (0.3.1, submitted 2026-11-11).
+2. **addons.mozilla.org listing: awaiting Mozilla's review** (0.3.1, submitted 2026-11-11).
    Status and reviewer questions:
    https://addons.mozilla.org/en-US/developers/addon/fe1f53e268044b529443/versions
 
