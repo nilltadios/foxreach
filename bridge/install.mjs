@@ -5,6 +5,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { registerAgents, unregisterAgents } from "./agents.mjs";
 
 export const ADDON_ID = "foxreach@foxreach.local";
 const HOST_NAME = "foxreach";
@@ -30,6 +31,9 @@ function self() {
   if (compiled) return [fs.realpathSync(process.execPath)];
   return [process.execPath, fileURLToPath(new URL("./cli.mjs", import.meta.url))];
 }
+
+/** What agents run: this program with "mcp". */
+export const mcpCommand = () => [...self(), "mcp"];
 
 const quote = (s) => `"${String(s).replace(/(["$`\\])/g, "\\$1")}"`;
 
@@ -93,7 +97,7 @@ function installFlatpak(id, home, log) {
   log(`permission for ${id}: xdg-run/foxreach`);
 }
 
-export function install({ browsers = [], flatpaks = true, home = os.homedir(), log = console.log } = {}) {
+export function install({ browsers = [], flatpaks = true, agents = null, home = os.homedir(), log = console.log } = {}) {
   const command = self();
   const named = browsers.filter((b) => b.startsWith("flatpak:")).map((b) => b.slice(8));
   // Naming browsers limits the work to them; otherwise everything found is prepared.
@@ -106,18 +110,19 @@ export function install({ browsers = [], flatpaks = true, home = os.homedir(), l
     }
   }
   if (flatpaks || named.length) for (const id of flatpakBrowsers(named)) installFlatpak(id, home, log);
-  const mcp = [...command, "mcp"];
-  log("\nThe browser can now start foxreach. Next:");
-  log("1. Install the foxreach add-on in the browser, if it is not there yet.");
-  log("2. Tell your agent about the MCP server. Its command is:");
-  log(`     ${mcp.join(" ")}`);
-  log(`   Claude Code:  claude mcp add foxreach -- ${mcp.join(" ")}`);
-  log("   Codex, in ~/.codex/config.toml:");
-  log(`     [mcp_servers.foxreach]\n     command = ${JSON.stringify(mcp[0])}\n     args = ${JSON.stringify(mcp.slice(1))}`);
+  const mcp = mcpCommand();
+  log("\nThe browser can now start foxreach.");
+  log(`The MCP server's command, for any agent: ${mcp.join(" ")}`);
+  if (agents === null || agents.length) {
+    log(agents === null ? "Agents found on this machine:" : "Agents:");
+    registerAgents({ command: mcp, only: agents, h: home, log });
+  }
+  log("Next: install the foxreach add-on in the browser, if it is not there yet. " +
+    "Agents that are running pick up the server when they start a new session.");
   log("Undo with: foxreach uninstall");
 }
 
-export function uninstall({ home = os.homedir(), log = console.log } = {}) {
+export function uninstall({ home = os.homedir(), agents = true, log = console.log } = {}) {
   const remove = (p) => {
     if (!exists(p)) return;
     fs.rmSync(p, { recursive: true, force: true });
@@ -138,5 +143,6 @@ export function uninstall({ home = os.homedir(), log = console.log } = {}) {
     const withdrawn = flatpak("override", "--user", "--nofilesystem=xdg-run/foxreach", id);
     if (withdrawn.status === 0) log(`withdrew the xdg-run/foxreach permission from ${id}`);
   }
+  if (agents) unregisterAgents({ h: home, log });
   log("The add-on itself is removed in the browser, under Add-ons.");
 }

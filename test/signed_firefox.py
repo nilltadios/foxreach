@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Does release Firefox accept the Mozilla-signed build (and refuse an unsigned one)?
 
-Run:      uv run --python 3.15 test/signed_firefox.py [--browser flatpak:org.mozilla.firefox]
+Run:      uv run --python 3.15 test/signed_firefox.py [--browser flatpak:org.mozilla.firefox] [--xpi FILE]
 Needs:    dist/signed/foxreach-<version>-signed.xpi (scripts/sign.py) and a release Firefox, which
           enforces signatures. Default: the Firefox Flatpak.
 How:      two fresh throwaway profiles (inside the Flatpak's own folder, the only place it can read),
@@ -79,8 +79,10 @@ def run_once(browser, base, xpi):
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--browser", default="flatpak:org.mozilla.firefox")
+    p.add_argument("--xpi", help="the signed file to test (default: dist/signed/ for this checkout's version), "
+                                 "for example one downloaded from a release")
     args = p.parse_args()
-    signed = ROOT / f"dist/signed/foxreach-{version()}-signed.xpi"
+    signed = pathlib.Path(args.xpi) if args.xpi else ROOT / f"dist/signed/foxreach-{version()}-signed.xpi"
     if not signed.exists():
         raise SystemExit(f"{signed} is missing; run scripts/sign.py first.")
     base = (pathlib.Path.home() / ".var/app" / args.browser[8:] if args.browser.startswith("flatpak:")

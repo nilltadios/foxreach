@@ -37,14 +37,33 @@ For any Firefox-based browser on Linux (x86-64 or arm64). Nothing else is needed
    `foxreach-linux-arm64` yourself, make it executable, and run `./foxreach install`.
 2. **The add-on.** Open `foxreach-<version>-signed.xpi` from the release in the browser and accept.
    Then click the foxreach toolbar button and choose the sites agents may use.
-3. **The agent.** `foxreach install` prints the command for your agent; it is `foxreach mcp`:
+3. **The agent.** `foxreach install` also adds the MCP server (`foxreach mcp`) to every agent it
+   finds on the machine, by writing the one entry each agent's own settings file needs. No agent's
+   command-line program is needed for this:
 
-   ```bash
-   claude mcp add foxreach -- ~/.local/bin/foxreach mcp
-   ```
+   | Agent | Settings file |
+   |---|---|
+   | Claude Code, the Code tab of Claude desktop, T3 Code | `~/.claude.json` (through `claude mcp add -s user` when `claude` is installed) |
+   | Claude desktop (chat) | `~/.config/Claude/claude_desktop_config.json` |
+   | Codex, the ChatGPT app, T3 Code | `~/.codex/config.toml` |
+   | Antigravity (app and `agy`) | `~/.gemini/config/mcp_config.json` |
+   | Gemini CLI | `~/.gemini/settings.json` |
+   | opencode (CLI and app) | `~/.config/opencode/opencode.json` |
+   | Pi | `~/.pi/agent/mcp.json` |
+   | Hermes | `~/.hermes/config.yaml` |
+   | Cursor | `~/.cursor/mcp.json` |
 
-The first time an agent calls, the toolbar button shows a request; allow it there.
-`foxreach uninstall` removes what `foxreach install` wrote.
+   Only the `foxreach` entry is added; everything else in each file stays as it was, and each file
+   is backed up first (`<file>.bak-<date>`). A file it cannot edit safely, such as JSON with
+   comments, is left alone and the entry to add by hand is printed. `foxreach agents` lists what
+   it found; `foxreach install --agents codex,pi` names the agents instead, and `--agents none`
+   skips this step. For any other agent, give it the command `~/.local/bin/foxreach mcp`.
+   Agents that are running pick the server up in their next session (Claude desktop and
+   Antigravity: after a restart).
+
+The first time an agent calls, the browser asks whether to allow it.
+`foxreach uninstall` removes what `foxreach install` wrote, including the agents' entries
+(`--keep-agents` keeps those).
 
 ## Setup from a checkout
 
@@ -86,17 +105,17 @@ disabled or paused, or still starting). It recognizes Firefox, LibreWolf, Floorp
 other Firefox derivatives by their executable; [test/connect_errors.py](test/connect_errors.py) checks
 each case.
 
-Then connect an agent, using full paths. Apps started from the desktop may not have Bun on `PATH`.
+Then connect the agents. This adds the MCP server to every agent found (the table under "Install"),
+with full paths, since apps started from the desktop may not have Bun on `PATH`; it leaves the
+browser's manifest to `setup_profile.py`:
 
 ```bash
-claude mcp add foxreach -- ~/.bun/bin/bun /path/to/foxreach/bridge/mcp.mjs
+~/.bun/bin/bun bridge/cli.mjs agents add
 ```
 
-```bash
-codex mcp add foxreach -- ~/.bun/bin/bun /path/to/foxreach/bridge/mcp.mjs
-```
-
-For other agents, use the same command as a stdio MCP server.
+`agents` alone lists what it finds; `agents add --agents codex` names agents; `agents remove`
+takes the entries out. For any other agent, use `~/.bun/bin/bun /path/to/foxreach/bridge/cli.mjs mcp`
+as a stdio MCP server.
 
 ### Flatpak browsers
 
