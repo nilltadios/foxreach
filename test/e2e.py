@@ -281,6 +281,14 @@ def t_keyboard(mcp):
     check("type_text names the field it typed into", 'textbox "Your name"' in out, out)
     out = mcp.call("press_key", tabId=tab, keys="End")
     check("press_key names the focused element", 'textbox "Your name"' in out, out)
+    # The report describes the field after the keys: it once showed the value from before them.
+    mcp.call("type_text", tabId=tab, ref=name, text="stale")
+    out = mcp.call("press_key", tabId=tab, keys="ctrl+a Backspace")
+    check("press_key reports the value after the keys", "stale" not in out, out)
+    out = mcp.call("type_text", tabId=tab, text="fresh")
+    check("type_text does not call a value change a focus move", "Focus has moved" not in out, out)
+    out = mcp.call("press_key", tabId=tab, keys="Tab")
+    check("press_key says where focus went", "Focus is now on" in out and "#pw" in out, out)
     mcp.call("click", tabId=tab, ref=ref_of(tree, "Press me"))
     clear(mcp, tab)
     check("Delete outside a text field is refused",

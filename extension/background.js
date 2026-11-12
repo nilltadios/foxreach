@@ -406,6 +406,9 @@ async function focusTarget(tabId) {
   }
 }
 
+/** Whether two focusInfo results are the same element (its value may differ). */
+const sameElement = (a, b) => !!a && !!b && a.frameId === b.frameId && (a.ref ? a.ref === b.ref : a.desc === b.desc);
+
 const describeFocus = (f) => (f ? `${f.desc}${f.frameId ? ` in frame ${f.frameId}` : ""}` : "an element foxreach cannot see");
 
 /** Keys that delete or replace content: harmless in a text field, destructive as page shortcuts. */
@@ -720,10 +723,10 @@ const TOOLS = {
     if (res.blockedByDialog) return { text: `Typing was interrupted.${DIALOG_NOTE}` };
     const after = await focusTarget(tabId);
     let note = "";
-    if (target?.editable && after && after.desc === target.desc && after.frameId === target.frameId &&
+    if (target?.editable && sameElement(after, target) &&
         text.replace(/\n/g, "") && after.value === target.value && after.length === target.length) {
       note = " Warning: the field's value did not change, so the page may be ignoring these keys. Check it with read_page, or try form_input.";
-    } else if (after && target && (after.desc !== target.desc || after.frameId !== target.frameId) && !text.includes("\n")) {
+    } else if (after && target && !sameElement(after, target) && !text.includes("\n")) {
       note = ` Focus has moved to ${describeFocus(after)}.`;
     }
     return { text: `Typed ${res.typed} characters into ${describeFocus(target)}.${trusted ? "" : " (untrusted)"}${note}` };
@@ -743,9 +746,14 @@ const TOOLS = {
       ? await privileged(tabId, "keys", { keys, repeat })
       : await contentCall(tabId, 0, "untrustedKeys", { keys });
     const moved = res.blockedByDialog ? "" : await afterInput(tabId, before);
+    // Describe the element as it is now: its value from before the keys would mislead.
+    const after = res.blockedByDialog ? null : await focusTarget(tabId);
+    const pressed = `Pressed ${keys}${repeat > 1 ? ` x${repeat}` : ""}`;
+    const where = !after ? ` in ${describeFocus(target)}.`
+      : sameElement(after, target) ? ` in ${describeFocus(after)}.`
+      : ` in ${describeFocus(target)}. Focus is now on ${describeFocus(after)}.`;
     return {
-      text: `Pressed ${keys}${repeat > 1 ? ` x${repeat}` : ""} in ${describeFocus(target)}.${trusted ? "" : " (untrusted)"}` +
-        `${res.blockedByDialog ? DIALOG_NOTE : moved}`,
+      text: `${pressed}${where}${trusted ? "" : " (untrusted)"}${res.blockedByDialog ? DIALOG_NOTE : moved}`,
     };
   },
 

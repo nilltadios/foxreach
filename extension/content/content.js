@@ -370,7 +370,8 @@
     const value = el.isContentEditable ? el.textContent
       : "value" in el && typeof el.value === "string" && el.type !== "password" ? el.value : null;
     const desc = line(el, roleOf(el), 0).replace(/^- /, "");
-    return { focused, ...own, hasElement: !inChild, editable: isTextEntry(el), desc, value, length: el.type === "password" ? el.value.length : value?.length };
+    // ref identifies the element; desc also carries its current value, so it changes as one types.
+    return { focused, ...own, hasElement: !inChild, editable: isTextEntry(el), desc, ref: refFor(el), value, length: el.type === "password" ? el.value.length : value?.length };
   }
 
   const OPS = {
