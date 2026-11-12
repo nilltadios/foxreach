@@ -94,7 +94,26 @@
     return el;
   }
 
-  function stateOf(el) {
+  /*
+   * Link addresses were a third of a long page's reply. A short one (an anchor, a site path) is
+   * kept as written; a long one shows only where it goes: "→ example.org" for another site, "→"
+   * for a long path on this one. read_page's full_links, or the link's ref with click or
+   * javascript, gives the whole address.
+   */
+  const SHORT_HREF = 40;
+  function hrefText(el, fullLinks) {
+    const raw = el.getAttribute("href");
+    if (fullLinks || raw.length <= SHORT_HREF) return `href=${clean(raw, fullLinks ? 2000 : 100)}`;
+    try {
+      const url = new URL(raw, document.baseURI);
+      if (url.protocol === "http:" || url.protocol === "https:") {
+        return url.host === location.host ? "href=→" : `href=→ ${url.host}`;
+      }
+    } catch {}
+    return `href=${clean(raw, SHORT_HREF)}`;
+  }
+
+  function stateOf(el, opts = {}) {
     const s = [];
     if (el.localName === "input" && ["checkbox", "radio"].includes(el.type)) s.push(el.checked ? "checked" : "unchecked");
     else if (el.getAttribute("aria-checked")) s.push(`checked=${el.getAttribute("aria-checked")}`);
@@ -106,18 +125,27 @@
     if (el.type === "password") s.push("password");
     else if (el.value !== undefined && el.value !== "" && ["input", "textarea", "select"].includes(el.localName) &&
              !["button", "submit", "reset", "checkbox", "radio"].includes(el.type)) s.push(`value=${JSON.stringify(clean(el.value, 80))}`);
-    if (el.href && el.localName === "a") s.push(`href=${clean(el.getAttribute("href"), 100)}`);
+    if (el.href && el.localName === "a") s.push(hrefText(el, opts.fullLinks));
     if (/^h[1-6]$/.test(el.localName)) s.push(`level=${el.localName[1]}`);
     return s;
   }
 
-  function line(el, role, depth) {
-    const name = nameOf(el);
-    const state = stateOf(el);
-    const id = el.id ? ` #${clean(el.id, 40)}` : "";
+  /**
+   * One element as a line. In read_page (opts.lean), an element only for layout (no name, nothing
+   * to press or type into) leaves out its id, which was page plumbing such as "toc-…-sublist";
+   * opts.name overrides the name, and "" leaves it out.
+   */
+  function line(el, role, depth, opts = {}) {
+    const name = opts.name ?? nameOf(el);
+    const state = stateOf(el, opts);
+    const layoutOnly = opts.lean && !name && !isInteractive(el, role);
+    const id = el.id && !layoutOnly ? ` #${clean(el.id, 40)}` : "";
     return `${"  ".repeat(depth)}- ${role ?? el.localName}${name ? ` "${name.replace(/"/g, "'")}"` : ""}${id}` +
       ` [${refFor(el)}]${state.length ? ` (${state.join(", ")})` : ""}`;
   }
+
+  // For comparing a container's name with its children's: letters and digits only.
+  const squash = (t) => t.replace(/…$/, "").replace(/[^\p{L}\p{N}]+/gu, "").toLowerCase();
 
   function childNodes(el) {
     const root = shadow(el);
@@ -137,8 +165,11 @@
       emit = false;
     }
     let next = depth;
+    const at = out.lines.length;
+    const name = emit ? nameOf(el) : "";
     if (emit) {
-      out.lines.push(line(el, role, depth));
+      out.lines.push(line(el, role, depth, { lean: true, fullLinks: opts.fullLinks, name }));
+      out.said.push(name);
       next = depth + 1;
     }
     if (["a", "button", "option", "summary", "select"].includes(el.localName) && emit && el.localName !== "select") return;
@@ -148,7 +179,18 @@
         const t = clean(node.textContent, 300);
         if (t) {
           out.lines.push(`${"  ".repeat(next)}- text: ${t}`);
+          out.said.push(t);
         }
+      }
+    }
+    // A container whose name is only its children's text joined (a list item around its link, a
+    // table cell around its text) says it once, in the children, which have their own refs.
+    if (emit && name && !interactive && out.lines.length > at + 1) {
+      const inner = squash(out.said.slice(at + 1).join(""));
+      const own = squash(name);
+      if (own && inner.startsWith(own)) {
+        out.lines[at] = line(el, role, depth, { lean: true, fullLinks: opts.fullLinks, name: "" });
+        out.said[at] = "";
       }
     }
   }
@@ -158,10 +200,10 @@
     return r.bottom > 0 && r.right > 0 && r.top < window.innerHeight && r.left < window.innerWidth;
   }
 
-  function readPage({ filter = "all", maxDepth = 40, ref, viewportOnly = false }) {
-    const out = { lines: [], offscreen: 0 };
+  function readPage({ filter = "all", maxDepth = 40, ref, viewportOnly = false, fullLinks = false }) {
+    const out = { lines: [], said: [], offscreen: 0 };
     const start = ref ? getRef(ref) : document.documentElement;
-    walk(start, { filter, maxDepth, viewportOnly }, 0, out);
+    walk(start, { filter, maxDepth, viewportOnly, fullLinks }, 0, out);
     return { lines: out.lines, offscreen: out.offscreen, url: location.href, title: document.title, ...viewport() };
   }
 
@@ -193,7 +235,7 @@
       const interactive = isInteractive(el, role);
       if (role || interactive) {
         const text = line(el, role, 0);
-        const hay = `${text} ${el.getAttribute("name") ?? ""} ${el.type ?? ""} ${el.title ?? ""}`.toLowerCase();
+        const hay = `${text} ${el.getAttribute("name") ?? ""} ${el.type ?? ""} ${el.title ?? ""} ${el.getAttribute("href") ?? ""}`.toLowerCase();
         let score = 0;
         for (const token of tokens) {
           if (hay.includes(token)) score += 1;

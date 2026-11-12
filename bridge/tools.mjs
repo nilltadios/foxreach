@@ -28,13 +28,15 @@ export const TOOLS = [
     tabId,
     url: { type: "string", description: 'A URL, or "back", "forward", "reload".' },
   }, ["url"]),
-  tool("read_page", "Read the page as an accessibility-style tree, across iframes and shadow DOM. Each element has a ref for other tools. Prefer this over screenshots.", {
+  tool("read_page", "Read the page as an accessibility-style tree, across iframes and shadow DOM. Each element has a ref for other tools. Prefer this over screenshots. " +
+    "Long link addresses are shortened to where they go (href=→ example.org, or href=→ on the same site); full_links shows them whole.", {
     tabId,
     filter: { type: "string", enum: ["all", "interactive"], description: "Default all." },
     scope: { type: "string", enum: ["viewport", "page"], description: "Default viewport for the interactive filter, otherwise page." },
     max_depth: { type: "integer", description: "Default 40." },
     ref: { ...ref, description: "Read only under this element." },
     max_chars: { type: "integer", description: "Default 50000." },
+    full_links: { type: "boolean", description: "Show every link's whole address. Default false. With ref, for just one part of the page." },
   }, ["tabId"]),
   tool("find", 'Find elements by plain description or text, across frames, best match first: "search bar", "the field for typing your name", "login button".', {
     tabId,

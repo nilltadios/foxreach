@@ -257,6 +257,11 @@ have that folder). For a Flatpak browser, remove `~/.var/app/<id>/foxreach` and 
 
 Each tool's description is in [bridge/tools.mjs](bridge/tools.mjs).
 
+`read_page` keeps its replies short: a link address over 40 characters shows only where it goes
+(`href=→ example.org`, or `href=→` for this site), a list item or cell whose text is just its
+children's is not repeated, and layout-only elements carry no id. `full_links: true` shows every
+address whole; `find` still matches addresses.
+
 `type_text` and `press_key` say which element received the keys. They refuse to type, or to send
 Delete or Backspace, when focus is not on a text field, so keys meant for a search box cannot act
 as page shortcuts (such as deleting the selected messages in a mail app). `allow_non_text: true`
@@ -381,7 +386,7 @@ Read this before installing into a profile you browse with.
 ## Tests
 
 ```bash
-uv run --python 3.15 test/e2e.py             # expect: 253 passed, 0 failed, exit 0
+uv run --python 3.15 test/e2e.py             # expect: 264 passed, 0 failed, exit 0
 ```
 
 The tests use `FOXREACH_BROWSER` (a path or a command), else the only browser installed.

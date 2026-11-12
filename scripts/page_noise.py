@@ -11,6 +11,9 @@ Prints:   per page, the share of read_page's reply taken by quoted names and tex
           Run it before and after a change to read_page to see the difference. Nothing is written.
 Measured 2026-11-11 (0.3.1): link addresses were 32% of Wikipedia's reply and 21% of BBC News';
           no styling noise; container names repeated their children's text.
+Measured 2026-11-12 after the lean replies (whole pages, no max_chars cut): Wikipedia's Firefox
+          article 541,618 -> 370,210 chars (-32%), BBC News 11,452 -> 9,259 (-19%), with the same
+          lines and the same share of visible words.
 """
 import collections
 import pathlib
@@ -42,8 +45,8 @@ def main():
         mcp = McpClient(browser.socket)
         for url in urls:
             tab = int(mcp.call("tabs_create", url=url).split(":")[0].split()[-1])
-            rp = mcp.call("read_page", tabId=tab, max_chars=200000)
-            txt = mcp.call("get_page_text", tabId=tab, max_chars=200000)
+            rp = mcp.call("read_page", tabId=tab, max_chars=5000000)
+            txt = mcp.call("get_page_text", tabId=tab, max_chars=5000000)
             lines = rp.splitlines()
             structure_only = [l for l in lines if not re.search(r'"[^"]+"|: \S', l)]
             roles = collections.Counter((LINE_ROLE.match(l).group(1) if LINE_ROLE.match(l) else "?") for l in structure_only)

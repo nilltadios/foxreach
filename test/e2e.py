@@ -383,6 +383,25 @@ def t_read(mcp):
     check("find reports no match", "Nothing matches" in mcp.call("find", tabId=tab, query="zzzznope"))
     check("get_page_text", "Some visible paragraph text." in mcp.call("get_page_text", tabId=tab))
 
+    # Lean replies: long addresses shortened to where they go, a list item's text said once, no
+    # ids on layout-only elements. full_links gives the whole addresses back.
+    long_path = "/a/very/long/path/that/goes/on/and/on/for/a/while"
+    js(mcp, tab, f"""document.body.insertAdjacentHTML('beforeend', `<ul id=layout-list>
+        <li><a href="#top">Top</a></li>
+        <li><a href="https://far.example.org{long_path}">Far site</a></li>
+        <li><a href="{long_path}">Same site</a></li>
+        <li id=named-item>Item with words <b>beside</b> <a href="#x">a link</a></li></ul>`); 1""")
+    lean = mcp.call("read_page", tabId=tab)
+    check("short addresses are kept as written", 'link "Top"' in lean and "(href=#top)" in lean, lean[-900:])
+    check("a long address to another site shows only the site", "(href=→ far.example.org)" in lean and long_path not in lean, lean[-900:])
+    check("a long same-site address shows as →", 'link "Same site"' in lean and "(href=→)" in lean, lean[-900:])
+    check("a list item around its link does not repeat the text", '- listitem "Top"' not in lean, lean[-900:])
+    check("a list item with more text than its links keeps its name", 'listitem "Item with words beside a link" #named-item' in lean, lean[-900:])
+    check("a layout-only element has no id", "#layout-list" not in lean, lean[-900:])
+    whole = mcp.call("read_page", tabId=tab, full_links=True)
+    check("full_links shows whole addresses", f"https://far.example.org{long_path}" in whole and f"(href={long_path})" in whole, whole[-900:])
+    check("find still matches by address", "Far site" in mcp.call("find", tabId=tab, query="far.example.org"))
+
     shadow = ref_of(tree, "Shadow button")
     clear(mcp, tab)
     mcp.call("click", tabId=tab, ref=shadow)

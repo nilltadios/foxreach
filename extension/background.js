@@ -615,7 +615,7 @@ const TOOLS = {
     return { text: await done };
   },
 
-  async read_page({ tabId, filter = "all", max_depth = 40, ref, max_chars = 50000, scope }) {
+  async read_page({ tabId, filter = "all", max_depth = 40, ref, max_chars = 50000, scope, full_links = false }) {
     await accessibleTab(tabId);
     // The whole of a long page's links can be 30 times what is on screen, and costs an agent as much.
     const viewportOnly = (scope ?? (filter === "interactive" ? "viewport" : "page")) === "viewport";
@@ -624,10 +624,10 @@ const TOOLS = {
     let view = null;
     if (ref) {
       const parsed = parseRef(ref);
-      const r = await contentCall(tabId, parsed.frameId, "readPage", { filter, maxDepth: max_depth, ref: parsed.ref });
+      const r = await contentCall(tabId, parsed.frameId, "readPage", { filter, maxDepth: max_depth, ref: parsed.ref, fullLinks: full_links });
       sections = [frameRef(parsed.frameId, r.lines.join("\n"))];
     } else {
-      const results = await eachFrame(tabId, "readPage", { filter, maxDepth: max_depth, viewportOnly });
+      const results = await eachFrame(tabId, "readPage", { filter, maxDepth: max_depth, viewportOnly, fullLinks: full_links });
       for (const { frame, value, error } of results) {
         if (error) {
           sections.push(`--- frame ${frame.frameId} <${frame.url}>: could not read (${error})`);

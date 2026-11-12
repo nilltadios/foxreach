@@ -26,27 +26,17 @@ Open items, newest first. Remove an item when it is done.
    The program today is Linux-only (`install.sh`, `bridge/install.mjs`); Windows and macOS need the
    host registration and agent paths ported first.
 
-2. **Leaner read_page replies.** Measured with `scripts/page_noise.py` (sizes: `scripts/context_cost.py`):
-   no styling noise, but link addresses are 32% of Wikipedia's reply (21% on BBC News), and
-   container names repeat their children's text (`listitem "UK"` then `link "UK"`). Agreed:
-   - Link addresses: keep short ones inline (under ~40 characters: `#Licensing`, `/news/uk`); show
-     long ones as the site only, `(→ nytimes.com)`, or `(→)` for a long same-site path. The full
-     address on request by the element's ref (a `link ref=r46` tool, or `read_page links=full`);
-     no second numbering scheme, the ref already identifies the link.
-   - Don't repeat text: when a container's name is just its children's text joined, show it once.
-   - Drop internal IDs on layout-only elements (`list #toc-…-sublist`).
-   Check: rerun both scripts before and after (expect about half on link-heavy pages), and the e2e
-   read tests.
-
-3. **Release 0.3.2** (0.3.1 is taken at Mozilla). Since 0.3.0, local commits a06394d..39b1d6c (not
+2. **Release 0.3.2** (0.3.1 is taken at Mozilla). Since 0.3.0, local commits a06394d..39b1d6c (not
    pushed): the multi-agent install (`foxreach install`/`agents`), `foxreach update`, background tabs
    by default with the keyboard guard fixed for them, and the fix for plain scripts that return an
    object (the published 0.3.0 full add-on has that bug; the signed builds do not contain that
-   code). Steps: raise the version, `scripts/sign.py` (unlisted), `scripts/release.py`, push and
+   code). Then (2026-11-12): focus events for unfocused pages (GradForms-style pickers), ZCode in
+   `foxreach install`, `javascript`'s last value after a block, `press_key` reporting the value
+   after the keys, and shorter `read_page` replies (`full_links`). Steps: raise the version, `scripts/sign.py` (unlisted), `scripts/release.py`, push and
    tag (watch the workflow start: the first tag push of 0.3.0 started none), `release.py --verify`,
    `verify_release.py`. Release users reach `foxreach update` with one last `install.sh` run.
 
-4. **addons.mozilla.org listing: awaiting Mozilla's review** (0.3.1, submitted 2026-11-11).
+3. **addons.mozilla.org listing: awaiting Mozilla's review** (0.3.1, submitted 2026-11-11).
    Status and reviewer questions:
    https://addons.mozilla.org/en-US/developers/addon/fe1f53e268044b529443/versions
 
