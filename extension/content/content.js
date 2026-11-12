@@ -384,6 +384,22 @@
     }
   }
 
+  /** The first password field in this document (shadow roots included) that holds a value. */
+  function filledPassword() {
+    const visit = (root) => {
+      for (const el of root.querySelectorAll("*")) {
+        if (el.localName === "input" && el.type === "password" && el.value) return line(el, roleOf(el), 0).replace(/^- /, "");
+        const inner = shadow(el);
+        if (inner) {
+          const hit = visit(inner);
+          if (hit) return hit;
+        }
+      }
+      return null;
+    };
+    return { field: visit(document) };
+  }
+
   const TEXT_INPUTS = new Set(["text", "search", "email", "url", "tel", "password", "number", ""]);
 
   function isTextEntry(el) {
@@ -417,7 +433,7 @@
   }
 
   const OPS = {
-    readPage, evaluate, find, pageText, point, formInput, setFiles, viewport, waitCheck, focusInfo,
+    readPage, evaluate, find, pageText, point, formInput, setFiles, viewport, waitCheck, focusInfo, filledPassword,
     untrustedMouse, untrustedType, untrustedKeys, untrustedScroll,
     ping: () => ({ ok: true }),
     scrollTo: ({ ref }) => ({ ...point({ ref }), ...viewport() }),

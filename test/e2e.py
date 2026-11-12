@@ -42,7 +42,7 @@ PAGES = {
 <button id=under>Hidden under</button><div id=cover></div>
 <div style="margin-top:160px">
 <label for=name>Your name</label> <input id=name placeholder=Name>
-<input id=pw type=password value=secret123>
+<input id=pw type=password>
 <textarea id=area></textarea>
 <select id=sel><option value=a>Apple</option><option value=b>Banana</option></select>
 <input id=chk type=checkbox aria-label="Agree">
@@ -363,7 +363,20 @@ def t_read(mcp):
     check("label names an input", 'textbox "Your name"' in tree, tree[:800])
     check("closed shadow DOM is read", "Shadow button" in tree, tree)
     check("display:none is skipped", "Hidden button" not in tree)
+    # A filled password field: read_page hides its value, and javascript does not run in the tab,
+    # since agent code runs in the page's own world and could read it there.
+    check("javascript runs while the password field is empty", js(mcp, tab, "1 + 1") == 2)
+    mcp.call("type_text", tabId=tab, ref=ref_of(tree, "#pw"), text="secret123")
+    tree = mcp.call("read_page", tabId=tab)
     check("password value is not exposed", "secret123" not in tree)
+    check("find does not expose it either", "secret123" not in mcp.call("find", tabId=tab, query="password"))
+    check("javascript is refused while a password field holds a value",
+          expect_error(lambda: js(mcp, tab, "document.getElementById('pw').value"), "password field holds a value"))
+    check("...including code saved to a file", expect_error(
+        lambda: mcp.call("javascript", tabId=tab, code="document.getElementById('pw').value", save_to="/tmp/foxreach-pw-test.txt"),
+        "password field holds a value") and not pathlib.Path("/tmp/foxreach-pw-test.txt").exists())
+    mcp.call("press_key", tabId=tab, keys="ctrl+a Backspace")
+    check("javascript works again once the field is cleared", js(mcp, tab, "document.getElementById('pw').value") == "")
     inter = mcp.call("read_page", tabId=tab, filter="interactive")
     check("interactive filter drops text", "Some visible paragraph" not in inter and "Press me" in inter, inter[:400])
     far = tab_id(mcp.call("tabs_create", url=f"{MAIN}/scroll"))

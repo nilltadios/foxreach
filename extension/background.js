@@ -409,6 +409,23 @@ async function focusTarget(tabId) {
 /** Whether two focusInfo results are the same element (its value may differ). */
 const sameElement = (a, b) => !!a && !!b && a.frameId === b.frameId && (a.ref ? a.ref === b.ref : a.desc === b.desc);
 
+/*
+ * Agent code runs in the page's own world, where nothing can stop it reading a password field
+ * (read_page and find hide the value, but javascript sees what the page sees). So javascript does
+ * not run in a tab while any of its frames has a password field holding a value. Clicking and
+ * typing still work there. A frame foxreach may not read (another site the user has not allowed)
+ * is skipped: agent code in an allowed frame cannot read across sites either.
+ */
+async function assertNoFilledPassword(tabId) {
+  const results = await eachFrame(tabId, "filledPassword", {});
+  const hit = results.find((r) => r.value?.field);
+  if (!hit) return;
+  const where = `${hit.value.field}${hit.frame.frameId ? ` in frame ${hit.frame.frameId}` : ""}`;
+  throw new Error(`javascript does not run in this tab while a password field holds a value (${where}), so agent code ` +
+    "cannot read a password. read_page, find, click and type_text still work. Once the form is submitted or the field " +
+    "is cleared, javascript works again.");
+}
+
 const describeFocus = (f) => (f ? `${f.desc}${f.frameId ? ` in frame ${f.frameId}` : ""}` : "an element foxreach cannot see");
 
 /** Keys that delete or replace content: harmless in a text field, destructive as page shortcuts. */
@@ -865,6 +882,7 @@ const TOOLS = {
     await assertNoDialog(tabId);
     if (!code) throw new Error("code is required.");
     await assertFrameAllowed(tabId, frame_id);
+    await assertNoFilledPassword(tabId);
     const timeoutMs = Math.round(Math.min(Math.max(Number(timeout) || JS_TIMEOUT_S, 1), JS_TIMEOUT_MAX_S) * 1000);
     // full: the bridge saves the result to a file (save_to), so it may be larger than a reply.
     const limit = full ? SAVED_RESULT_LIMIT : RESULT_LIMIT;

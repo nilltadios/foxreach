@@ -109,7 +109,8 @@ export const TOOLS = [
     text: { type: "string" },
     timeout: { type: "number", description: "Seconds. Default 15, at most 120." },
   }, ["tabId"]),
-  tool("javascript", "Run JavaScript in the page's own world and return the last expression as JSON. Top-level await works, and page CSP does not block it. let/const are local to the call; a bare assignment or var sets a global on the page's window, which later calls can read.", {
+  tool("javascript", "Run JavaScript in the page's own world and return the last expression as JSON. Top-level await works, and page CSP does not block it. let/const are local to the call; a bare assignment or var sets a global on the page's window, which later calls can read. " +
+    "Refused while a password field in the tab holds a value.", {
     tabId,
     code: { type: "string", description: "The code. Needs code, file, or both." },
     file: { type: "string", description: "Absolute path of a .js/.mjs file on this machine to run first (before code), for example a helper library. Hidden files and folders are refused." },

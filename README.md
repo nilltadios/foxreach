@@ -342,6 +342,12 @@ Read this before installing into a profile you browse with.
 - Page content is untrusted. A page can try to instruct the agent reading it (prompt injection), and
   no tool can rule that out. In an agent tab, an agent can reach any site the profile is logged in to,
   so block sensitive sites (banking, email, your password manager's site) in the toolbar popup.
+- **Password fields.** `read_page` and `find` never show a password field's value, and `javascript`
+  does not run in a tab while any of its frames has a password field holding a value: agent code
+  runs in the page's own world, where nothing could stop it reading one. Clicking and typing still
+  work. Not covered: code an agent started earlier that is still running (a listener added before
+  you typed sees your keys), and frames on sites agents are not allowed on, which agent code
+  cannot reach either.
 - How password-manager add-ons behave in agent tabs has not been tested.
 - A tab you share stays shared when it moves to another site, until you untick it or close it.
 - Blocking covers what a tab loads from the moment a site is on the list. A blocked site already
@@ -386,7 +392,7 @@ Read this before installing into a profile you browse with.
 ## Tests
 
 ```bash
-uv run --python 3.15 test/e2e.py             # expect: 264 passed, 0 failed, exit 0
+uv run --python 3.15 test/e2e.py             # expect: 269 passed, 0 failed, exit 0
 ```
 
 The tests use `FOXREACH_BROWSER` (a path or a command), else the only browser installed.

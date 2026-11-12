@@ -32,9 +32,10 @@ Open items, newest first. Remove an item when it is done.
    object (the published 0.3.0 full add-on has that bug; the signed builds do not contain that
    code). Then (2026-11-12): focus events for unfocused pages (GradForms-style pickers), ZCode in
    `foxreach install`, `javascript`'s last value after a block, `press_key` reporting the value
-   after the keys, and shorter `read_page` replies (`full_links`). Steps: raise the version, `scripts/sign.py` (unlisted), `scripts/release.py`, push and
-   tag (watch the workflow start: the first tag push of 0.3.0 started none), `release.py --verify`,
-   `verify_release.py`. Release users reach `foxreach update` with one last `install.sh` run.
+   after the keys, `javascript` refused while a password field holds a value, and shorter
+   `read_page` replies (`full_links`). Steps: raise the version, `scripts/sign.py` (unlisted),
+   `scripts/release.py`, push and tag (watch the workflow start: the first tag push of 0.3.0
+   started none), `release.py --verify`, `verify_release.py`. Release users reach `foxreach update` with one last `install.sh` run.
 
 3. **addons.mozilla.org listing: awaiting Mozilla's review** (0.3.1, submitted 2026-11-11).
    Status and reviewer questions:
@@ -45,8 +46,6 @@ Open items, newest first. Remove an item when it is done.
 - **Limit what a misled agent can do in a profile with logins.** Not built: agent tabs in their own
   Firefox container (logged out even in a daily profile); a shared tab stops being shared when it
   leaves the site it was shared on; confirm each file upload. (The site allowlist exists.)
-- **Password fields:** `read_page` hides typed passwords, but `javascript` can still read a filled
-  password field. Options: block that read, or pause agents while the user types in one.
 - **Approval from the Claude app (phone, iPad).** MCP elicitation is not relayed to Remote Control
   clients (Claude Code 2.1.322, tested 2026-11-11; demo in ~/Documents/Claude/2026-11-11/elicitation-demo),
   so it shows only in the terminal. A permission prompt is relayed: a `request_access` tool behind a
