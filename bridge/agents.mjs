@@ -376,6 +376,7 @@ export function agents(h = home()) {
     (!exists(path.join(h, ".kimi-code")) && exists(path.join(h, ".kimi")) ? path.join(h, ".kimi") : path.join(h, ".kimi-code"));
   const mimoDir = env("MIMOCODE_HOME") ? path.join(env("MIMOCODE_HOME"), "config") : path.join(xdgConfig(h), "mimocode");
   const vibeHome = env("VIBE_HOME") || path.join(h, ".vibe");
+  const minimaxDir = env("MINIMAX_DATA_DIR") || env("MAVIS_DATA_DIR") || path.join(h, ".minimax");
   // OpenClaw: OPENCLAW_CONFIG_PATH, else OPENCLAW_STATE_DIR, else ~/.openclaw (~/.openclaw-<profile>
   // with OPENCLAW_PROFILE), under OPENCLAW_HOME if set. https://docs.openclaw.ai/help/environment
   const tilde = (p) => (p.startsWith("~/") ? path.join(h, p.slice(2)) : p);
@@ -486,10 +487,12 @@ export function agents(h = home()) {
       detect: () => exists(mimoDir) || !!onPath("mimo"),
     },
     {
-      // https://code.minimax.io/docs/code/agents/mcp.md
-      id: "minimax", name: "MiniMax Code", file: path.join(h, ".minimax/mcp.json"),
+      // https://code.minimax.io/docs/code/agents/mcp.md; data folder: MINIMAX_DATA_DIR, then
+      // MAVIS_DATA_DIR, else ~/.minimax (https://agent.minimax.io/docs/cli/configuration.md)
+      id: "minimax", name: "MiniMax Code", file: path.join(minimaxDir, "mcp.json"),
       format: jsonFormat(["mcpServers"], (c) => ({ type: "stdio", ...commandArgs(c), enabled: true })),
-      detect: () => exists(path.join(h, ".minimax")) || !!onPath("mcode"),
+      // The installer puts the program in ~/.minimax-code/bin; ~/.minimax appears on first run.
+      detect: () => exists(minimaxDir) || exists(path.join(h, ".minimax-code")) || !!onPath("mcode"),
     },
     {
       // https://docs.mistral.ai/vibe/code/cli/mcp-servers

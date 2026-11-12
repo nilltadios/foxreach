@@ -68,8 +68,9 @@ For any Firefox-based browser on Linux (x86-64 or arm64). Nothing else is needed
    it found; `foxreach install --agents codex,pi` names the agents instead, and `--agents none`
    skips this step. For any other agent, give it the command `~/.local/bin/foxreach mcp`.
    Agents that are running pick the server up in their next session (Claude desktop and
-   Antigravity: after a restart). OpenClaw, GitHub Copilot CLI, Qwen Code, Kimi Code, MiMo Code, MiniMax Code, Mistral Vibe and DeepSeek
-   Harness were added from their documentation and have not yet been tried in a real session.
+   Antigravity: after a restart). OpenClaw, GitHub Copilot CLI, Qwen Code, Kimi Code, MiMo Code,
+   MiniMax Code, Mistral Vibe and DeepSeek Harness were checked on 2026-11-12 by installing each
+   in a throwaway container and confirming with its own tools that it reads foxreach's entry.
 
 The first time an agent calls, the browser asks whether to allow it.
 `foxreach uninstall` removes what `foxreach install` wrote, including the agents' entries
