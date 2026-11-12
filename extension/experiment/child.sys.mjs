@@ -281,7 +281,10 @@ function pageGlobal(win) {
       const dbg = new Dbg();
       try {
         const global = dbg.addDebuggee(win);
-        const done = bindings ? global.executeInGlobalWithBindings(source, bindings) : global.executeInGlobal(source);
+        // Bindings are raw values: a Debugger.Object from an earlier call belongs to that call's
+        // Debugger and is refused by this one ("belongs to a different Debugger").
+        const wrapped = bindings && Object.fromEntries(Object.entries(bindings).map(([k, v]) => [k, global.makeDebuggeeValue(v)]));
+        const done = wrapped ? global.executeInGlobalWithBindings(source, wrapped) : global.executeInGlobal(source);
         if (done === null) return { error: "Error: the script was terminated" };
         const raw = (v) => (v instanceof Dbg.Object ? v.unsafeDereference() : v);
         if ("throw" in done) {
@@ -295,8 +298,7 @@ function pageGlobal(win) {
           }
           return { error: `Error: ${text}`, syntax: name === "SyntaxError" };
         }
-        // handle: the value as the debuggee sees it, to pass back in as a binding
-        return { value: raw(done.return), handle: done.return };
+        return { value: raw(done.return) };
       } finally {
         dbg.removeAllDebuggees(); // code that is still running keeps running; only the hooks go
       }
@@ -307,8 +309,7 @@ function pageGlobal(win) {
   return (source, bindings) => {
     try {
       if (bindings) Object.assign(sandbox, bindings);
-      const value = Cu.evalInSandbox(source, sandbox);
-      return { value, handle: value };
+      return { value: Cu.evalInSandbox(source, sandbox) };
     } catch (e) {
       return { error: `Error: ${e}`, syntax: e?.name === "SyntaxError" };
     }
@@ -350,7 +351,7 @@ function runInPage(win, code) {
     const r = run(`{\n${code}\n}`);
     if (r.error && !r.syntax) return r.error;
     if (!r.error) {
-      const s = run(`Promise.resolve(__foxreachValue)${serialize}`, { __foxreachValue: r.handle });
+      const s = run(`Promise.resolve(__foxreachValue)${serialize}`, { __foxreachValue: r.value });
       return s.error ?? s.value;
     }
   }

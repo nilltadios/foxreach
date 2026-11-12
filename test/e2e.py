@@ -495,6 +495,12 @@ def t_script(mcp):
     check("js the page's own scripts see agent globals", js(mcp, tab, "document.defaultView.eval('bareGlobal')") == 5)
     check("js let/const can be declared again in the next call",
           js(mcp, tab, "const reuse = 1; reuse") == 1 and js(mcp, tab, "const reuse = 2; reuse") == 2)
+    # A plain script (no await) whose last value is an object: its value is handed from one
+    # evaluation to the next, which once failed with "belongs to a different Debugger".
+    check("js plain script returning an object",
+          js(mcp, tab, "objGlobal = 41 + 1; ({ title: document.title, onWindow: window.objGlobal })") == {"title": "Main page", "onWindow": 42})
+    check("js plain script returning an array and a DOM node",
+          js(mcp, tab, "const a = [1, 2]; a") == [1, 2] and "<h1>" in js(mcp, tab, "const h = document.querySelector('h1'); JSON.stringify(h.outerHTML)"))
     check("js a plain script's const stays local", js(mcp, tab, "const localOnly = 1; localOnly") == 1
           and js(mcp, tab, "typeof window.localOnly") == "undefined")
 
