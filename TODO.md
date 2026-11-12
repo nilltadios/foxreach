@@ -42,7 +42,7 @@ Open items, newest first. Remove an item when it is done.
    use it. Keep MCP as the main path: images reach the model directly, agents approve per tool, and
    one connection keeps an agent's refs, pointer and identity.
 
-4. **Check the agents added from their docs in a real session:** Qwen Code, Kimi Code, MiMo Code, MiniMax Code,
+4. **Check the agents added from their docs in a real session:** GitHub Copilot CLI, Qwen Code, Kimi Code, MiMo Code, MiniMax Code,
    Mistral Vibe, DeepSeek Harness (2026-11-12; none installed here). For each, install it, run
    `foxreach agents add --agents <id>`, start a session and call `status`. Least certain: DeepSeek
    Harness's profile path `~/.dsh/profiles/web/` (from Composio's guide, not DeepSeek's docs).

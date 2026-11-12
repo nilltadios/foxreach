@@ -66,6 +66,7 @@ def seed(home):
         ".config/opencode/opencode.json": json.dumps({"$schema": "https://opencode.ai/config.json", "theme": "x"}, indent=2),
         ".pi/agent/.keep": "",
         ".zcode/cli/config.json": json.dumps({"permission": {"mode": "ask"}, "mcp": {"servers": {"other": {"type": "stdio", "command": "x"}}}}, indent=2),
+        ".copilot/mcp-config.json": json.dumps({"mcpServers": {"playwright": {"type": "local", "command": "npx", "args": ["@playwright/mcp@latest"], "tools": ["*"]}}}, indent=2),
         ".qwen/settings.json": json.dumps({"mcpServers": {"other": {"command": "q"}}, "theme": "Default"}, indent=2),
         ".kimi-code/mcp.json": json.dumps({"mcpServers": {"other": {"command": "x"}}}, indent=2),
         ".config/mimocode/mimocode.json": json.dumps({"$schema": "https://mimo.xiaomi.com/config.json", "model": "mimo-v2"}, indent=2),
@@ -94,6 +95,7 @@ def entries(home):
     f = home / ".pi/agent/mcp.json"
     out["pi"] = json.loads(f.read_text()).get("mcpServers", {}).get("foxreach") if f.exists() else None
     out["zcode"] = json.loads((home / ".zcode/cli/config.json").read_text()).get("mcp", {}).get("servers", {}).get("foxreach")
+    out["copilot"] = json.loads((home / ".copilot/mcp-config.json").read_text()).get("mcpServers", {}).get("foxreach")
     out["qwen"] = json.loads((home / ".qwen/settings.json").read_text()).get("mcpServers", {}).get("foxreach")
     out["kimi"] = json.loads((home / ".kimi-code/mcp.json").read_text()).get("mcpServers", {}).get("foxreach")
     out["mimo"] = json.loads((home / ".config/mimocode/mimocode.json").read_text()).get("mcp", {}).get("foxreach")
@@ -117,7 +119,7 @@ def main():
         code, out = run(home, "agents")
         found = {line.split()[0] for line in out.splitlines() if line.split()[1:2] == ["found"]}
         check("agents: finds every seeded agent and no other",
-              found == {"claude-code", "claude-desktop", "codex", "antigravity", "opencode", "pi", "hermes", "zcode", "qwen", "kimi", "mimo", "minimax", "vibe", "deepseek"}, out)
+              found == {"claude-code", "claude-desktop", "codex", "antigravity", "opencode", "pi", "hermes", "zcode", "copilot", "qwen", "kimi", "mimo", "minimax", "vibe", "deepseek"}, out)
 
         code, out = run(home, "install", "--no-flatpak")
         check("install exits 0", code == 0, out)
@@ -130,6 +132,8 @@ def main():
         check("codex: old entry and its env sub-table replaced", e["codex"] == want, e["codex"])
         check("opencode: 2.x entry under mcp.servers", e["opencode"] == {"type": "local", "command": cmd}, e["opencode"])
         check("zcode: stdio entry under mcp.servers (its schema is strict)", e["zcode"] == {"type": "stdio", **want}, e["zcode"])
+        check("copilot: local entry with every tool", e["copilot"] == {"type": "local", **want, "tools": ["*"]}, e["copilot"])
+        check("copilot: its other servers kept", "playwright" in json.loads((home / ".copilot/mcp-config.json").read_text())["mcpServers"])
         check("qwen: entry added under mcpServers", e["qwen"] == want, e["qwen"])
         check("kimi: entry added under mcpServers", e["kimi"] == want, e["kimi"])
         check("mimo: local entry with the command as one array", e["mimo"] == {"type": "local", "command": cmd, "enabled": True}, e["mimo"])
@@ -178,10 +182,10 @@ def main():
         snapshot = {p: p.read_bytes() for p in home.rglob("*") if p.is_file()}
         code, out = run(home, "install", "--no-flatpak")
         again = {p: p.read_bytes() for p in home.rglob("*") if p.is_file()}
-        check("a second install changes nothing", code == 0 and snapshot == again and out.count("already set") >= 14, out)
+        check("a second install changes nothing", code == 0 and snapshot == again and out.count("already set") >= 15, out)
 
         code, out = run(home, "agents")
-        check("agents: reports foxreach set", out.count("foxreach set") == 14, out)
+        check("agents: reports foxreach set", out.count("foxreach set") == 15, out)
 
         # Uninstall: foxreach's entries go, everything else stays.
         code, out = run(home, "uninstall")

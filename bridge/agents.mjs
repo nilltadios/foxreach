@@ -444,6 +444,13 @@ export function agents(h = home()) {
       note: "start a new session",
     },
     {
+      // https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-mcp-servers
+      id: "copilot", name: "GitHub Copilot CLI", file: path.join(h, ".copilot/mcp-config.json"),
+      format: jsonFormat(["mcpServers"], (c) => ({ type: "local", ...commandArgs(c), tools: ["*"] })),
+      detect: () => exists(path.join(h, ".copilot")) || !!onPath("copilot"),
+      note: "start a new session",
+    },
+    {
       // https://qwenlm.github.io/qwen-code-docs/en/users/features/mcp/ (user scope, the default)
       id: "qwen", name: "Qwen Code", file: path.join(h, ".qwen/settings.json"),
       format: jsonFormat(["mcpServers"], commandArgs),
