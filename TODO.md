@@ -2,28 +2,58 @@
 
 Open items, newest first. Remove an item when it is done.
 
-## Publish 0.3.0 (steps 1-3 done 2026-11-11; step 4 waits for Mozilla)
+## Next
 
-1. ~~**Sign the build for release Firefox.**~~ Done 2026-11-11: 0.3.0 signed unlisted, in
-   `dist/signed/foxreach-0.3.0-signed.xpi` (sha256 7c1cc667…71d3). `test/signed_firefox.py` shows
-   release Firefox 160 installs it as "signed" and refuses the unsigned build. Key in
-   `~/.config/foxreach/amo.env`. 0.3.0 cannot be submitted again: raise the version for the next.
-2. ~~**Release.**~~ Done 2026-11-11: v0.3.0 on GitHub (https://github.com/nilltadios/foxreach/releases/tag/v0.3.0),
-   built and attested by the release workflow (first run; the tag had to be pushed a second time
-   because the first push, together with the workflow's own first commit, started no run).
-   `scripts/verify_release.py 0.3.0`: all 6 files match the source.
-3. ~~**Enable GitHub Pages**~~ Was already on; serves docs/. `scripts/release.py --verify`: both lists
-   of updates published, hashes match.
-4. **addons.mozilla.org listing: submitted, awaiting Mozilla's review.** 0.3.1 (same code as 0.3.0,
-   whose number the unlisted build holds) sent 2026-11-11 with `sign.py --channel listed`. Status:
-   https://addons.mozilla.org/en-US/developers/addon/fe1f53e268044b529443/versions . Answer reviewer
-   questions there. The next GitHub release must be 0.3.2 or later: 0.3.1 is now taken at Mozilla,
-   so it could not be signed unlisted.
+1. **foxreach manager app.** A desktop app that manages foxreach end to end, built on the same
+   code as the `foxreach` program (`bridge/agents.mjs`, `bridge/install.mjs`, `bridge/update.mjs`):
+   - choose which agents get the MCP server (the list `foxreach agents` shows), add and remove them;
+   - updates: see whether a newer release exists and apply it (what `foxreach update` does), and
+     show the add-on's version beside the program's;
+   - uninstall: selected parts (one agent, one browser's native host, the Flatpak copies), or
+     everything, including the app itself.
+
+   Packaging, one per platform:
+   - Linux: an AppImage that runs on any distribution (anylinux style: bundle what it needs, glibc
+     baseline old enough), and a Flatpak (a `.flatpakref` or a repo, as for CosmicAuthenticator).
+     The Flatpak needs host access for agents' settings files and `~/.mozilla`, so check what its
+     sandbox must be allowed and say so on its page.
+   - Windows: an `.exe` installer. Native messaging there is registered in the registry
+     (`HKCU\Software\Mozilla\NativeMessagingHosts\foxreach`), not a folder; agents' settings paths
+     differ (`%APPDATA%`, `%USERPROFILE%`).
+   - macOS: a signed `.app` in a `.dmg`. Native messaging manifests go in
+     `~/Library/Application Support/Mozilla/NativeMessagingHosts`; Claude desktop's settings are
+     already handled (`~/Library/Application Support/Claude`).
+   The program today is Linux-only (`install.sh`, `bridge/install.mjs`); Windows and macOS need the
+   host registration and agent paths ported first.
+
+2. **Release 0.3.2** (0.3.1 is taken at Mozilla). Since 0.3.0, local commits a06394d..39b1d6c (not
+   pushed): the multi-agent install (`foxreach install`/`agents`), `foxreach update`, background tabs
+   by default with the keyboard guard fixed for them, and the fix for plain scripts that return an
+   object (the published 0.3.0 full add-on has that bug; the signed builds do not contain that
+   code). Steps: raise the version, `scripts/sign.py` (unlisted), `scripts/release.py`, push and
+   tag (watch the workflow start: the first tag push of 0.3.0 started none), `release.py --verify`,
+   `verify_release.py`. Release users reach `foxreach update` with one last `install.sh` run.
+
+3. **addons.mozilla.org listing: awaiting Mozilla's review** (0.3.1, submitted 2026-11-11).
+   Status and reviewer questions:
+   https://addons.mozilla.org/en-US/developers/addon/fe1f53e268044b529443/versions
+
+## Decide
+
+- **Limit what a misled agent can do in a profile with logins.** Not built: agent tabs in their own
+  Firefox container (logged out even in a daily profile); a shared tab stops being shared when it
+  leaves the site it was shared on; confirm each file upload. (The site allowlist exists.)
+- **Password fields:** `read_page` hides typed passwords, but `javascript` can still read a filled
+  password field. Options: block that read, or pause agents while the user types in one.
+- **Approval from the Claude app (phone, iPad).** MCP elicitation is not relayed to Remote Control
+  clients (Claude Code 2.1.322, tested 2026-11-11; demo in ~/Documents/Claude/2026-11-11/elicitation-demo),
+  so it shows only in the terminal. A permission prompt is relayed: a `request_access` tool behind a
+  hook that forces a prompt would work, but needs the Claude Code plugin route and is weaker in
+  bypass mode. Untested.
+- **ZCode** as an agent: its settings path (`~/.zcode/cli/config.json`, `mcp.servers`?) is unconfirmed.
 
 ## Later
 
-- Packages (deb, rpm, Flatpak extension) for the `foxreach` program; today it is one file and
-  `install.sh`.
 - Signed tags.
 - The limits listed under "What would change this" in `spikes/bidi/FINDINGS.md`: watch for a way to
   get trusted input on release Firefox.
