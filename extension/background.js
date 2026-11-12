@@ -705,6 +705,9 @@ const TOOLS = {
     } else {
       const results = await eachFrame(tabId, "readPage", { filter, maxDepth: max_depth, viewportOnly, fullLinks: full_links });
       for (const { frame, value, error } of results) {
+        // Another add-on's frame inside the page (a password manager's dropdown, say): no page can
+        // reach it and foxreach may not read it, so it is left out rather than listed as an error.
+        if (error && /^moz-extension:/.test(frame.url ?? "")) continue;
         if (error) {
           sections.push(`--- frame ${frame.frameId} <${frame.url}>: could not read (${error})`);
           continue;
