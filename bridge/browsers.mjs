@@ -1,6 +1,7 @@
 // Explains a failed connection to the native host: is any Firefox-based browser running at all?
 // The add-on works in Firefox and its derivatives, so this looks for all of them, not one.
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 // Executable names of Firefox-based browsers, with the name to show. AppImage, Flatpak and distro
@@ -33,20 +34,56 @@ export function runningBrowsers(procRoot = process.env.FOXREACH_PROC || "/proc")
   return [...found].sort();
 }
 
+/**
+ * Profiles foxreach was set up in, from the record setup_profile.py keeps (one line per profile:
+ * path, version, browser). Empty when there is none, as after a plain install.
+ */
+export function recordedProfiles(file = process.env.FOXREACH_PROFILES ||
+    path.join(process.env.XDG_STATE_HOME || path.join(os.homedir(), ".local/state"), "foxreach/profiles")) {
+  let text;
+  try {
+    text = fs.readFileSync(file, "utf8");
+  } catch {
+    return [];
+  }
+  return text.split("\n").map((line) => line.split("\t")).filter(([p]) => p && path.isAbsolute(p))
+    .filter(([p]) => fs.existsSync(p))
+    .map(([profile, , browser]) => ({ profile, browser: browser || "" }));
+}
+
+const shellQuote = (s) => (/^[\w@%+=:,./-]+$/.test(s) ? s : `'${s.replace(/'/g, "'\\''")}'`);
+
+/** The command that opens a recorded profile in its browser, or null when the browser is unknown. */
+export function openCommand({ profile, browser }) {
+  if (!browser) return null;
+  if (browser.startsWith("flatpak:")) return `flatpak run ${shellQuote(browser.slice(8))} --profile ${shellQuote(profile)}`;
+  return `${shellQuote(browser)} --profile ${shellQuote(profile)}`;
+}
+
+function profileHint(profiles) {
+  if (!profiles.length) return "";
+  const lines = profiles.slice(0, 3).map((p) => {
+    const cmd = openCommand(p);
+    return cmd ? `${p.profile} (open it with: ${cmd})` : p.profile;
+  });
+  return ` foxreach is set up in: ${lines.join("; ")}.`;
+}
+
 /** The error to show when the bridge cannot reach the browser's native host. */
-export function notConnectedMessage(code, socket, browsers = runningBrowsers()) {
+export function notConnectedMessage(code, socket, browsers = runningBrowsers(), profiles = recordedProfiles()) {
   const detail = `(${code} on ${socket})`;
+  const hint = profileHint(profiles);
   if (browsers && browsers.length === 0) {
     return "No Firefox-based browser is running, so foxreach cannot reach it. Open the browser (Firefox, " +
-      `LibreWolf or another) with the profile that has the foxreach add-on, then try again. ${detail}`;
+      `LibreWolf or another) with the profile that has the foxreach add-on, then try again.${hint} ${detail}`;
   }
   if (browsers) {
     const which = browsers.join(" and ");
     return `${which} ${browsers.length > 1 ? "are" : "is"} running, but the foxreach add-on has not connected. ` +
       "Check that this is the profile foxreach is installed in, that the add-on is enabled in about:addons " +
-      "and not paused from its toolbar button. If the browser has only just started, wait a few seconds. " +
+      `and not paused from its toolbar button. If the browser has only just started, wait a few seconds.${hint} ` +
       detail;
   }
   return "The browser is not connected. Open the Firefox-based browser with the profile that has the foxreach " +
-    `add-on, then try again. ${detail}`;
+    `add-on, then try again.${hint} ${detail}`;
 }

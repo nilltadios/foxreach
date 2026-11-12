@@ -3,7 +3,8 @@
 
 Run:      uv run --python 3.15 test/connect_errors.py
 Expected: every line PASS, exit 0. Needs no browser: the bridge is pointed at a socket that does not
-exist, and at fake process lists (FOXREACH_PROC) that show no browser, one, two, or none readable.
+exist, and at fake process lists (FOXREACH_PROC) that show no browser, one, two, or none readable,
+and at a fake profile record (FOXREACH_PROFILES).
 One check uses the real /proc, with a stand-in process whose executable is named "librewolf".
 """
 import os
@@ -66,6 +67,29 @@ def main():
             "/app/lib/floorp/floorp",                     # a Flatpak build
         ]))
         check("two browsers running: names both", "Floorp and LibreWolf are running" in out, out)
+
+        # A profile record (setup_profile.py writes one): the message names the profile and how to open it.
+        profile = work / "my profile"
+        profile.mkdir()
+        record = work / "profiles"
+        record.write_text(f"{profile}\t0.3.0\t/opt/libre wolf/librewolf\n{work / 'gone'}\t0.2.0\t/x\n"
+                          f"{work}\t0.3.0\tflatpak:io.example.Browser\n")
+        os.environ["FOXREACH_PROFILES"] = str(record)
+        try:
+            out = message(socket, fake_proc(work / "none2", ["/usr/bin/bash"]))
+        finally:
+            del os.environ["FOXREACH_PROFILES"]
+        check("profile record: names the profile and quotes the command",
+              f"'/opt/libre wolf/librewolf' --profile '{profile}'" in out, out)
+        check("profile record: flatpak profile opens with flatpak run",
+              f"flatpak run io.example.Browser --profile {work}" in out, out)
+        check("profile record: a profile that no longer exists is left out", str(work / "gone") not in out, out)
+        os.environ["FOXREACH_PROFILES"] = str(work / "no-record")
+        try:
+            out = message(socket, fake_proc(work / "none3", ["/usr/bin/bash"]))
+        finally:
+            del os.environ["FOXREACH_PROFILES"]
+        check("no profile record: no hint", "set up in" not in out, out)
 
         out = message(socket, work / "no-proc-here")
         check("no process list (macOS): generic advice", out.startswith("The browser is not connected. Open the Firefox-based browser"), out)

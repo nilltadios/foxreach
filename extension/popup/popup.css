@@ -40,3 +40,36 @@ button { margin-top: 4px; font: inherit; }
 #add-site { margin-top: 4px; }
 #add-site input { flex: 1; font: inherit; background: transparent; color: inherit; border: 1px solid var(--line); border-radius: 4px; padding: 3px 4px; }
 #add-site button { margin-top: 0; }
+
+/* The request window: a single dialog card instead of the whole settings list. */
+:root { --accent: #c8102e; --accent-fg: #ffffff; --card: #f6f7f8; }
+@media (prefers-color-scheme: dark) {
+  :root { --accent: #e5383b; --card: #24272b; }
+}
+.request-window body { width: auto; padding: 0; background: var(--bg); }
+.request-window body > :not(#request-view):not(script) { display: none !important; }
+#request-view { padding: 18px 20px 16px; border-top: 4px solid var(--accent); }
+#request-view .brand { display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 13px; color: var(--muted); letter-spacing: 0.02em; }
+#request-view .mark { width: 10px; height: 10px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 25%, transparent); }
+#request-status { font-weight: 400; color: var(--bad); }
+#request-cards { display: flex; flex-direction: column; gap: 12px; margin-top: 14px; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px 16px 14px; }
+.card p { margin: 0; }
+.card .kicker { font-size: 15px; font-weight: 600; }
+.card .subject {
+  margin-top: 10px; padding: 8px 10px; border-radius: 6px; background: var(--bg); border: 1px solid var(--line);
+  font: 600 16px/1.3 ui-monospace, "JetBrains Mono", monospace; overflow-wrap: anywhere;
+}
+.card .meta { margin-top: 6px; font-size: 12px; color: var(--muted); }
+.card .explain { margin-top: 10px; font-size: 12.5px; color: var(--muted); }
+.card .actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
+.action {
+  margin: 0; padding: 7px 14px; border-radius: 6px; font: 600 13px/1 system-ui, sans-serif; cursor: pointer;
+  border: 1px solid var(--line); background: transparent; color: var(--fg);
+}
+.action:hover { border-color: var(--muted); }
+.action:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.action.ghost { color: var(--muted); }
+.action.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
+.action.primary:hover { filter: brightness(1.08); }
+#request-view .fineprint { margin: 14px 2px 0; font-size: 11.5px; color: var(--muted); }

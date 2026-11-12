@@ -157,7 +157,11 @@ def ref_of(tree, needle):
 
 
 def js(mcp, tab, code, **kw):
-    return json.loads(mcp.call("javascript", tabId=tab, code=code, **kw))
+    text = mcp.call("javascript", tabId=tab, code=code, **kw)
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        raise AssertionError(f"not JSON from {code[:60]!r}: {text[:300]}") from None
 
 
 def events(mcp, tab, frame=None):
@@ -473,6 +477,64 @@ def t_devtools(mcp):
     tab = tab_id(mcp.call("tabs_create", url=f"{MAIN}/csp"))
     check("js works under a strict CSP", js(mcp, tab, "document.title") == "CSP")
     check("read_page works under a strict CSP", "locked" in mcp.call("read_page", tabId=tab))
+    mcp.call("tabs_close", tabId=tab)
+
+
+def t_script(mcp):
+    """javascript's page-world semantics, file, args, save_to and timeout."""
+    tab = tab_id(mcp.call("tabs_create", url=f"{MAIN}/main"))
+    # A bare assignment or a var lands on the page's window, as in a page script; once it stayed
+    # in a per-call sandbox, so a background loop's progress counter never moved.
+    js(mcp, tab, "bareGlobal = 5; 1")
+    check("js bare assignment sets a page global", js(mcp, tab, "window.bareGlobal") == 5)
+    js(mcp, tab, "var varGlobal = 6; varGlobal")
+    check("js var sets a page global", js(mcp, tab, "window.varGlobal") == 6)
+    js(mcp, tab, "window.progress = 0; (async () => { for (let i = 0; i < 3; i++) { await 0; progress++; } doneFlag = true; })(); 1")
+    time.sleep(0.3)
+    check("js background assignments reach the page", js(mcp, tab, "[window.progress, window.doneFlag]") == [3, True])
+    check("js the page's own scripts see agent globals", js(mcp, tab, "document.defaultView.eval('bareGlobal')") == 5)
+    check("js let/const can be declared again in the next call",
+          js(mcp, tab, "const reuse = 1; reuse") == 1 and js(mcp, tab, "const reuse = 2; reuse") == 2)
+    check("js a plain script's const stays local", js(mcp, tab, "const localOnly = 1; localOnly") == 1
+          and js(mcp, tab, "typeof window.localOnly") == "undefined")
+
+    check("js args are a constant", js(mcp, tab, "args.a + args.b.length", args={"a": 2, "b": [1, 2, 3]}) == 5)
+    check("js args with quotes and newlines", js(mcp, tab, "args", args="it's \"q\"\nline") == "it's \"q\"\nline")
+
+    work = pathlib.Path(tempfile.mkdtemp(prefix="foxreach-script-"))
+    lib = work / "lib.js"
+    lib.write_text("window.helper = (x) => x * 2;\nfunction annexB() { return 'kept'; }\n")
+    check("js file runs before code", js(mcp, tab, "helper(21)", file=str(lib)) == 42)
+    check("js file alone", js(mcp, tab, "1", file=str(lib)) == 1)
+    check("js a file's helper stays on the page", js(mcp, tab, "helper(5)") == 10)
+    hidden = work / ".secret" / "x.js"
+    hidden.parent.mkdir()
+    hidden.write_text("1")
+    check("js file refuses hidden files", expect_error(lambda: mcp.call("javascript", tabId=tab, file=str(hidden)), "hidden"))
+    check("js file must be a script", expect_error(lambda: mcp.call("javascript", tabId=tab, file=str(work / "lib.txt")), "script"))
+    check("js needs code or file", expect_error(lambda: mcp.call("javascript", tabId=tab), "code, file"))
+
+    out = work / "big.json"
+    reply = mcp.call("javascript", tabId=tab, code="Array.from({length: 100000}, (_, i) => ({i, s: 'x'.repeat(10)}))", save_to=str(out))
+    saved = json.loads(out.read_text())
+    check("js save_to writes the full result", len(saved) == 100000 and saved[-1]["i"] == 99999, reply[:200])
+    check("js save_to replies with a summary only", reply.startswith("Saved ") and len(reply) < 600, reply[:200])
+    check("js save_to refuses other extensions",
+          expect_error(lambda: mcp.call("javascript", tabId=tab, code="1", save_to=str(work / "x.sh")), "data or text file"))
+    check("js save_to refuses hidden folders",
+          expect_error(lambda: mcp.call("javascript", tabId=tab, code="1", save_to=str(work / ".h" / "x.json")), "hidden"))
+
+    check("js timeout cuts a slow script",
+          expect_error(lambda: mcp.call("javascript", tabId=tab, code="await new Promise(r => setTimeout(r, 4000)); 1", timeout=1), "Timed out|did not answer"))
+    started = time.monotonic()
+    check("js timeout allows a script longer than the default 30 s",
+          js(mcp, tab, "await new Promise(r => setTimeout(r, 33000)); 'late'", timeout=60) == "late")
+    check("js long script took its time", time.monotonic() - started > 32)
+    mcp.call("tabs_close", tabId=tab)
+
+    tab = tab_id(mcp.call("tabs_create", url=f"{MAIN}/csp"))
+    js(mcp, tab, "cspGlobal = 'yes'; 1")
+    check("js page globals under a strict CSP", js(mcp, tab, "window.cspGlobal") == "yes")
     mcp.call("tabs_close", tabId=tab)
 
 
@@ -849,15 +911,54 @@ def popup_tests(browser, mcp):
     one, thread = asking("newcomer", "one")
     check("a new agent's call waits", "one" not in answers and "newcomer asks to use the browser" in text_of("agent-requests"), answers)
     request_windows = lambda: run("browser.windows.getAll({ populate: true }).then((all) => arguments[0](all.filter((w) => w.tabs.some((t) => t.url.endsWith('?requests'))).length))")  # noqa: E731
-    check("the request opens a window of its own, since the toolbar button may be hidden", request_windows() == 1, request_windows())
+
+    def chrome(script):
+        m.command("Marionette:SetContext", {"value": "chrome"})
+        try:
+            return m.command("WebDriver:ExecuteScript", {"script": script, "args": []})["value"]
+        finally:
+            m.command("Marionette:SetContext", {"value": "content"})
+
+    # The browser's own permission prompts that foxreach shows, on the tab in front.
+    prompts_js = "return PopupNotifications._currentNotifications.filter((n) => n.id.startsWith('foxreach-') && n.browser === gBrowser.selectedBrowser)"
+    prompts = lambda: chrome(f"{prompts_js.replace('return ', 'return (')}).map((n) => n.id + ' ' + n.options.name)")  # noqa: E731
+
+    def answer_prompt(action, remember=False):
+        chrome(prompts_js.replace("return ", "const n = (") + f")[0]; "
+               + ("n.mainAction.callback({ checkboxChecked: %s, source: 'button' });" % ("true" if remember else "false")
+                  if action == "allow" else "n.secondaryActions[0].callback({ source: 'button' });"))
+
+    shown = prompts()
+    check("the request is the browser's own prompt, in the browser window", len(shown) == 1 and "newcomer" in shown[0], shown)
+    check("...and opens no window of its own", request_windows() == 0, request_windows())
     check("status needs no approval", json.loads(one.__class__(mcp_socket, name="looker").call("status"))["version"])
     press("agent-requests", "Allow")
     thread.join(10)
     check("Allow lets the waiting call through", "other tabs" in answers.get("one", ""), answers)
-    redrawn()
-    check("the request window closes once nothing is left to answer", request_windows() == 0, request_windows())
+    time.sleep(0.5)
+    check("answering in the toolbar popup removes the prompt", prompts() == [], prompts())
     check("...and the agent's later calls", "other tabs" in one.call("tabs_list"))
     one.close()
+
+    viaprompt, thread = asking("prompted", "five")
+    answer_prompt("allow")
+    thread.join(10)
+    check("Allow in the browser prompt lets the call through", "other tabs" in answers.get("five", ""), answers)
+    redrawn()
+    check("...and the popup no longer lists the request", "prompted" not in text_of("agent-requests"), text_of("agent-requests"))
+    viaprompt.close()
+    viaprompt, thread = asking("prompted", "six")
+    answer_prompt("deny")
+    thread.join(10)
+    check("Refuse in the browser prompt fails the call", "refused" in answers.get("six", ""), answers)
+    viaprompt.close()
+    viaprompt, thread = asking("remembered", "seven")
+    answer_prompt("allow", remember=True)
+    thread.join(10)
+    redrawn()
+    check("the prompt's checkbox means Always", "remembered: always allowed" in text_of("agents"), text_of("agents"))
+    press("agents", "Remove")
+    viaprompt.close()
     two, thread = asking("newcomer", "two")
     check("the same name on a new connection asks again", "two" not in answers, answers)
     press("agent-requests", "Refuse")
@@ -888,7 +989,7 @@ def popup_tests(browser, mcp):
 
 TESTS = {
     "protocol": t_protocol, "click": t_click_trusted, "keyboard": t_keyboard, "read": t_read,
-    "forms": t_forms, "frames": t_frames, "scroll": t_scroll_and_shots, "devtools": t_devtools,
+    "forms": t_forms, "frames": t_frames, "scroll": t_scroll_and_shots, "devtools": t_devtools, "script": t_script,
     "navigation": t_navigation, "dialogs": t_dialogs, "drag": t_drag, "background": t_background_tab,
     "policy": t_policy, "multi": t_multi_agent, "speed": t_agent_speed, "pointer": t_pointer,
 }
@@ -944,3 +1045,4 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
+

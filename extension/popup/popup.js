@@ -39,12 +39,75 @@ function allowSite(host) {
 // Opened by the background page as a window of its own, to show a request. It closes once
 // nothing is left to answer.
 const requestWindow = location.search === "?requests";
+if (requestWindow) {
+  document.documentElement.classList.add("request-window");
+  $("request-view").hidden = false;
+  document.title = "foxreach: a request needs your answer";
+}
+
+function el(tag, className, text) {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text !== undefined) node.textContent = text;
+  return node;
+}
+
+function actionButton(label, kind, onClick) {
+  const b = button(label, onClick);
+  b.className = `action ${kind}`;
+  return b;
+}
+
+/** One question as a card: what is asked, by whom, what an answer means, and the answers. */
+function card(kicker, subject, meta, explain, ...actions) {
+  const c = el("section", "card");
+  const row = el("div", "actions");
+  row.append(...actions);
+  c.append(el("p", "kicker", kicker), el("p", "subject", subject), el("p", "meta", meta), el("p", "explain", explain), row);
+  return c;
+}
+
+function renderRequests() {
+  const time = (t) => new Date(t).toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" });
+  $("request-cards").replaceChildren(
+    ...state.agentRequests.map((r) => card(
+      "An agent wants to use your browser", r.name, `Asked at ${time(r.time)}`,
+      "It could open tabs, read and act on pages it opens or you share, on the sites you allow. " +
+        "The name is what the program calls itself: allow only an agent you started.",
+      actionButton("Refuse", "ghost", () => send({ popup: "answerAgent", conn: r.conn, mode: "deny" })),
+      actionButton("Always allow", "quiet", () => send({ popup: "answerAgent", conn: r.conn, mode: "always" })),
+      actionButton("Allow", "primary", () => send({ popup: "answerAgent", conn: r.conn, mode: "once" })),
+    )),
+    ...state.siteRequests.map((host) => card(
+      "An agent asks to use a site", host, "Not on your list of sites yet",
+      "Allowing adds it, with its subdomains, to the sites agents may use.",
+      actionButton("Dismiss", "ghost", () => send({ popup: "dismissSite", host })),
+      actionButton("Allow site", "primary", () => allowSite(host)),
+    )),
+  );
+  $("request-status").textContent = state.connected ? "" : "· bridge not connected";
+  fitWindow();
+}
+
+/* The browser may open the window larger than asked (LibreWolf rounds window sizes), so size it
+   to the card once it is drawn. */
+let fittedTo = 0;
+async function fitWindow() {
+  await new Promise(requestAnimationFrame);
+  const content = document.getElementById("request-view").scrollHeight;
+  if (Math.abs(content - fittedTo) < 4) return; // only when the cards change, not on every refresh
+  fittedTo = content;
+  const w = await browser.windows.getCurrent();
+  const frame = window.outerHeight - window.innerHeight;
+  await browser.windows.update(w.id, { width: 460, height: Math.ceil(content + frame) }).catch(() => {});
+}
 
 function render(next) {
   state = next;
   if (requestWindow && !state.agentRequests.length && !state.siteRequests.length) {
     browser.windows.getCurrent().then((w) => browser.windows.remove(w.id)); // window.close() is refused here
   }
+  if (requestWindow) renderRequests();
   const status = $("status");
   status.textContent = !state.connected
     ? `Bridge not connected${state.hostError ? `: ${state.hostError}` : ""}`

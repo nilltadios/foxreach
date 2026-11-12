@@ -244,10 +244,81 @@ function dispatchDrag(win, el, ev) {
   return ev.defaultPreventedByContent;
 }
 
-function runInPage(win, code) {
-  // A sandbox on the page's own principal: real page world, and page CSP does not block it. Its
-  // JSON and Promise belong to the sandbox, so a page that replaces those cannot alter results.
+let DebuggerClass;
+function debuggerClass() {
+  if (DebuggerClass === undefined) {
+    DebuggerClass = null;
+    // Firefox 147+ serves it from moz-src; older builds from resource://gre.
+    for (const url of ["moz-src:///devtools/platform/jsdebugger.sys.mjs", "resource://gre/modules/jsdebugger.sys.mjs"]) {
+      try {
+        // A global of its own (the Debugger needs a real global), not the shared module global.
+        const holder = Cu.Sandbox(Services.scriptSecurityManager.getSystemPrincipal(), {
+          freshCompartment: true, invisibleToDebugger: true, wantGlobalProperties: [],
+        });
+        ChromeUtils.importESModule(url).addDebuggerToGlobal(holder);
+        DebuggerClass = holder.Debugger;
+        break;
+      } catch {
+        // try the next location
+      }
+    }
+    if (!DebuggerClass) console.warn("foxreach: no Debugger, agent code runs in a sandbox");
+  }
+  return DebuggerClass;
+}
+
+/**
+ * Evaluates source in the page's own global, the way the browser's developer console does: page
+ * CSP does not apply, and a bare assignment or a `var` lands on the page's window, as it would in
+ * a page script (and as it does in the build without privileged code). Each call is wrapped in a
+ * block or a function by runInPage, so let/const stay local to the call and can be reused.
+ * Returns an evaluator: (source) -> { value } | { error, syntax }.
+ */
+function pageGlobal(win) {
+  const Dbg = debuggerClass();
+  if (Dbg) {
+    return (source, bindings) => {
+      const dbg = new Dbg();
+      try {
+        const global = dbg.addDebuggee(win);
+        const done = bindings ? global.executeInGlobalWithBindings(source, bindings) : global.executeInGlobal(source);
+        if (done === null) return { error: "Error: the script was terminated" };
+        const raw = (v) => (v instanceof Dbg.Object ? v.unsafeDereference() : v);
+        if ("throw" in done) {
+          const e = raw(done.throw);
+          let name = "", text = "";
+          try {
+            name = String(e?.name ?? "");
+            text = String(e);
+          } catch {
+            text = "an exception";
+          }
+          return { error: `Error: ${text}`, syntax: name === "SyntaxError" };
+        }
+        // handle: the value as the debuggee sees it, to pass back in as a binding
+        return { value: raw(done.return), handle: done.return };
+      } finally {
+        dbg.removeAllDebuggees(); // code that is still running keeps running; only the hooks go
+      }
+    };
+  }
+  // Fallback: a sandbox on the page's own principal. Writes to bare names stay in the sandbox.
   const sandbox = Cu.Sandbox(win, { sandboxPrototype: win, wantXrays: false, sameZoneAs: win });
+  return (source, bindings) => {
+    try {
+      if (bindings) Object.assign(sandbox, bindings);
+      const value = Cu.evalInSandbox(source, sandbox);
+      return { value, handle: value };
+    } catch (e) {
+      return { error: `Error: ${e}`, syntax: e?.name === "SyntaxError" };
+    }
+  };
+}
+
+function runInPage(win, code) {
+  const run = pageGlobal(win);
+  // Serialized in the page's realm, with the page's JSON: a page that replaces JSON can only
+  // misreport its own data, which it could do through its content anyway.
   const serialize = `.then((v) => {
       if (v === undefined) return "undefined";
       if (typeof v === "function" || typeof v === "symbol") return String(v);
@@ -265,33 +336,31 @@ function runInPage(win, code) {
   const inAsync = (body) => `(async () => ${body}\n)()${serialize}`;
   const body = code.trim().replace(/;+$/, "");
   // Each form below fails with SyntaxError before running anything, so code never runs twice.
+  // undefined = did not compile, try the next form.
   const compileOnly = (source) => {
-    try {
-      return Cu.evalInSandbox(source, sandbox);
-    } catch (e) {
-      if (e.name !== "SyntaxError") return `Error: ${e}`;
-      return undefined;
-    }
+    const r = run(source);
+    if (r.error) return r.syntax ? undefined : r.error;
+    return r.value;
   };
   const asExpression = compileOnly(inAsync(`(${body})`));
   if (asExpression !== undefined) return asExpression;
   if (!/\bawait\b/.test(code)) {
-    // A plain script: the language's own completion value is its last expression.
-    let done = false;
-    try {
-      sandbox.__foxreachValue = Cu.evalInSandbox(code, sandbox);
-      done = true;
-    } catch (e) {
-      if (e.name !== "SyntaxError") return `Error: ${e}`;
+    // A plain script: the language's own completion value is its last expression. In a block, so
+    // its let/const end with this call (a second call may declare the same names again).
+    const r = run(`{\n${code}\n}`);
+    if (r.error && !r.syntax) return r.error;
+    if (!r.error) {
+      const s = run(`Promise.resolve(__foxreachValue)${serialize}`, { __foxreachValue: r.handle });
+      return s.error ?? s.value;
     }
-    if (done) return Cu.evalInSandbox(`Promise.resolve(__foxreachValue)${serialize}`, sandbox);
   }
   const split = splitLastStatement(body);
   if (split) {
     const returned = compileOnly(inAsync(`{ ${split[0]}\nreturn (${split[1].replace(/;+$/, "")}\n); }`));
     if (returned !== undefined) return returned;
   }
-  return Cu.evalInSandbox(inAsync(`{ ${code}\n}`), sandbox);
+  const r = run(inAsync(`{ ${code}\n}`));
+  return r.error ?? r.value;
 }
 
 function consoleEntries(win, { includeLogs = true, includeErrors = true }) {
@@ -519,7 +588,8 @@ const HANDLERS = {
     return { count: files.length, target: describe(el), accepted };
   },
 
-  evaluate: (win, { code }) => runInPage(win, code),
+  // A page-realm promise of a string: settle it here so the reply is a plain string.
+  evaluate: async (win, { code }) => String(await runInPage(win, code)),
 
   console: (win, args) => consoleEntries(win, args),
 };

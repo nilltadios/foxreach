@@ -107,11 +107,15 @@ export const TOOLS = [
     text: { type: "string" },
     timeout: { type: "number", description: "Seconds. Default 15, at most 120." },
   }, ["tabId"]),
-  tool("javascript", "Run JavaScript in the page's own world and return the last expression as JSON. Top-level await works, and page CSP does not block it.", {
+  tool("javascript", "Run JavaScript in the page's own world and return the last expression as JSON. Top-level await works, and page CSP does not block it. let/const are local to the call; a bare assignment or var sets a global on the page's window, which later calls can read.", {
     tabId,
-    code: { type: "string" },
+    code: { type: "string", description: "The code. Needs code, file, or both." },
+    file: { type: "string", description: "Absolute path of a .js/.mjs file on this machine to run first (before code), for example a helper library. Hidden files and folders are refused." },
+    args: { description: "Any JSON value, available to the code as the constant `args`, so data need not be pasted into code." },
+    save_to: { type: "string", description: "Write the full result to this absolute path (.json, .txt, .csv, .tsv, .md or .log) and reply with only its size and start. Results up to 16 MiB; without save_to, replies stop at 500 kB." },
+    timeout: { type: "number", description: "Seconds to wait for the result. Default 30, at most 600." },
     frame_id: { type: "integer", description: "Frame id from read_page. Default: the top frame." },
-  }, ["tabId", "code"]),
+  }, ["tabId"]),
   tool("read_console", "Read console messages and script errors from all frames. Works without injecting anything into the page.", {
     tabId,
     pattern: { type: "string", description: "Keep messages matching this regular expression." },

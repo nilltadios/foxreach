@@ -7,6 +7,9 @@ const RECONNECT_BUSY_MS = 30000;
 const NET_LIMIT = 1000;
 const LOG_LIMIT = 200;
 const RESULT_LIMIT = 500000;
+const SAVED_RESULT_LIMIT = 16 * 1024 * 1024;
+const JS_TIMEOUT_S = 30;
+const JS_TIMEOUT_MAX_S = 600;
 const CONTENT_TIMEOUT_MS = 15000;
 const NAV_TIMEOUT_MS = 30000;
 const GROUP_TITLE = "agent";
@@ -72,13 +75,18 @@ const hostBlocked = (url) => inList(hostOf(url), settings.blockedHosts);
 let requestWindow = null;
 
 async function showRequests() {
+  if (trusted) return syncPrompts(); // the browser's own prompt; the window is the fallback below
+  return showRequestWindow();
+}
+
+async function showRequestWindow() {
   try {
     if (requestWindow !== null && (await browser.windows.get(requestWindow).catch(() => null))) {
       await browser.windows.update(requestWindow, { focused: true });
       return;
     }
     requestWindow = -1; // being opened: a second request in the same moment must not open another
-    requestWindow = (await browser.windows.create({ type: "popup", url: "/popup/popup.html?requests", width: 420, height: 560 })).id;
+    requestWindow = (await browser.windows.create({ type: "popup", url: "/popup/popup.html?requests", width: 460, height: 380 })).id;
   } catch (e) {
     requestWindow = null;
     console.error("foxreach: could not show the request window", e);
@@ -110,7 +118,7 @@ async function assertSiteAllowed(url) {
   siteRequests.set(host, Date.now());
   if (siteRequests.size > SITE_REQUEST_LIMIT) siteRequests.delete(siteRequests.keys().next().value);
   updateBadge();
-  throw new Error(`Agents are not allowed on ${host} yet. It now shows as a request under the foxreach toolbar button: ask the user to allow it there, then try again.`);
+  throw new Error(`Agents are not allowed on ${host} yet. The user is being asked in the browser (a foxreach prompt below the address bar, or a small foxreach window; the request is also under the foxreach toolbar button): ask the user to allow it there, then try again.`);
 }
 
 /** Move what the user asked for into the settings, once the browser has granted it. */
@@ -153,7 +161,7 @@ async function assertAgentAllowed(conn, name) {
   });
   if (answer === "allow") return;
   if (answer === "deny") throw new Error(`The user refused the agent "${name}".`);
-  throw new Error(`The user has not yet allowed the agent "${name}" to use the browser. A request is waiting under the foxreach toolbar button: ask the user to answer it, then try again.`);
+  throw new Error(`The user has not yet allowed the agent "${name}" to use the browser. The user is being asked in the browser (a foxreach prompt below the address bar, or a small foxreach window; the request is also under the foxreach toolbar button): ask the user to answer it, then try again.`);
 }
 
 function answerAgent(conn, mode) {
@@ -257,7 +265,59 @@ async function adoptTab(tab) {
   }
 }
 
+/* With the privileged code, each request is the browser's own permission prompt, in the browser
+   window; it is kept in step with the requests here, whichever way they are answered or withdrawn. */
+const shownPrompts = new Set();
+
+function wantedPrompts() {
+  const want = new Map();
+  for (const [conn, r] of agentRequests) want.set(`agent-${conn}`, { kind: "agent", conn, name: r.name });
+  for (const host of siteRequests.keys()) want.set(`site-${host}`, { kind: "site", host });
+  return want;
+}
+
+function syncPrompts() {
+  if (!trusted) return;
+  const want = wantedPrompts();
+  for (const id of [...shownPrompts]) {
+    if (want.has(id)) continue;
+    shownPrompts.delete(id);
+    browser.foxreachInput.call({ method: "removePrompt", args: { id } }).catch(() => {});
+  }
+  for (const [id, req] of want) if (!shownPrompts.has(id)) showPrompt(id, req);
+}
+
+async function showPrompt(id, req) {
+  shownPrompts.add(id);
+  const args = req.kind === "agent"
+    ? { id, name: req.name, message: "An agent named <> wants to use this browser through foxreach. It could open tabs and read and act on pages it opens or you share.",
+        allow: "Allow", deny: "Refuse", remember: "Always allow agents with this name" }
+    : { id, name: req.host, message: "An agent wants to use <>, which is not on your list of sites for agents.",
+        allow: "Allow site", deny: "Dismiss" };
+  let answer;
+  try {
+    answer = await browser.foxreachInput.call({ method: "prompt", args });
+  } catch (e) {
+    shownPrompts.delete(id);
+    console.warn("foxreach: no browser prompt, opening the request window", e);
+    return showRequestWindow();
+  }
+  shownPrompts.delete(id);
+  if (answer.action === "allow" || answer.action === "deny") {
+    if (req.kind === "agent") answerAgent(req.conn, answer.action === "deny" ? "deny" : answer.remember ? "always" : "once");
+    else if (answer.action === "deny") siteRequests.delete(req.host);
+    else {
+      wantedSites.add(req.host);
+      await applyWanted();
+    }
+    await browser.storage.local.set({ settings });
+  }
+  // A closed window leaves the request unanswered: show it again where the user is now.
+  updateBadge();
+}
+
 function updateBadge() {
+  syncPrompts();
   browser.browserAction.setBadgeBackgroundColor({ color: settings.paused ? "#c92a2a" : "#d9480f" });
   const asking = agentRequests.size || siteRequests.size;
   browser.browserAction.setBadgeText({ text: settings.paused ? "||" : asking ? "?" : agentTabs.size ? String(agentTabs.size) : "" });
@@ -274,14 +334,14 @@ async function ensureInjected(tabId) {
   }
 }
 
-async function contentCall(tabId, frameId, op, args) {
+async function contentCall(tabId, frameId, op, args, timeoutMs = CONTENT_TIMEOUT_MS) {
   await assertFrameAllowed(tabId, frameId);
   await assertNoDialog(tabId);
   await ensureInjected(tabId);
   return withTimeout(
     browser.tabs.sendMessage(tabId, { foxreachOp: op, args }, { frameId: frameId ?? 0 }),
-    CONTENT_TIMEOUT_MS,
-    `The page did not answer within ${CONTENT_TIMEOUT_MS / 1000} s; it may be busy.`
+    timeoutMs,
+    `The page did not answer within ${timeoutMs / 1000} s; it may be busy.`
   );
 }
 
@@ -779,16 +839,19 @@ const TOOLS = {
     throw new Error(`Not found within ${timeout} s: ${selector ?? JSON.stringify(text)}.`);
   },
 
-  async javascript({ tabId, code, frame_id = 0 }) {
+  async javascript({ tabId, code, frame_id = 0, timeout = JS_TIMEOUT_S, full = false }) {
     await accessibleTab(tabId);
     await assertNoDialog(tabId);
     if (!code) throw new Error("code is required.");
     await assertFrameAllowed(tabId, frame_id);
-    if (!trusted) return { text: (await contentCall(tabId, frame_id, "evaluate", { code })).text };
-    const value = await privileged(tabId, "evaluate", { frameId: frame_id, code });
+    const timeoutMs = Math.round(Math.min(Math.max(Number(timeout) || JS_TIMEOUT_S, 1), JS_TIMEOUT_MAX_S) * 1000);
+    // full: the bridge saves the result to a file (save_to), so it may be larger than a reply.
+    const limit = full ? SAVED_RESULT_LIMIT : RESULT_LIMIT;
+    const cut = (text) => (text.length > limit ? `${text.slice(0, limit)}\n[truncated]` : text);
+    if (!trusted) return { text: cut((await contentCall(tabId, frame_id, "evaluate", { code }, timeoutMs)).text) };
+    const value = await privileged(tabId, "evaluate", { frameId: frame_id, code, timeoutMs });
     if (value?.blockedByDialog) return { text: `The script has not finished.${DIALOG_NOTE}` };
-    const text = String(value);
-    return { text: text.length > RESULT_LIMIT ? `${text.slice(0, RESULT_LIMIT)}\n[truncated]` : text };
+    return { text: cut(String(value)) };
   },
 
   async read_console({ tabId, pattern, only_errors = false, limit = 50, clear = false }) {

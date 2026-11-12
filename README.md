@@ -229,6 +229,21 @@ Delete or Backspace, when focus is not on a text field, so keys meant for a sear
 as page shortcuts (such as deleting the selected messages in a mail app). `allow_non_text: true`
 overrides this for keyboard-driven pages. `type_text` also warns when the field's value did not change.
 
+`javascript` runs in the page's own world, like the browser's developer console: a bare assignment
+or a `var` sets a global on the page's `window`, so a script started in one call (a loop that counts
+its progress, say) can be read by the next; `let` and `const` stay local to each call. For work that
+is more than a line or two:
+
+- `file`: an absolute path to a `.js` or `.mjs` file, run before `code`, for a helper library kept
+  on disk instead of pasted into calls. Assign helpers to `window` to keep them for later calls.
+- `args`: any JSON value, available to the code as the constant `args`.
+- `save_to`: writes the whole result (up to 16 MiB) to a `.json`, `.txt`, `.csv`, `.tsv`, `.md` or
+  `.log` file and replies with its size and first lines, so large results need not pass through the
+  agent's context.
+- `timeout`: seconds to wait for the result, 30 by default, at most 600.
+
+`file` and `save_to` refuse hidden files and folders.
+
 ## What you control
 
 The toolbar button shows the bridge's status and recent agent activity, and it has these controls:
