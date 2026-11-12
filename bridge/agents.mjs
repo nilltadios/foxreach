@@ -257,6 +257,103 @@ const yamlFormat = {
   },
 };
 
+// Mistral Vibe: [[mcp_servers]] tables in TOML, each with a name. Edited as text: the table
+// named foxreach is replaced as a whole, everything else is kept byte for byte.
+const vibeFormat = {
+  split(text) {
+    const lines = text.split("\n");
+    const keep = [];
+    const ours = [];
+    let block = null;
+    const flush = () => {
+      if (!block) return;
+      const mine = block.some((l) => /^\s*name\s*=\s*["']foxreach["']\s*(#.*)?$/.test(l));
+      (mine ? ours : keep).push(...block);
+      block = null;
+    };
+    for (const line of lines) {
+      if (/^\s*\[/.test(line)) {
+        flush();
+        if (/^\s*\[\[\s*mcp_servers\s*\]\]/.test(line)) {
+          block = [line];
+          continue;
+        }
+      }
+      if (block) block.push(line);
+      else keep.push(line);
+    }
+    flush();
+    return { keep: keep.join("\n"), ours: ours.join("\n") };
+  },
+  block(command) {
+    return `[[mcp_servers]]\nname = "${NAME}"\ntransport = "stdio"\ncommand = ${JSON.stringify(command[0])}\nargs = ${JSON.stringify(command.slice(1))}\n`;
+  },
+  current(file) {
+    if (!exists(file)) return null;
+    return this.split(fs.readFileSync(file, "utf8")).ours.trim() || null;
+  },
+  set(file, command) {
+    const { keep, ours } = this.split(exists(file) ? fs.readFileSync(file, "utf8") : "");
+    const block = this.block(command);
+    if (ours.trim() === block.trim()) return "already set";
+    const base = keep.replace(/\s*$/, "");
+    return { verb: ours.trim() ? "updated" : "added", text: `${base}${base ? "\n\n" : ""}${block}` };
+  },
+  remove(file) {
+    if (!exists(file)) return null;
+    const { keep, ours } = this.split(fs.readFileSync(file, "utf8"));
+    return ours.trim() ? `${keep.replace(/\s*$/, "")}\n` : null;
+  },
+  snippet(command) {
+    return this.block(command).trim();
+  },
+};
+
+// DeepSeek Harness (dsh): a profile's cordis.patch.yml, a YAML list of edits to its plugin set.
+// foxreach adds one "insert" of the MCP client plugin (packages/mcp/mcp-client in
+// deepseek-ai/deepseek-harness), between marker comments so it can be found and removed again.
+const DSH_START = "# >>> foxreach (added by foxreach install)";
+const DSH_END = "# <<< foxreach";
+const dshFormat = {
+  text: (file) => (exists(file) ? fs.readFileSync(file, "utf8") : ""),
+  find(text) {
+    const a = text.indexOf(DSH_START);
+    const b = text.indexOf(DSH_END);
+    return a >= 0 && b > a ? { a, b: b + DSH_END.length } : null;
+  },
+  block(command) {
+    return [DSH_START, "- insert:", "    - id: mcp-foxreach", "      name: '@deepseek-ai/dsh-mcp-client'", "      config:",
+      `        serverName: ${NAME}`, "        transport: stdio", `        command: ${JSON.stringify(command[0])}`,
+      `        args: ${JSON.stringify(command.slice(1))}`, DSH_END].join("\n");
+  },
+  current(file) {
+    const text = this.text(file);
+    const at = this.find(text);
+    return at ? text.slice(at.a, at.b) : null;
+  },
+  set(file, command) {
+    const text = this.text(file);
+    const block = this.block(command);
+    const at = this.find(text);
+    if (at && text.slice(at.a, at.b) === block) return "already set";
+    const rest = at ? text.slice(0, at.a) + text.slice(at.b) : text;
+    // Only a plain top-level list is safe to append to.
+    const first = rest.split("\n").find((l) => l.trim() && !l.trim().startsWith("#"));
+    if (first && !first.startsWith("- ")) throw new Refused("it is not a plain YAML list of patches");
+    const base = rest.replace(/\s*$/, "");
+    return { verb: at ? "updated" : "added", text: `${base}${base ? "\n\n" : ""}${block}\n` };
+  },
+  remove(file) {
+    const text = this.text(file);
+    const at = this.find(text);
+    if (!at) return null;
+    return `${(text.slice(0, at.a) + text.slice(at.b)).replace(/\n{3,}/g, "\n\n").replace(/\s*$/, "")}\n`;
+  },
+  snippet(command) {
+    return this.block(command);
+  },
+};
+
 /* ---------- the agents ---------- */
 
 const home = () => os.homedir();
@@ -274,6 +371,11 @@ export function agents(h = home()) {
   const opencodeDir = path.join(xdgConfig(h), "opencode");
   const piDir = env("PI_CODING_AGENT_DIR") || path.join(h, ".pi/agent");
   const hermesDir = env("HERMES_HOME") || path.join(h, ".hermes");
+  // Kimi Code keeps its data in ~/.kimi-code (KIMI_CODE_HOME); older releases used ~/.kimi.
+  const kimiHome = env("KIMI_CODE_HOME") ||
+    (!exists(path.join(h, ".kimi-code")) && exists(path.join(h, ".kimi")) ? path.join(h, ".kimi") : path.join(h, ".kimi-code"));
+  const mimoDir = env("MIMOCODE_HOME") ? path.join(env("MIMOCODE_HOME"), "config") : path.join(xdgConfig(h), "mimocode");
+  const vibeHome = env("VIBE_HOME") || path.join(h, ".vibe");
   return [
     {
       id: "claude-code", name: "Claude Code", file: path.join(h, ".claude.json"),
@@ -337,6 +439,40 @@ export function agents(h = home()) {
       format: jsonFormat(["mcp", "servers"], (command) => ({ type: "stdio", ...commandArgs(command) })),
       detect: () => exists(path.join(h, ".zcode")) || !!onPath("zcode"),
       note: "start a new session",
+    },
+    {
+      // https://www.kimi.com/code/docs/en/kimi-code-cli/customization/mcp.html
+      id: "kimi", name: "Kimi Code", file: path.join(kimiHome, "mcp.json"),
+      format: jsonFormat(["mcpServers"], commandArgs),
+      detect: () => exists(kimiHome) || !!onPath("kimi"),
+    },
+    {
+      // https://mimo.xiaomi.com/mimocode/mcp-servers and /config-overrides: mcp.<name>, type "local",
+      // command as one array (opencode's 1.x layout). A mimocode.jsonc with comments is left alone.
+      id: "mimo", name: "MiMo Code",
+      file: ["mimocode.jsonc", "mimocode.json", "config.json"].map((f) => path.join(mimoDir, f)).find(exists) ?? path.join(mimoDir, "mimocode.json"),
+      format: jsonFormat(["mcp"], (c) => ({ type: "local", command: c, enabled: true })),
+      detect: () => exists(mimoDir) || !!onPath("mimo"),
+    },
+    {
+      // https://code.minimax.io/docs/code/agents/mcp.md
+      id: "minimax", name: "MiniMax Code", file: path.join(h, ".minimax/mcp.json"),
+      format: jsonFormat(["mcpServers"], (c) => ({ type: "stdio", ...commandArgs(c), enabled: true })),
+      detect: () => exists(path.join(h, ".minimax")) || !!onPath("mcode"),
+    },
+    {
+      // https://docs.mistral.ai/vibe/code/cli/mcp-servers
+      id: "vibe", name: "Mistral Vibe", file: path.join(vibeHome, "config.toml"),
+      format: vibeFormat,
+      detect: () => exists(vibeHome) || !!onPath("vibe"),
+    },
+    {
+      // The MCP client plugin's design note in deepseek-ai/deepseek-harness gives the entry; the
+      // profile file (~/.dsh/profiles/web, the profile `dsh web` runs) is from Composio's guide.
+      id: "deepseek", name: "DeepSeek Harness (dsh)", file: path.join(h, ".dsh/profiles/web/cordis.patch.yml"),
+      format: dshFormat,
+      detect: () => exists(path.join(h, ".dsh")) || !!onPath("dsh"),
+      note: "restart dsh",
     },
   ];
 }

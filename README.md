@@ -52,6 +52,12 @@ For any Firefox-based browser on Linux (x86-64 or arm64). Nothing else is needed
    | Pi | `~/.pi/agent/mcp.json` |
    | Hermes | `~/.hermes/config.yaml` |
    | Cursor | `~/.cursor/mcp.json` |
+   | ZCode | `~/.zcode/cli/config.json` |
+   | Kimi Code | `~/.kimi-code/mcp.json` (`~/.kimi/mcp.json` on older releases) |
+   | MiMo Code | `~/.config/mimocode/mimocode.json` |
+   | MiniMax Code (`mcode`) | `~/.minimax/mcp.json` |
+   | Mistral Vibe | `~/.vibe/config.toml` |
+   | DeepSeek Harness (`dsh`) | `~/.dsh/profiles/web/cordis.patch.yml` |
 
    Only the `foxreach` entry is added; everything else in each file stays as it was, and each file
    is backed up first (`<file>.bak-<date>`). A file it cannot edit safely, such as JSON with
@@ -59,7 +65,8 @@ For any Firefox-based browser on Linux (x86-64 or arm64). Nothing else is needed
    it found; `foxreach install --agents codex,pi` names the agents instead, and `--agents none`
    skips this step. For any other agent, give it the command `~/.local/bin/foxreach mcp`.
    Agents that are running pick the server up in their next session (Claude desktop and
-   Antigravity: after a restart).
+   Antigravity: after a restart). Kimi Code, MiMo Code, MiniMax Code, Mistral Vibe and DeepSeek
+   Harness were added from their documentation and have not yet been tried in a real session.
 
 The first time an agent calls, the browser asks whether to allow it.
 `foxreach uninstall` removes what `foxreach install` wrote, including the agents' entries

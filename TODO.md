@@ -42,11 +42,10 @@ Open items, newest first. Remove an item when it is done.
    use it. Keep MCP as the main path: images reach the model directly, agents approve per tool, and
    one connection keeps an agent's refs, pointer and identity.
 
-4. **More agents in `foxreach install`:** DeepSeek's harness, Kimi Code, MiMo Code, MiniMax Code. None is
-   installed here (checked 2026-11-12), so their settings files and MCP format are unconfirmed. For
-   each: install it, read its own code or docs for where user MCP servers go and the entry's shape
-   (as for ZCode: `~/.zcode/cli/config.json`, strict `mcp.servers`), add it to `bridge/agents.mjs`
-   with a seeded case in `test/install_agents.py`, and check it starts foxreach in a real session.
+4. **Check the agents added from their docs in a real session:** Kimi Code, MiMo Code, MiniMax Code,
+   Mistral Vibe, DeepSeek Harness (2026-11-12; none installed here). For each, install it, run
+   `foxreach agents add --agents <id>`, start a session and call `status`. Least certain: DeepSeek
+   Harness's profile path `~/.dsh/profiles/web/` (from Composio's guide, not DeepSeek's docs).
 
 ## Decide
 

@@ -66,6 +66,11 @@ def seed(home):
         ".config/opencode/opencode.json": json.dumps({"$schema": "https://opencode.ai/config.json", "theme": "x"}, indent=2),
         ".pi/agent/.keep": "",
         ".zcode/cli/config.json": json.dumps({"permission": {"mode": "ask"}, "mcp": {"servers": {"other": {"type": "stdio", "command": "x"}}}}, indent=2),
+        ".kimi-code/mcp.json": json.dumps({"mcpServers": {"other": {"command": "x"}}}, indent=2),
+        ".config/mimocode/mimocode.json": json.dumps({"$schema": "https://mimo.xiaomi.com/config.json", "model": "mimo-v2"}, indent=2),
+        ".minimax/.keep": "",
+        ".vibe/config.toml": 'active_model = "devstral"\n\n[[mcp_servers]]\nname = "fetch"\ntransport = "stdio"\ncommand = "uvx"\nargs = ["mcp-server-fetch"]\n\n[tools.bash]\npermission = "ask"\n',
+        ".dsh/profiles/web/cordis.patch.yml": "- id: ui-settings-models\n  config:\n    credentialOnboarding: false\n",
         ".hermes/config.yaml": "model: hermes-4\nmcp_servers:\n    github:\n        command: npx\n        args: [\"-y\", \"gh\"]\ndisplay:\n  compact: true\n",
     }
     for rel, text in files.items():
@@ -88,6 +93,15 @@ def entries(home):
     f = home / ".pi/agent/mcp.json"
     out["pi"] = json.loads(f.read_text()).get("mcpServers", {}).get("foxreach") if f.exists() else None
     out["zcode"] = json.loads((home / ".zcode/cli/config.json").read_text()).get("mcp", {}).get("servers", {}).get("foxreach")
+    out["kimi"] = json.loads((home / ".kimi-code/mcp.json").read_text()).get("mcpServers", {}).get("foxreach")
+    out["mimo"] = json.loads((home / ".config/mimocode/mimocode.json").read_text()).get("mcp", {}).get("foxreach")
+    f = home / ".minimax/mcp.json"
+    out["minimax"] = json.loads(f.read_text()).get("mcpServers", {}).get("foxreach") if f.exists() else None
+    vibe = [t for t in tomllib.loads((home / ".vibe/config.toml").read_text()).get("mcp_servers", []) if t.get("name") == "foxreach"]
+    out["vibe"] = {k: v for k, v in vibe[0].items() if k != "name"} if vibe else None
+    dsh = [i for op in (yaml.safe_load((home / ".dsh/profiles/web/cordis.patch.yml").read_text()) or []) if isinstance(op, dict)
+           for i in op.get("insert", []) if i.get("id") == "mcp-foxreach"]
+    out["deepseek"] = dsh[0] if dsh else None
     out["hermes"] = (yaml.safe_load((home / ".hermes/config.yaml").read_text()).get("mcp_servers") or {}).get("foxreach")
     return out
 
@@ -101,7 +115,7 @@ def main():
         code, out = run(home, "agents")
         found = {line.split()[0] for line in out.splitlines() if line.split()[1:2] == ["found"]}
         check("agents: finds every seeded agent and no other",
-              found == {"claude-code", "claude-desktop", "codex", "antigravity", "gemini", "opencode", "pi", "hermes", "zcode"}, out)
+              found == {"claude-code", "claude-desktop", "codex", "antigravity", "gemini", "opencode", "pi", "hermes", "zcode", "kimi", "mimo", "minimax", "vibe", "deepseek"}, out)
 
         code, out = run(home, "install", "--no-flatpak")
         check("install exits 0", code == 0, out)
@@ -113,6 +127,12 @@ def main():
         check("codex: old entry and its env sub-table replaced", e["codex"] == want, e["codex"])
         check("opencode: 2.x entry under mcp.servers", e["opencode"] == {"type": "local", "command": cmd}, e["opencode"])
         check("zcode: stdio entry under mcp.servers (its schema is strict)", e["zcode"] == {"type": "stdio", **want}, e["zcode"])
+        check("kimi: entry added under mcpServers", e["kimi"] == want, e["kimi"])
+        check("mimo: local entry with the command as one array", e["mimo"] == {"type": "local", "command": cmd, "enabled": True}, e["mimo"])
+        check("minimax: stdio entry, enabled", e["minimax"] == {"type": "stdio", **want, "enabled": True}, e["minimax"])
+        check("vibe: a [[mcp_servers]] table named foxreach", e["vibe"] == {"transport": "stdio", **want}, e["vibe"])
+        check("deepseek: an insert of the MCP client plugin", e["deepseek"] == {"id": "mcp-foxreach", "name": "@deepseek-ai/dsh-mcp-client",
+              "config": {"serverName": "foxreach", "transport": "stdio", **want}}, e["deepseek"])
         check("cursor: not installed, so not touched", not (home / ".cursor").exists())
 
         # Everything else in each file is kept.
@@ -130,6 +150,14 @@ def main():
         check("opencode: other settings kept", oc["theme"] == "x" and oc["$schema"].endswith("config.json"))
         zc = json.loads((home / ".zcode/cli/config.json").read_text())
         check("zcode: other servers and settings kept", zc["permission"] == {"mode": "ask"} and "other" in zc["mcp"]["servers"], zc)
+        check("kimi, mimo: other settings kept",
+              "other" in json.loads((home / ".kimi-code/mcp.json").read_text())["mcpServers"]
+              and json.loads((home / ".config/mimocode/mimocode.json").read_text())["model"] == "mimo-v2")
+        vt = tomllib.loads((home / ".vibe/config.toml").read_text())
+        check("vibe: other servers and tables kept", vt["active_model"] == "devstral" and vt["tools"]["bash"]["permission"] == "ask"
+              and any(t["name"] == "fetch" for t in vt["mcp_servers"]), vt)
+        dy = yaml.safe_load((home / ".dsh/profiles/web/cordis.patch.yml").read_text())
+        check("deepseek: the profile's other patches kept", dy[0] == {"id": "ui-settings-models", "config": {"credentialOnboarding": False}}, dy)
         hy = yaml.safe_load((home / ".hermes/config.yaml").read_text())
         check("hermes: other servers and settings kept",
               hy["model"] == "hermes-4" and hy["mcp_servers"]["github"]["command"] == "npx" and hy["display"] == {"compact": True}, hy)
@@ -137,16 +165,17 @@ def main():
         backups = sorted(p.name for p in home.rglob("*.bak-*"))
         check("existing files were backed up before the change",
               {n.split(".bak-")[0] for n in backups} >= {".claude.json", "claude_desktop_config.json", "config.toml", "settings.json", "opencode.json", "config.yaml", "config.json"}, backups)
-        check("files that did not exist get no backup", not any(n.startswith("mcp_config.json") or n.startswith("mcp.json") for n in backups), backups)
+        new_files = [home / ".gemini/config/mcp_config.json", home / ".pi/agent/mcp.json", home / ".minimax/mcp.json"]
+        check("files that did not exist get no backup", all(not list(f.parent.glob(f"{f.name}.bak-*")) for f in new_files), backups)
         check("install names the shared users of a file", "ChatGPT app" in out and "T3 Code" in out, out)
 
         snapshot = {p: p.read_bytes() for p in home.rglob("*") if p.is_file()}
         code, out = run(home, "install", "--no-flatpak")
         again = {p: p.read_bytes() for p in home.rglob("*") if p.is_file()}
-        check("a second install changes nothing", code == 0 and snapshot == again and out.count("already set") >= 9, out)
+        check("a second install changes nothing", code == 0 and snapshot == again and out.count("already set") >= 14, out)
 
         code, out = run(home, "agents")
-        check("agents: reports foxreach set", out.count("foxreach set") == 9, out)
+        check("agents: reports foxreach set", out.count("foxreach set") == 14, out)
 
         # Uninstall: foxreach's entries go, everything else stays.
         code, out = run(home, "uninstall")
@@ -156,7 +185,9 @@ def main():
         check("uninstall keeps the other servers",
               "other" in json.loads((home / ".claude.json").read_text())["mcpServers"]
               and "node_repl" in tomllib.loads((home / ".codex/config.toml").read_text())["mcp_servers"]
-              and "github" in yaml.safe_load((home / ".hermes/config.yaml").read_text())["mcp_servers"])
+              and "github" in yaml.safe_load((home / ".hermes/config.yaml").read_text())["mcp_servers"]
+              and any(t["name"] == "fetch" for t in tomllib.loads((home / ".vibe/config.toml").read_text())["mcp_servers"])
+              and yaml.safe_load((home / ".dsh/profiles/web/cordis.patch.yml").read_text()) == [{"id": "ui-settings-models", "config": {"credentialOnboarding": False}}])
 
         # --agents limits the work; --agents none skips it.
         code, out = run(home, "install", "--no-flatpak", "--agents", "codex,pi")
