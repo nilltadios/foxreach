@@ -35,6 +35,19 @@ Open items, newest first. Remove an item when it is done.
    `dist/signed/foxreach-0.3.3-signed.xpi`, run `scripts/release.py`, then commit, tag v0.3.3 and push
    (ask first), and `release.py --verify` / `verify_release.py 0.3.3`.
 
+3. **A command line beside the MCP server.** `foxreach call <tool> --tab N [--name AGENT] ...` reusing
+   every tool over the same socket: text out, screenshots to files, the agent's name for the approval
+   prompt. For agents without MCP or short on context (MCP tool definitions cost ~4,200 tokens at
+   start; a CLI costs nothing until used), and for scripts. Ship a short skill file that says how to
+   use it. Keep MCP as the main path: images reach the model directly, agents approve per tool, and
+   one connection keeps an agent's refs, pointer and identity.
+
+4. **More agents in `foxreach install`:** DeepSeek's harness, Kimi Code, MiMo Code, MiniMax Code. None is
+   installed here (checked 2026-11-12), so their settings files and MCP format are unconfirmed. For
+   each: install it, read its own code or docs for where user MCP servers go and the entry's shape
+   (as for ZCode: `~/.zcode/cli/config.json`, strict `mcp.servers`), add it to `bridge/agents.mjs`
+   with a seeded case in `test/install_agents.py`, and check it starts foxreach in a real session.
+
 ## Decide
 
 - **Limit what a misled agent can do in a profile with logins.** Not built: agent tabs in their own
