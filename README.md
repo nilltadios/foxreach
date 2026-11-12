@@ -47,7 +47,7 @@ For any Firefox-based browser on Linux (x86-64 or arm64). Nothing else is needed
    | Claude desktop (chat) | `~/.config/Claude/claude_desktop_config.json` |
    | Codex, the ChatGPT app, T3 Code | `~/.codex/config.toml` |
    | Antigravity (app and `agy`) | `~/.gemini/config/mcp_config.json` |
-   | Gemini CLI | `~/.gemini/settings.json` |
+   | Gemini CLI (retired by Google in 2026; only when the `gemini` program is still installed) | `~/.gemini/settings.json` |
    | opencode (CLI and app) | `~/.config/opencode/opencode.json` |
    | Pi | `~/.pi/agent/mcp.json` |
    | Hermes | `~/.hermes/config.yaml` |

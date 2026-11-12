@@ -115,14 +115,15 @@ def main():
         code, out = run(home, "agents")
         found = {line.split()[0] for line in out.splitlines() if line.split()[1:2] == ["found"]}
         check("agents: finds every seeded agent and no other",
-              found == {"claude-code", "claude-desktop", "codex", "antigravity", "gemini", "opencode", "pi", "hermes", "zcode", "kimi", "mimo", "minimax", "vibe", "deepseek"}, out)
+              found == {"claude-code", "claude-desktop", "codex", "antigravity", "opencode", "pi", "hermes", "zcode", "kimi", "mimo", "minimax", "vibe", "deepseek"}, out)
 
         code, out = run(home, "install", "--no-flatpak")
         check("install exits 0", code == 0, out)
         cmd = [BUN, CLI, "mcp"]
         e = entries(home)
         want = {"command": cmd[0], "args": cmd[1:]}
-        for agent in ("claude-code", "claude-desktop", "antigravity", "gemini", "pi", "hermes"):
+        check("gemini: a leftover settings.json without the gemini program (retired) is not written to", e["gemini"] is None, e["gemini"])
+        for agent in ("claude-code", "claude-desktop", "antigravity", "pi", "hermes"):
             check(f"{agent}: entry added", e[agent] == want, e[agent])
         check("codex: old entry and its env sub-table replaced", e["codex"] == want, e["codex"])
         check("opencode: 2.x entry under mcp.servers", e["opencode"] == {"type": "local", "command": cmd}, e["opencode"])
@@ -164,7 +165,7 @@ def main():
 
         backups = sorted(p.name for p in home.rglob("*.bak-*"))
         check("existing files were backed up before the change",
-              {n.split(".bak-")[0] for n in backups} >= {".claude.json", "claude_desktop_config.json", "config.toml", "settings.json", "opencode.json", "config.yaml", "config.json"}, backups)
+              {n.split(".bak-")[0] for n in backups} >= {".claude.json", "claude_desktop_config.json", "config.toml", "opencode.json", "config.yaml", "config.json"}, backups)
         new_files = [home / ".gemini/config/mcp_config.json", home / ".pi/agent/mcp.json", home / ".minimax/mcp.json"]
         check("files that did not exist get no backup", all(not list(f.parent.glob(f"{f.name}.bak-*")) for f in new_files), backups)
         check("install names the shared users of a file", "ChatGPT app" in out and "T3 Code" in out, out)
@@ -172,10 +173,10 @@ def main():
         snapshot = {p: p.read_bytes() for p in home.rglob("*") if p.is_file()}
         code, out = run(home, "install", "--no-flatpak")
         again = {p: p.read_bytes() for p in home.rglob("*") if p.is_file()}
-        check("a second install changes nothing", code == 0 and snapshot == again and out.count("already set") >= 14, out)
+        check("a second install changes nothing", code == 0 and snapshot == again and out.count("already set") >= 13, out)
 
         code, out = run(home, "agents")
-        check("agents: reports foxreach set", out.count("foxreach set") == 14, out)
+        check("agents: reports foxreach set", out.count("foxreach set") == 13, out)
 
         # Uninstall: foxreach's entries go, everything else stays.
         code, out = run(home, "uninstall")
@@ -195,6 +196,10 @@ def main():
         check("--agents: only the agents named",
               e["codex"] == want and e["pi"] == want and e["claude-code"] is None and e["gemini"] is None, e)
         run(home, "uninstall")
+        code, out = run(home, "install", "--no-flatpak", "--agents", "gemini")
+        check("gemini: still added when named", entries(home)["gemini"] == want, out)
+        run(home, "uninstall")
+        check("gemini: and removed by uninstall", entries(home)["gemini"] is None)
         code, out = run(home, "install", "--no-flatpak", "--agents", "none")
         check("--agents none: no agent changed", all(v is None for v in entries(home).values()), entries(home))
         code, out = run(home, "install", "--no-flatpak", "--agents", "nonsense")
@@ -231,7 +236,7 @@ def main():
         seed(fresh)
         code, out = run(fresh, "agents", "add")
         e = entries(fresh)
-        check("agents add: adds to every agent found", code == 0 and e["codex"] == want and e["gemini"] == want, out)
+        check("agents add: adds to every agent found", code == 0 and e["codex"] == want and e["kimi"] == want, out)
         check("agents add: writes no browser manifest", not (fresh / ".mozilla").exists() and not (fresh / ".local/share/foxreach").exists())
         code, out = run(fresh, "agents", "add", "--agents", "pi")
         check("agents add --agents: already set is reported", "already set" in out, out)

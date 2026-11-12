@@ -406,9 +406,12 @@ export function agents(h = home()) {
       restart: true,
     },
     {
-      id: "gemini", name: "Gemini CLI", file: path.join(h, ".gemini/settings.json"),
+      // Google retired Gemini CLI for individual accounts on 2026-06-18 in favour of Antigravity's
+      // agy (above). Its settings.json lingers in ~/.gemini, which Antigravity shares, so only the
+      // program itself counts as installed; the entry stays known so uninstall can remove it.
+      id: "gemini", name: "Gemini CLI (retired by Google in 2026)", file: path.join(h, ".gemini/settings.json"),
       format: jsonFormat(["mcpServers"], commandArgs),
-      detect: () => exists(path.join(h, ".gemini/settings.json")) || !!onPath("gemini"),
+      detect: () => !!onPath("gemini"),
     },
     {
       id: "opencode", name: "opencode (CLI and app)",
