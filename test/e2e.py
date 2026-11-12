@@ -297,6 +297,57 @@ def t_keyboard(mcp):
     mcp.call("tabs_close", tabId=tab)
 
 
+def focus_guard(mcp, tab, tree, where):
+    """The keyboard guard, wherever the tab is: keys land in the field and are named; outside a
+    text field, Delete and typing are refused and nothing reaches the page."""
+    name = ref_of(tree, "Your name")
+    js(mcp, tab, "document.getElementById('name').value = ''; 1")
+    out = mcp.call("type_text", tabId=tab, ref=name, text="ok")
+    check(f"{where}: type_text names the field", 'textbox "Your name"' in out, out)
+    check(f"{where}: the text arrives in the field", js(mcp, tab, "document.getElementById('name').value") == "ok")
+    mcp.call("click", tabId=tab, ref=ref_of(tree, "Press me"))
+    clear(mcp, tab)
+    check(f"{where}: Delete outside a text field is refused",
+          expect_error(lambda: mcp.call("press_key", tabId=tab, keys="Delete"), "not a text field"))
+    check(f"{where}: typing outside a text field is refused",
+          expect_error(lambda: mcp.call("type_text", tabId=tab, text="abc"), "Nothing was typed"))
+    check(f"{where}: refused keys never reach the page", not [e for e in events(mcp, tab) if e["type"] == "keydown"],
+          events(mcp, tab)[:4])
+
+
+def t_focus_switch(mcp):
+    """The user brings the agent's tab to the front (clicks it) and leaves it again: the guard
+    works the same in every state, with focus in the page and in a frame."""
+    other = tab_id(mcp.call("tabs_create", url=f"{MAIN}/second", active=True))  # what the user reads
+    tab = tab_id(mcp.call("tabs_create", url=f"{MAIN}/main"))
+    tree = mcp.call("read_page", tabId=tab)
+    check("agent tab starts in the background", js(mcp, tab, "document.hasFocus()") is False)
+    focus_guard(mcp, tab, tree, "background")
+    mcp.call("tabs_select", tabId=tab)  # as when the user clicks the tab
+    check("in front: the tab has the browser's focus (so the in-front path is tested)",
+          js(mcp, tab, "document.hasFocus()") is True)
+    focus_guard(mcp, tab, tree, "in front")
+    mcp.call("tabs_select", tabId=other)  # the user goes back to their own tab
+    check("back in the background", js(mcp, tab, "document.hasFocus()") is False)
+    focus_guard(mcp, tab, tree, "background again")
+    mcp.call("tabs_close", tabId=tab)
+
+    # Focus inside a frame from another site, in the background and in front.
+    tab = tab_id(mcp.call("tabs_create", url=f"{MAIN}/frames"))
+    time.sleep(0.5)
+    for where in ("frame, background", "frame, in front"):
+        if where.endswith("in front"):
+            mcp.call("tabs_select", tabId=tab)
+        tree = mcp.call("read_page", tabId=tab)
+        out = mcp.call("type_text", tabId=tab, ref=ref_of(tree, "Inner input"), text="z")
+        check(f"{where}: type_text names the field in the frame", 'textbox "Inner input"' in out and "in frame" in out, out)
+        mcp.call("click", tabId=tab, ref=ref_of(tree, "Inner button"))
+        check(f"{where}: Delete on a button in the frame is refused",
+              expect_error(lambda: mcp.call("press_key", tabId=tab, keys="Delete"), "not a text field"))
+    mcp.call("tabs_close", tabId=tab)
+    mcp.call("tabs_close", tabId=other)
+
+
 def t_read(mcp):
     tab = tab_id(mcp.call("tabs_create", url=f"{MAIN}/main"))
     tree = mcp.call("read_page", tabId=tab)
@@ -438,8 +489,12 @@ def colour_at(png, x, y):
 
 def t_devtools(mcp):
     tab = tab_id(mcp.call("tabs_create", url=f"{MAIN}/main"))
-    time.sleep(0.3)
+    # The page throws from setTimeout(0); in a background tab the browser delays timers (about 1 s).
+    deadline = time.time() + 3
     con = mcp.call("read_console", tabId=tab)
+    while "uncaught boom" not in con and time.time() < deadline:
+        time.sleep(0.2)
+        con = mcp.call("read_console", tabId=tab)
     check("console.log with values", 'hello from page {"a":1}' in con, con)
     check("console.error", "page console error" in con, con)
     check("uncaught exceptions", "uncaught boom" in con, con)
@@ -719,9 +774,14 @@ def t_drag(mcp):
 
 
 def t_background_tab(mcp):
-    front = tab_id(mcp.call("tabs_create", url=f"{MAIN}/second"))
-    back = tab_id(mcp.call("tabs_create", url=f"{MAIN}/main", active=False))
-    mcp.call("tabs_select", tabId=front)
+    front = tab_id(mcp.call("tabs_create", url=f"{MAIN}/second", active=True))
+    check("active=True brings a new tab to the front", f"{front} (active)" in mcp.call("tabs_list"))
+    # New tabs open behind the one the user is reading, unless asked otherwise.
+    back = tab_id(mcp.call("tabs_create", url=f"{MAIN}/main"))
+    check("a new tab opens in the background by default", f"{front} (active)" in mcp.call("tabs_list"), mcp.call("tabs_list"))
+    via_navigate = tab_id(mcp.call("navigate", url=f"{MAIN}/second"))
+    check("navigate without a tab also opens it in the background", f"{front} (active)" in mcp.call("tabs_list"))
+    mcp.call("tabs_close", tabId=via_navigate)
     mcp.call("click", tabId=back, x=100, y=60)
     ev = events(mcp, back)
     check("click works in a background tab", any(e["type"] == "click" and e["trusted"] for e in ev), ev)
@@ -994,7 +1054,7 @@ def popup_tests(browser, mcp):
 
 
 TESTS = {
-    "protocol": t_protocol, "click": t_click_trusted, "keyboard": t_keyboard, "read": t_read,
+    "protocol": t_protocol, "click": t_click_trusted, "keyboard": t_keyboard, "focus": t_focus_switch, "read": t_read,
     "forms": t_forms, "frames": t_frames, "scroll": t_scroll_and_shots, "devtools": t_devtools, "script": t_script,
     "navigation": t_navigation, "dialogs": t_dialogs, "drag": t_drag, "background": t_background_tab,
     "policy": t_policy, "multi": t_multi_agent, "speed": t_agent_speed, "pointer": t_pointer,

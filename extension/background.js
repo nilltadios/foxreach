@@ -387,9 +387,20 @@ async function eachFrame(tabId, op, args) {
  */
 async function focusTarget(tabId) {
   try {
-    const results = await eachFrame(tabId, "focusInfo", {});
-    const hit = results.find((r) => r.value?.focused) ?? null;
-    return hit && { ...hit.value, frameId: hit.frame.frameId };
+    const results = (await eachFrame(tabId, "focusInfo", {})).filter((r) => r.value);
+    // In a tab the user is looking at, the frame with the browser's focus. In a background tab no
+    // frame has it, so follow focus inside the tab: the top document's element unless that is a
+    // frame, else the one frame whose own element has focus (more than one: cannot be told).
+    let hit = results.find((r) => r.value.focused);
+    if (!hit) {
+      const top = results.find((r) => r.value.top);
+      if (top && !top.value.inFrame) hit = top;
+      else {
+        const inner = results.filter((r) => !r.value.top && r.value.hasElement);
+        if (inner.length === 1) hit = inner[0];
+      }
+    }
+    return hit ? { ...hit.value, frameId: hit.frame.frameId } : null;
   } catch {
     return null;
   }
@@ -548,7 +559,9 @@ const TOOLS = {
     return { text: `${lines.join("\n") || "No tabs yet. Use tabs_create."}\n(${all.length - mine.length} other tabs are not available to agents.)` };
   },
 
-  async tabs_create({ url = "about:blank", active = true }) {
+  // In the background by default: the user may be reading another tab, and an agent's tab taking
+  // over the window is unpleasant. Tools work on background tabs; tabs_select brings one forward.
+  async tabs_create({ url = "about:blank", active = false }) {
     const target = await checkUrl(url);
     // In an ordinary browser window: the window in front may be foxreach's own request window,
     // and a tab put there would close with it.

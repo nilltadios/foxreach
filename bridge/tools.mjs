@@ -20,11 +20,11 @@ export const TOOLS = [
   tool("tabs_list", "List the tabs agents may use: ones created by agents or shared by the user. Other tabs stay private."),
   tool("tabs_create", "Open a new tab, wait for it to load, and return its id.", {
     url: { type: "string", description: "http(s) URL. Default about:blank." },
-    active: { type: "boolean", description: "Bring the tab to the front. Default true." },
+    active: { type: "boolean", description: "Bring the tab to the front, in place of the tab the user is looking at. Default false: it opens in the background, where every tool works. Use true, or tabs_select later, only when the user should see it." },
   }),
   tool("tabs_close", "Close a tab.", { tabId }, ["tabId"]),
   tool("tabs_select", "Bring a tab to the front.", { tabId }, ["tabId"]),
-  tool("navigate", "Load a URL and wait for it, or go back, forward or reload. With no tabId, opens a new tab.", {
+  tool("navigate", "Load a URL and wait for it, or go back, forward or reload. With no tabId, opens a new tab in the background.", {
     tabId,
     url: { type: "string", description: 'A URL, or "back", "forward", "reload".' },
   }, ["url"]),

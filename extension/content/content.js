@@ -361,13 +361,16 @@
     while (el && shadow(el)?.activeElement) el = shadow(el).activeElement;
     const inChild = !!el && ["iframe", "frame"].includes(el.localName);
     const focused = document.hasFocus() && !inChild;
+    // hasFocus() is false in every frame of a tab that is not in front, so also report where focus
+    // sits inside this document: background.js follows that when no frame has the browser's focus.
+    const own = { inFrame: inChild, top: window === window.top };
     if (!el || el === document.body || el === document.documentElement) {
-      return { focused, editable: false, desc: "the page body (no element has focus)", value: null };
+      return { focused, ...own, hasElement: false, editable: false, desc: "the page body (no element has focus)", value: null };
     }
     const value = el.isContentEditable ? el.textContent
       : "value" in el && typeof el.value === "string" && el.type !== "password" ? el.value : null;
     const desc = line(el, roleOf(el), 0).replace(/^- /, "");
-    return { focused, editable: isTextEntry(el), desc, value, length: el.type === "password" ? el.value.length : value?.length };
+    return { focused, ...own, hasElement: !inChild, editable: isTextEntry(el), desc, value, length: el.type === "password" ? el.value.length : value?.length };
   }
 
   const OPS = {
