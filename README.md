@@ -53,6 +53,7 @@ For any Firefox-based browser on Linux (x86-64 or arm64). Nothing else is needed
    | Hermes | `~/.hermes/config.yaml` |
    | Cursor | `~/.cursor/mcp.json` |
    | ZCode | `~/.zcode/cli/config.json` |
+   | OpenClaw | `~/.openclaw/openclaw.json` (`OPENCLAW_CONFIG_PATH`) |
    | GitHub Copilot CLI | `~/.copilot/mcp-config.json` |
    | Qwen Code | `~/.qwen/settings.json` |
    | Kimi Code | `~/.kimi-code/mcp.json` (`~/.kimi/mcp.json` on older releases) |
@@ -67,7 +68,7 @@ For any Firefox-based browser on Linux (x86-64 or arm64). Nothing else is needed
    it found; `foxreach install --agents codex,pi` names the agents instead, and `--agents none`
    skips this step. For any other agent, give it the command `~/.local/bin/foxreach mcp`.
    Agents that are running pick the server up in their next session (Claude desktop and
-   Antigravity: after a restart). GitHub Copilot CLI, Qwen Code, Kimi Code, MiMo Code, MiniMax Code, Mistral Vibe and DeepSeek
+   Antigravity: after a restart). OpenClaw, GitHub Copilot CLI, Qwen Code, Kimi Code, MiMo Code, MiniMax Code, Mistral Vibe and DeepSeek
    Harness were added from their documentation and have not yet been tried in a real session.
 
 The first time an agent calls, the browser asks whether to allow it.

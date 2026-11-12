@@ -376,6 +376,13 @@ export function agents(h = home()) {
     (!exists(path.join(h, ".kimi-code")) && exists(path.join(h, ".kimi")) ? path.join(h, ".kimi") : path.join(h, ".kimi-code"));
   const mimoDir = env("MIMOCODE_HOME") ? path.join(env("MIMOCODE_HOME"), "config") : path.join(xdgConfig(h), "mimocode");
   const vibeHome = env("VIBE_HOME") || path.join(h, ".vibe");
+  // OpenClaw: OPENCLAW_CONFIG_PATH, else OPENCLAW_STATE_DIR, else ~/.openclaw (~/.openclaw-<profile>
+  // with OPENCLAW_PROFILE), under OPENCLAW_HOME if set. https://docs.openclaw.ai/help/environment
+  const tilde = (p) => (p.startsWith("~/") ? path.join(h, p.slice(2)) : p);
+  const clawHome = env("OPENCLAW_HOME") ? tilde(env("OPENCLAW_HOME")) : h;
+  const clawState = env("OPENCLAW_STATE_DIR") ? tilde(env("OPENCLAW_STATE_DIR"))
+    : path.join(clawHome, env("OPENCLAW_PROFILE") ? `.openclaw-${env("OPENCLAW_PROFILE")}` : ".openclaw");
+  const clawConfig = env("OPENCLAW_CONFIG_PATH") ? tilde(env("OPENCLAW_CONFIG_PATH")) : path.join(clawState, "openclaw.json");
   return [
     {
       id: "claude-code", name: "Claude Code", file: path.join(h, ".claude.json"),
@@ -442,6 +449,14 @@ export function agents(h = home()) {
       format: jsonFormat(["mcp", "servers"], (command) => ({ type: "stdio", ...commandArgs(command) })),
       detect: () => exists(path.join(h, ".zcode")) || !!onPath("zcode"),
       note: "start a new session",
+    },
+    {
+      // https://docs.openclaw.ai/cli/mcp/transports.md: mcp.servers.<name> with command and args.
+      // The file is JSON5; one with comments or trailing commas is left alone and the entry printed.
+      id: "openclaw", name: "OpenClaw", file: clawConfig,
+      format: jsonFormat(["mcp", "servers"], commandArgs),
+      detect: () => exists(clawState) || exists(clawConfig) || !!onPath("openclaw"),
+      note: "it picks the change up by itself",
     },
     {
       // https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-mcp-servers
