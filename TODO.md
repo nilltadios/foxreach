@@ -44,9 +44,8 @@ Open items, newest first. Remove an item when it is done.
 
 4. **Agents added 2026-11-12 (OpenClaw, Copilot CLI, Qwen, Kimi, MiMo, MiniMax, Vibe, DeepSeek
    Harness)** were checked in a throwaway container: each reads foxreach's entry (Qwen, MiMo and
-   OpenClaw also started the server; script and results in
-   ~/Documents/Claude/2026-11-12/foxreach-agents-container). Not yet seen: one of them calling a
-   foxreach tool in a chat, which needs that agent's account.
+   OpenClaw also started the server; rerun with `test/agents_container/run.sh`). Not yet seen: one
+   of them calling a foxreach tool in a chat, which needs that agent's account.
 
 ## Decide
 
@@ -54,7 +53,7 @@ Open items, newest first. Remove an item when it is done.
   Firefox container (logged out even in a daily profile); a shared tab stops being shared when it
   leaves the site it was shared on; confirm each file upload. (The site allowlist exists.)
 - **Approval from the Claude app (phone, iPad).** MCP elicitation is not relayed to Remote Control
-  clients (Claude Code 2.1.322, tested 2026-11-11; demo in ~/Documents/Claude/2026-11-11/elicitation-demo),
+  clients (Claude Code 2.1.322, tested 2026-11-11),
   so it shows only in the terminal. A permission prompt is relayed: a `request_access` tool behind a
   hook that forces a prompt would work, but needs the Claude Code plugin route and is weaker in
   bypass mode. Untested.

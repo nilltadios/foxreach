@@ -70,7 +70,8 @@ For any Firefox-based browser on Linux (x86-64 or arm64). Nothing else is needed
    Agents that are running pick the server up in their next session (Claude desktop and
    Antigravity: after a restart). OpenClaw, GitHub Copilot CLI, Qwen Code, Kimi Code, MiMo Code,
    MiniMax Code, Mistral Vibe and DeepSeek Harness were checked on 2026-11-12 by installing each
-   in a throwaway container and confirming with its own tools that it reads foxreach's entry.
+   in a throwaway container and confirming with its own tools that it reads foxreach's entry
+   (`test/agents_container/run.sh`).
 
 The first time an agent calls, the browser asks whether to allow it.
 `foxreach uninstall` removes what `foxreach install` wrote, including the agents' entries
@@ -436,6 +437,7 @@ The tests use `FOXREACH_BROWSER` (a path or a command), else the only browser in
 | `test/update_cli.py` | `foxreach update` against a local stand-in release: checksum and version checks refuse bad downloads and change nothing, a good one replaces the program and keeps `.previous`, and the version warning names the right command; starts no browser |
 | `test/signed_firefox.py [--xpi FILE]` | Release Firefox (or LibreWolf, `--browser`) installs the Mozilla-signed build as signed and refuses it unsigned |
 | `test/connect_errors.py` | What an agent is told when the browser cannot be reached, for each cause; starts no browser |
+| `test/agents_container/run.sh` | In a throwaway Podman container, installs OpenClaw, Copilot CLI, Qwen, Kimi, MiMo, MiniMax, Mistral Vibe and DeepSeek Harness, runs `foxreach agents add`, and checks with each agent's own tools that it reads the entry; needs network |
 | `test/background_focus.py` | With the browser behind another app, typed text reaches a widget that keeps it only after a focus event, and the user's front tab sees no focus event; needs a running headful browser (see the file) |
 
 Tests use throwaway profiles and restart the browser with no automation attached before the tool

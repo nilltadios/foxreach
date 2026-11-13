@@ -7,7 +7,7 @@ Tested 2026-11-06 on LibreWolf 159.0.1 (AppImage), headless, on throwaway profil
 ## Reproduce
 
 ```bash
-cd ~/Documents/foxreach/spikes/trusted-input
+cd spikes/trusted-input   # from the repository root
 uv run --python 3.15 run_spike.py --permanent   # daily-use case; expect 4 PASS, exit 0
 uv run --python 3.15 run_spike.py               # temporary install, Marionette attached
 uv run --python 3.15 diagnose_manifest.py ext   # LibreWolf's own verdict on an add-on
