@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=foxreach
+GenericName=Browser access for AI agents
+Comment=Manage foxreach: the add-on in your browsers, the agents that use it, updates and removal
+Exec=foxreach-manager
+Icon=dev.nilltadios.FoxreachManager
+Terminal=false
+Categories=Utility;
+Keywords=foxreach;MCP;agent;Firefox;LibreWolf;add-on;
+StartupWMClass=dev.nilltadios.FoxreachManager
+X-AppImage-Version=0.1.0

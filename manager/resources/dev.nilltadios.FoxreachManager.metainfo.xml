@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>dev.nilltadios.FoxreachManager</id>
+  <name>foxreach</name>
+  <summary>Manage foxreach: browsers, agents, updates and removal</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <developer id="dev.nilltadios"><name>nilltadios</name></developer>
+  <url type="homepage">https://github.com/nilltadios/foxreach</url>
+  <description>
+    <p>foxreach lets local MCP agents use the browser tabs you share with them. This app sets it up
+      and keeps it current: it installs the foxreach program, installs or updates the signed add-on
+      in each Firefox-based browser profile, chooses which agents get the MCP server, and removes any
+      part of it, or all of it.</p>
+    <p>Every change is made by the foxreach program itself, the same commands the terminal offers.
+      To do its work the app runs programs on your computer outside its sandbox (see the README).</p>
+  </description>
+  <launchable type="desktop-id">dev.nilltadios.FoxreachManager.desktop</launchable>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="0.1.0" date="2026-11-12"/>
+  </releases>
+</component>

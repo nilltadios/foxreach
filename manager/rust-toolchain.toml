@@ -1,0 +1,5 @@
+# Same Rust as the Flatpak and AppImage builds (flatpak/*.yml, packaging/Containerfile).
+[toolchain]
+channel = "1.100.0"
+profile = "minimal"
+components = ["rustfmt", "clippy"]

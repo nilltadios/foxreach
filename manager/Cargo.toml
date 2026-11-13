@@ -1,0 +1,25 @@
+[package]
+name = "foxreach-manager"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Desktop app that manages foxreach: agents, updates, uninstall"
+rust-version = "1.100"
+
+[features]
+# GPU rendering, with libcosmic's software fallback when no GPU works.
+# `--no-default-features` builds the software renderer only.
+default = ["wgpu"]
+wgpu = ["libcosmic/wgpu"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dependencies.libcosmic]
+# Cargo.lock pins the commit (the one CosmicAuthenticator builds with).
+git = "https://github.com/pop-os/libcosmic.git"
+
+[profile.release]
+lto = "thin"
+strip = true
