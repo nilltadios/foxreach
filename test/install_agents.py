@@ -90,7 +90,6 @@ def entries(home):
     out["codex"] = tomllib.loads((home / ".codex/config.toml").read_text()).get("mcp_servers", {}).get("foxreach")
     f = home / ".gemini/config/mcp_config.json"
     out["antigravity"] = json.loads(f.read_text()).get("mcpServers", {}).get("foxreach") if f.exists() else None
-    out["gemini"] = json.loads((home / ".gemini/settings.json").read_text()).get("mcpServers", {}).get("foxreach")
     oc = json.loads((home / ".config/opencode/opencode.json").read_text())
     out["opencode"] = oc.get("mcp", {}).get("servers", {}).get("foxreach")
     f = home / ".pi/agent/mcp.json"
@@ -128,7 +127,8 @@ def main():
         cmd = [BUN, CLI, "mcp"]
         e = entries(home)
         want = {"command": cmd[0], "args": cmd[1:]}
-        check("gemini: a leftover settings.json without the gemini program (retired) is not written to", e["gemini"] is None, e["gemini"])
+        check("gemini: Gemini CLI is no longer supported, so its settings.json is never written",
+              "foxreach" not in json.loads((home / ".gemini/settings.json").read_text())["mcpServers"])
         for agent in ("claude-code", "claude-desktop", "antigravity", "pi", "hermes"):
             check(f"{agent}: entry added", e[agent] == want, e[agent])
         check("codex: old entry and its env sub-table replaced", e["codex"] == want, e["codex"])
@@ -157,8 +157,6 @@ def main():
         check("codex: other tables and keys kept",
               toml["model"] == "gpt-5" and "node_repl" in toml["mcp_servers"] and toml["projects"]["/home/x"]["trust_level"] == "trusted"
               and "env" not in toml["mcp_servers"]["foxreach"], toml)
-        gs = json.loads((home / ".gemini/settings.json").read_text())
-        check("gemini: other servers and settings kept", "web-search" in gs["mcpServers"] and gs["model"] == {"name": "m"})
         oc = json.loads((home / ".config/opencode/opencode.json").read_text())
         check("opencode: other settings kept", oc["theme"] == "x" and oc["$schema"].endswith("config.json"))
         zc = json.loads((home / ".zcode/cli/config.json").read_text())
@@ -208,12 +206,10 @@ def main():
         code, out = run(home, "install", "--no-flatpak", "--agents", "codex,pi")
         e = entries(home)
         check("--agents: only the agents named",
-              e["codex"] == want and e["pi"] == want and e["claude-code"] is None and e["gemini"] is None, e)
+              e["codex"] == want and e["pi"] == want and e["claude-code"] is None, e)
         run(home, "uninstall")
         code, out = run(home, "install", "--no-flatpak", "--agents", "gemini")
-        check("gemini: still added when named", entries(home)["gemini"] == want, out)
-        run(home, "uninstall")
-        check("gemini: and removed by uninstall", entries(home)["gemini"] is None)
+        check("gemini: no longer a known agent", code == 1 and "Unknown agent" in out, out)
         code, out = run(home, "install", "--no-flatpak", "--agents", "none")
         check("--agents none: no agent changed", all(v is None for v in entries(home).values()), entries(home))
         code, out = run(home, "install", "--no-flatpak", "--agents", "nonsense")

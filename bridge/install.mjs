@@ -122,18 +122,27 @@ export function install({ browsers = [], flatpaks = true, agents = null, home = 
   log("Undo with: foxreach uninstall");
 }
 
-export function uninstall({ home = os.homedir(), agents = true, log = console.log } = {}) {
+/**
+ * Remove what install wrote. `parts` picks some of it: "host" (the wrapper and the browsers'
+ * manifests in this home), "flatpak:<id>" (one Flatpak browser's copy and permission), "flatpaks"
+ * (every one), "agents" (foxreach's entry in every agent). Without parts, everything.
+ */
+export function uninstall({ home = os.homedir(), agents = true, parts = null, log = console.log } = {}) {
+  const want = (p) => parts === null || parts.includes(p);
+  const unknown = (parts ?? []).filter((p) => !["host", "flatpaks", "agents"].includes(p) && !p.startsWith("flatpak:"));
+  if (unknown.length) throw new Error(`Unknown part: ${unknown.join(", ")}. Parts: host, flatpaks, flatpak:<application id>, agents`);
   const remove = (p) => {
     if (!exists(p)) return;
     fs.rmSync(p, { recursive: true, force: true });
     log(`removed ${p}`);
   };
-  for (const d of [".mozilla", ...FORK_DIRS]) remove(path.join(home, d, "native-messaging-hosts", `${HOST_NAME}.json`));
-  remove(path.join(dataDir(home), "foxreach-host"));
-  const apps = path.join(home, ".var/app");
-  for (const id of exists(apps) ? fs.readdirSync(apps) : []) {
-    const base = path.join(apps, id);
-    if (!exists(path.join(base, "foxreach/foxreach-host"))) continue;
+  if (want("host")) {
+    for (const d of [".mozilla", ...FORK_DIRS]) remove(path.join(home, d, "native-messaging-hosts", `${HOST_NAME}.json`));
+    remove(path.join(dataDir(home), "foxreach-host"));
+  }
+  for (const id of preparedFlatpaks(home)) {
+    if (!want("flatpaks") && !want(`flatpak:${id}`)) continue;
+    const base = path.join(home, ".var/app", id);
     for (const d of [".mozilla", ...FORK_DIRS]) remove(path.join(base, d, "native-messaging-hosts", `${HOST_NAME}.json`));
     // A profile made for foxreach may live beside the copy; leave the folder if it holds one.
     remove(path.join(base, "foxreach/foxreach"));
@@ -143,6 +152,30 @@ export function uninstall({ home = os.homedir(), agents = true, log = console.lo
     const withdrawn = flatpak("override", "--user", "--nofilesystem=xdg-run/foxreach", id);
     if (withdrawn.status === 0) log(`withdrew the xdg-run/foxreach permission from ${id}`);
   }
-  if (agents) unregisterAgents({ h: home, log });
-  log("The add-on itself is removed in the browser, under Add-ons.");
+  if (agents && want("agents")) unregisterAgents({ h: home, log });
+  if (parts === null) log("The add-on itself is removed in the browser, under Add-ons.");
+}
+
+/** Flatpak browsers that hold a copy of foxreach (install prepared them). */
+function preparedFlatpaks(home) {
+  const apps = path.join(home, ".var/app");
+  return (exists(apps) ? fs.readdirSync(apps) : []).filter((id) => exists(path.join(apps, id, "foxreach/foxreach-host"))).sort();
+}
+
+/** What install wrote, as data: the host wrapper, the manifests, the prepared Flatpak browsers. */
+export function hostStatus({ home = os.homedir() } = {}) {
+  const wrapper = path.join(dataDir(home), "foxreach-host");
+  let runs = null;
+  if (exists(wrapper)) {
+    const line = fs.readFileSync(wrapper, "utf8").split("\n").find((l) => l.startsWith("exec "));
+    runs = line ? line.slice(5).replace(/ host$/, "").replace(/"/g, "") : null;
+  }
+  const manifests = [".mozilla", ...FORK_DIRS].map((d) => path.join(home, d, "native-messaging-hosts", `${HOST_NAME}.json`)).filter(exists);
+  const listed = flatpak("list", "--app", "--columns=application");
+  const installed = listed.error || listed.status !== 0 ? [] : listed.stdout.split(/\s+/).filter((id) => id in FLATPAKS);
+  const prepared = preparedFlatpaks(home);
+  const flatpaks = [...new Set([...installed, ...prepared])].sort().map((id) => ({
+    id, installed: installed.includes(id), prepared: prepared.includes(id),
+  }));
+  return { wrapper: exists(wrapper) ? wrapper : null, wrapperRuns: runs, manifests, flatpaks };
 }

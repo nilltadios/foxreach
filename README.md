@@ -47,7 +47,6 @@ For any Firefox-based browser on Linux (x86-64 or arm64). Nothing else is needed
    | Claude desktop (chat) | `~/.config/Claude/claude_desktop_config.json` |
    | Codex, the ChatGPT app, T3 Code | `~/.codex/config.toml` |
    | Antigravity (app and `agy`) | `~/.gemini/config/mcp_config.json` |
-   | Gemini CLI (retired by Google in 2026; only when the `gemini` program is still installed) | `~/.gemini/settings.json` |
    | opencode (CLI and app) | `~/.config/opencode/opencode.json` |
    | Pi | `~/.pi/agent/mcp.json` |
    | Hermes | `~/.hermes/config.yaml` |
@@ -61,6 +60,8 @@ For any Firefox-based browser on Linux (x86-64 or arm64). Nothing else is needed
    | MiniMax Code (`mcode`) | `~/.minimax/mcp.json` |
    | Mistral Vibe | `~/.vibe/config.toml` |
    | DeepSeek Harness (`dsh`) | `~/.dsh/profiles/web/cordis.patch.yml` |
+   | Grok Build (`grok`) | `~/.grok/config.toml` (Grok also reads `~/.claude.json`) |
+   | Muse Code (`muse`) | `~/.config/muse/settings.json` (`"schema_version": 1` is added to a new file) |
 
    Only the `foxreach` entry is added; everything else in each file stays as it was, and each file
    is backed up first (`<file>.bak-<date>`). A file it cannot edit safely, such as JSON with
