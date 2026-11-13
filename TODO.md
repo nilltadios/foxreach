@@ -15,6 +15,10 @@ Open items, newest first. Remove an item when it is done.
      so the browser must be where loosening is approved. Needs an add-on release: settings read and
      change messages in `extension/background.js` (today only the popup changes them, lines ~1220-1295),
      a `foxreach settings` command, then the app's view. The signed build needs Mozilla to sign again.
+   - Text alignment on the Browsers tab (user feedback): the small "· default" next to a profile name
+     and the "AppImage"/"Flatpak" next to a browser name sit higher than the text beside them. Align
+     those rows' contents vertically (`profile_row` name row, the browser heading row in
+     `browsers_tab`, `manager/src/app.rs`), and check the Agents tab for the same.
    - Rebuild the AppImage and Flatpak with the new UI (tabs, search, Test, logos) and recheck both.
    - AppImage segfault in `wl_proxy_destroy` on a background thread (core dump 2026-11-12 23:24),
      probably when the window closes: find and fix.
