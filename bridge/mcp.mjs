@@ -1,5 +1,6 @@
 // MCP server over stdio, with no dependencies. Each agent starts its own copy; every copy
 // connects to the one native host the browser runs.
+import { spawnSync } from "node:child_process";
 import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import net from "node:net";
@@ -120,12 +121,66 @@ async function readable(file, what) {
   return { real, size: stat.size };
 }
 
-/** True for ~/Library and what is in it, on macOS, whose file system ignores case by default. */
+// Documents people keep under ~/Library: Dropbox, OneDrive and Google Drive (CloudStorage), and
+// iCloud Drive. The rest of ~/Library is settings, keychains, cookies and mail.
+const MAC_CLOUD_DOCS = ["cloudstorage", "mobile documents/com~apple~clouddocs"];
+
+/** The home folder macOS's directory service gives this account, which HOME does not change (Bun's
+ * os.userInfo() reads HOME, so it cannot tell). Asked once. */
+let accountHome;
+function macAccountHome() {
+  if (accountHome !== undefined) return accountHome;
+  accountHome = null;
+  const name = spawnSync("/usr/bin/id", ["-un"], { encoding: "utf8" }).stdout?.trim();
+  if (name) {
+    const read = spawnSync("/usr/bin/dscl", [".", "-read", `/Users/${name}`, "NFSHomeDirectory"], { encoding: "utf8" });
+    const home = /NFSHomeDirectory:\s*(\/.*)/.exec(read.stdout ?? "")?.[1]?.trim();
+    if (home) accountHome = home;
+  }
+  return accountHome;
+}
+
+/** ~/Library for this user, lower-cased: from HOME and from the account (HOME can be changed or be
+ * a link), each also with links resolved, as real paths are compared. */
+function macLibraries() {
+  const homes = new Set([os.homedir()]);
+  if (macAccountHome()) homes.add(macAccountHome());
+  const libraries = new Set();
+  for (const home of homes) {
+    libraries.add(path.join(home, "Library"));
+    try {
+      libraries.add(path.join(fsSync.realpathSync(home), "Library"));
+    } catch {
+      // a HOME that does not exist
+    }
+  }
+  return [...libraries].map((l) => l.toLowerCase());
+}
+
+/** True for ~/Library and what is in it, except cloud documents, on macOS, whose file system
+ * ignores case by default. real is a path with its links resolved. */
 function inMacLibrary(real) {
   if (process.platform !== "darwin") return false;
-  const library = path.join(os.homedir(), "Library").toLowerCase();
   const p = real.toLowerCase();
-  return p === library || p.startsWith(`${library}/`);
+  for (const library of macLibraries()) {
+    if (p !== library && !p.startsWith(`${library}/`)) continue;
+    return !MAC_CLOUD_DOCS.some((docs) => p.startsWith(`${library}/${docs}/`));
+  }
+  return false;
+}
+
+/** The real path a file would be written at: links in it, and in the folders above it, resolved as
+ * far as they exist. */
+function realTarget(file) {
+  const rest = [];
+  for (let dir = path.resolve(file); ; dir = path.dirname(dir)) {
+    try {
+      return path.join(fsSync.realpathSync(dir), ...rest);
+    } catch {
+      if (dir === path.dirname(dir)) return path.resolve(file);
+      rest.unshift(path.basename(dir));
+    }
+  }
 }
 
 async function readUploads(paths) {
@@ -145,9 +200,26 @@ async function readUploads(paths) {
   return files;
 }
 
+// "mod" is the key shortcuts use on this machine, where the browser runs too (Cmd on macOS, Ctrl
+// elsewhere; a Flatpak browser is on Linux). Resolved here as well as in the add-on, so an add-on
+// from before "mod" gets a key it knows instead of dropping a modifier it does not.
+const MOD_KEY = process.platform === "darwin" ? "meta" : "ctrl";
+
+function withModKey(name, args) {
+  let out = args;
+  if (name === "press_key" && typeof args.keys === "string") {
+    out = { ...out, keys: args.keys.replace(/(^|[\s+])mod(?=\+)/gi, `$1${MOD_KEY}`) };
+  }
+  if (Array.isArray(args.modifiers)) {
+    out = { ...out, modifiers: args.modifiers.map((m) => (String(m).toLowerCase() === "mod" ? MOD_KEY : m)) };
+  }
+  return out;
+}
+
 /** Work only the agent's machine can do: read local files going in. */
-async function prepare(name, args) {
+async function prepare(name, rawArgs) {
   if (!TOOLS.some((t) => t.name === name)) throw new Error(`Unknown tool ${name}.`);
+  const args = withModKey(name, rawArgs);
   if (args.save_to !== undefined) checkSavePath(args.save_to, name); // before the browser does the work
   if (name === "javascript") return prepareScript(args);
   if (name !== "file_upload") return args;
@@ -182,11 +254,14 @@ async function prepareScript({ file, args, code, save_to, ...rest }) {
 function checkSavePath(file, tool) {
   if (!path.isAbsolute(file)) throw new Error(`Use an absolute path: ${file}`);
   const ext = path.extname(file).toLowerCase();
+  // Where the file would really land: a link must not lead a write into a guarded folder.
+  const real = realTarget(file);
+  if (inMacLibrary(real)) throw new Error(`save_to refuses ~/Library, which holds settings, keychains and cookies: ${file}`);
   if (tool === "javascript") {
     if (!TEXT_SAVE_EXTENSIONS.includes(ext)) {
       throw new Error(`javascript's save_to must name a data or text file (${TEXT_SAVE_EXTENSIONS.join(", ")}): ${file}`);
     }
-    if (path.resolve(file).split(path.sep).some((part) => part.startsWith("."))) {
+    if ([path.resolve(file), real].some((p) => p.split(path.sep).some((part) => part.startsWith(".")))) {
       throw new Error(`save_to refuses hidden files and folders: ${file}`);
     }
     return;

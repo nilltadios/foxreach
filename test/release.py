@@ -131,6 +131,15 @@ def main():
         check("install.sh installs the program for this machine and registers the host",
               installed.returncode == 0 and program.exists() and (home / HOSTS / "foxreach.json").exists()
               and run(program, "version", cwd=work).stdout.strip() == ver, installed.stdout + installed.stderr)
+        if sys.platform == "darwin" and run("arch", "-x86_64", "/usr/bin/true", cwd=work).returncode == 0:
+            # Under Rosetta, uname says x86_64: install.sh takes the Intel build, whose signature is
+            # Bun's and no longer matches, and must sign it for this Mac.
+            program.unlink()
+            intel = run("arch", "-x86_64", "sh", repo / "install.sh", "--no-flatpak", cwd=work, env=env)
+            check("install.sh on an Intel Mac (Rosetta here) signs the x64 build so it runs",
+                  intel.returncode == 0 and "foxreach-darwin-x64" in intel.stdout
+                  and run("codesign", "-v", program, cwd=work).returncode == 0
+                  and run("arch", "-x86_64", program, "version", cwd=work).stdout.strip() == ver, intel.stdout + intel.stderr)
         (release / "SHA256SUMS").write_text((release / "SHA256SUMS").read_text().replace("0", "1"))
         program.unlink()
         refused = run("sh", repo / "install.sh", "--no-flatpak", cwd=work, env=env)

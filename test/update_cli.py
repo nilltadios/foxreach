@@ -79,6 +79,21 @@ def serve_one(conn):
             f.flush()
 
 
+def mac_signing(work):
+    """foxreach update signs a downloaded Intel build, whose signature is Bun's and no longer matches."""
+    intel = build_binary.build(work / "intel/foxreach", "bun-darwin-x64-baseline")
+    run = lambda *c: subprocess.run([str(x) for x in c], capture_output=True, text=True)  # noqa: E731
+    check("the x64 build comes with a signature that does not match", run("codesign", "-v", intel).returncode != 0)
+    signed = run(build_binary.bun(), "-e", f'(await import("{ROOT / "bridge/update.mjs"}")).signForMac({json.dumps(str(intel))})')
+    check("foxreach update's signing step makes it valid", signed.returncode == 0 and run("codesign", "-v", intel).returncode == 0, signed.stderr)
+    if run("arch", "-x86_64", "/usr/bin/true").returncode == 0:
+        check("...and it runs (under Rosetta here)", run("arch", "-x86_64", intel, "version").stdout.strip() == version())
+    script = work / "intel/not-a-program"
+    script.write_text("#!/bin/sh\n")
+    run(build_binary.bun(), "-e", f'(await import("{ROOT / "bridge/update.mjs"}")).signForMac({json.dumps(str(script))})')
+    check("a file that is not a Mach-O program is left alone", "com.apple.cs" not in run("xattr", script).stdout)
+
+
 def main():
     work = pathlib.Path(tempfile.mkdtemp(prefix="foxreach-update-cli-"))
     served = work / "release"
@@ -168,6 +183,8 @@ def main():
             finally:
                 client.close()
             check(f"version warning for a {label} says: {advice}", "versions differ" in status and advice in status, status)
+        if sys.platform == "darwin":
+            mac_signing(work)
     finally:
         server.shutdown()
         shutil.rmtree(work, ignore_errors=True)

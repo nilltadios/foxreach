@@ -25,7 +25,7 @@ export function assetName(platform = process.platform, arch = process.arch) {
  * build keeps the signature of Bun's own runtime, which the packed program no longer matches. Sign
  * such a file ad hoc here, as install.sh does. Files that are not Mach-O programs are left alone.
  */
-function signForMac(file) {
+export function signForMac(file) {
   if (process.platform !== "darwin") return;
   const head = Buffer.alloc(4);
   const fd = fs.openSync(file, "r");

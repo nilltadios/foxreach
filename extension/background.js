@@ -1077,7 +1077,8 @@ const TOOLS = {
     for (const [index, action] of actions.entries()) {
       if (action.tool === "batch") throw new Error("batch cannot be nested.");
       try {
-        const result = await runTool(action.tool, action.args ?? {}, client);
+        // batch itself passed the approval check, so a status inside it is for an allowed agent.
+        const result = await runTool(action.tool, action.args ?? {}, client, action.tool === "status" ? { access: "allowed" } : undefined);
         parts.push({ index, tool: action.tool, ...result });
       } catch (e) {
         parts.push({ index, tool: action.tool, error: e.message });

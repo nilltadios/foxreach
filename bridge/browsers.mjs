@@ -16,7 +16,7 @@ const GECKO = new Map([
 
 /** Names of the Firefox-based browsers running now, or null where processes cannot be listed. */
 export function runningBrowsers(procRoot = process.env.FOXREACH_PROC || "/proc") {
-  if (process.platform === "darwin" && !process.env.FOXREACH_PROC) return psBrowsers();
+  if (process.env.FOXREACH_PS || (process.platform === "darwin" && !process.env.FOXREACH_PROC)) return psBrowsers();
   let entries;
   try {
     entries = fs.readdirSync(procRoot);
@@ -59,10 +59,21 @@ export function parentApp(pid = process.ppid) {
  * browser is <name>.app/Contents/MacOS/<executable>, the same executable names as on Linux.
  */
 function psBrowsers() {
-  const ps = spawnSync("/bin/ps", ["-x", "-o", "comm="], { encoding: "utf8" });
-  if (ps.status !== 0) return null;
+  let out;
+  if (process.env.FOXREACH_PS) {
+    // For tests: a file standing in for what ps prints.
+    try {
+      out = fs.readFileSync(process.env.FOXREACH_PS, "utf8");
+    } catch {
+      return null;
+    }
+  } else {
+    const ps = spawnSync("/bin/ps", ["-x", "-o", "comm="], { encoding: "utf8" });
+    if (ps.status !== 0) return null;
+    out = ps.stdout;
+  }
   const found = new Set();
-  for (const line of ps.stdout.split("\n")) {
+  for (const line of out.split("\n")) {
     const name = GECKO.get(path.basename(line.trim()));
     if (name) found.add(name);
   }

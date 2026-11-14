@@ -17,6 +17,7 @@ is executed to find them.
 import dataclasses
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 import sys
@@ -125,13 +126,16 @@ def mac_pids(profile):
     arguments. So an app's executable is matched by the profile it runs, as ps shows it with the
     environment (-E)."""
     out = subprocess.run(["ps", "-E", "-x", "-o", "pid=,command="], capture_output=True, text=True).stdout
-    marks = (f"XRE_PROFILE_PATH={profile} ", f"-profile {profile} ")
+    # The path ends at the end of the line, before the next variable (NAME=) or the next option:
+    # "/p/a" must not match a profile at "/p/a b".
+    end = r"(?=$| [A-Za-z_][A-Za-z0-9_]*=| -)"
+    marks = [re.compile(re.escape(m) + end) for m in (f"XRE_PROFILE_PATH={profile}", f"-profile {profile}")]
     pids = []
     for line in out.splitlines():
         pid, _, command = line.strip().partition(" ")
         if not pid.isdigit() or int(pid) == os.getpid() or ".app/Contents/MacOS/" not in command.split(" -", 1)[0]:
             continue
-        if any(m in f"{command} " for m in marks):
+        if any(m.search(command) for m in marks):
             pids.append(int(pid))
     return pids
 

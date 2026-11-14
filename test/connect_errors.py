@@ -94,7 +94,27 @@ def main():
         check("no profile record: no hint", "set up in" not in out, out)
 
         out = message(socket, work / "no-proc-here")
-        check("no process list (macOS): generic advice", out.startswith("The browser is not connected. Open the Firefox-based browser"), out)
+        check("no process list: generic advice", out.startswith("The browser is not connected. Open the Firefox-based browser"), out)
+
+        # macOS lists processes with ps; FOXREACH_PS stands in for its output, on any machine.
+        def ps_message(lines):
+            listing = work / "ps.txt"
+            if lines is None:
+                listing.unlink(missing_ok=True)
+            else:
+                listing.write_text("".join(f"{line}\n" for line in lines))
+            os.environ["FOXREACH_PS"] = str(listing)
+            try:
+                return message(socket, None)
+            finally:
+                del os.environ["FOXREACH_PS"]
+        out = ps_message(["/usr/sbin/cfprefsd", "/System/Library/CoreServices/Finder.app/Contents/MacOS/Finder"])
+        check("ps (macOS): no browser running: says so", out.startswith("No Firefox-based browser is running"), out)
+        out = ps_message(["/usr/sbin/cfprefsd", "/Applications/LibreWolf.app/Contents/MacOS/librewolf",
+                          "/Applications/LibreWolf.app/Contents/MacOS/plugin-container.app/Contents/MacOS/plugin-container"])
+        check("ps (macOS): finds LibreWolf by the executable inside its app", out.startswith("LibreWolf is running"), out)
+        out = ps_message(None)
+        check("ps (macOS): no listing: generic advice", out.startswith("The browser is not connected"), out)
 
         # The real process list, with a stand-in process whose executable is named like a browser.
         # (copy, not copy2: macOS refuses to copy the system flags of /bin/sleep.)

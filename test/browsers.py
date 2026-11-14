@@ -65,6 +65,22 @@ def mac_checks(home):
           out == [f"{home}/Library/Application Support/librewolf"], out)
 
 
+def mac_pids_checks(home):
+    """mac_pids reads ps; a profile path that begins another one must not match it."""
+    code = (
+        "import browsers, subprocess, types\n"
+        "out = ('101 /Applications/LibreWolf.app/Contents/MacOS/librewolf HOME=/h XRE_PROFILE_PATH=/p/a b MOZ_X=1\\n'\n"
+        "       '102 /Applications/LibreWolf.app/Contents/MacOS/librewolf -profile /p/a -new-instance\\n'\n"
+        "       '103 /Applications/LibreWolf.app/Contents/MacOS/librewolf HOME=/h XRE_PROFILE_PATH=/p/a\\n'\n"
+        "       '104 /usr/bin/python3 setup.py --profile /p/a\\n')\n"
+        "browsers.subprocess.run = lambda *a, **k: types.SimpleNamespace(stdout=out)\n"
+        "print(json.dumps([browsers.mac_pids('/p/a'), browsers.mac_pids('/p/a b')]))"
+    )
+    out = run(home, code, env={"FOXREACH_PLATFORM": "darwin"})
+    check("macOS: a browser is matched by its whole profile path, not one that begins another",
+          out == [[102, 103], [101]], out)
+
+
 def main():
     with tempfile.TemporaryDirectory(prefix="foxreach-browsers-") as d:
         home = pathlib.Path(d)
@@ -158,6 +174,7 @@ def main():
         (home / ".local/state/foxreach").mkdir(parents=True)
         (home / ".local/state/foxreach/profiles").write_text(f"/other/profile\t0.2.0\t/wrong\n{profile}\t0.2.0\t{shown}\n")
         mac_checks(home)
+        mac_pids_checks(home)
 
         launch = lambda env: subprocess.run([str(ROOT / "scripts/foxreach-browser"), "https://example.com/"],  # noqa: E731
                                             env={"HOME": str(home), "PATH": f"{home}/bin:/usr/bin"} | env, capture_output=True, text=True)

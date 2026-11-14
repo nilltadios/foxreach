@@ -39,7 +39,10 @@ For any Firefox-based browser on Linux or macOS (x86-64 or arm64). Nothing else 
    `~/Library/Application Support/Mozilla/NativeMessagingHosts`, which Firefox and LibreWolf both
    read. The Intel build is signed ad hoc on the Mac it is installed on (`install.sh` and
    `foxreach update` do this; by hand: `codesign --force --sign - foxreach`); it was run under
-   Rosetta, not yet on an Intel Mac.
+   Rosetta, not yet on an Intel Mac. A file downloaded with a web browser is marked as from the
+   internet, and macOS will not run an ad hoc signed program with that mark: before running it,
+   clear it with `xattr -d com.apple.quarantine foxreach`. (`install.sh` downloads with `curl`,
+   which sets no such mark.)
 2. **The add-on.** Open `foxreach-<version>-signed.xpi` from the release in the browser and accept.
    Then click the foxreach toolbar button and choose the sites agents may use.
 3. **The agent.** `foxreach install` also adds the MCP server (`foxreach mcp`) to every agent it
@@ -299,7 +302,8 @@ as page shortcuts (such as deleting the selected messages in a mail app). `allow
 overrides this for keyboard-driven pages. `type_text` also warns when the field's value did not change.
 
 `press_key` and the `modifiers` of `click` and `drag` take `mod`, the key shortcuts use on the browser's
-system: Cmd on macOS, Ctrl elsewhere. `mod+a` selects all on both; `ctrl` is always the Control key,
+system: Cmd on macOS, Ctrl elsewhere. The MCP server turns it into `meta` or `ctrl` before the add-on
+sees it, so an add-on from before `mod` gets a key it knows. `mod+a` selects all on both; `ctrl` is always the Control key,
 which on macOS moves to the start of a line instead.
 
 The agent's page gets focus and blur events in a background tab, or while the browser is behind
@@ -322,7 +326,8 @@ is more than a line or two:
   agent's context.
 - `timeout`: seconds to wait for the result, 30 by default, at most 600.
 
-`file` and `save_to` refuse hidden files and folders (`file` also refuses `~/Library` on macOS).
+`file` and `save_to` refuse hidden files and folders, also through a link, and `~/Library` on macOS
+(except the cloud folders in it, for `file`).
 
 ## What you control
 
@@ -367,16 +372,19 @@ Read this before installing into a profile you browse with.
   gets in. The socket keeps out other users and websites. The host and the MCP server
   refuse a socket folder that another user owns or can write (this matters where `XDG_RUNTIME_DIR`
   is not set and the socket falls back to the shared temporary folder). On macOS the socket is in
-  the user's own temporary folder (`getconf DARWIN_USER_TEMP_DIR`).
+  the user's own cache folder (`getconf DARWIN_USER_CACHE_DIR`), whatever `XDG_RUNTIME_DIR` says, so
+  a browser opened from the Dock and an agent started from a shell find the same one; the
+  temporary folder beside it is swept of files unused for three days.
 - **Local files.** `file_upload` reads files on the agent's machine and hands them to a page, and a
   page can ask the agent to do that. It refuses hidden files and folders (`~/.ssh`, `~/.config`,
   `.env`: any name starting with a dot, also through a link), `/proc`, `/sys` and `/dev`, and on
   macOS `~/Library`, which holds there what hidden folders hold on Linux (keychains, every browser's
-  cookies, mail, app settings). Set `FOXREACH_ALLOW_HIDDEN_UPLOADS=1` for the MCP server to lift the
-  rules on hidden files and `~/Library`. Your other files
-  (documents, downloads) can still be uploaded. `save_to` writes only files named as images
-  (`.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`), so it cannot replace a script or a key; it can replace
-  an image.
+  cookies, mail, app settings), whether `HOME` says so or not; documents kept there by Dropbox,
+  OneDrive and Google Drive (`~/Library/CloudStorage`) and iCloud Drive can still be uploaded. Set
+  `FOXREACH_ALLOW_HIDDEN_UPLOADS=1` for the MCP server to lift the rules on hidden files and
+  `~/Library`. Your other files (documents, downloads) can still be uploaded. `save_to` writes only
+  files named as images (`.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`), so it cannot replace a script or
+  a key; it can replace an image, though never in `~/Library` on macOS.
 - **Updates.** The full add-on updates itself from this project's GitHub Pages, and it runs with
   full browser privileges. Whoever controls that repository controls what your browser installs.
   To stay on a version you have read, set `extensions.update.enabled` to `false` in that profile.

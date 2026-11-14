@@ -21,20 +21,22 @@ export function assertPrivate(dir) {
 }
 
 /**
- * macOS gives each user a private temporary folder (TMPDIR in a login session). Asked of the
- * system rather than read from TMPDIR, so the browser's host and an agent started without it (from
- * launchd, ssh or cron) agree on the socket.
+ * macOS gives each user private folders under /var/folders. The socket goes in the cache one
+ * (DARWIN_USER_CACHE_DIR): the temporary one beside it is swept of files unused for three days,
+ * which a browser left open that long would lose its socket to. Asked of the system rather than
+ * read from the environment, so the browser's host and an agent started from anywhere (launchd,
+ * ssh, cron, a shell that exports XDG_RUNTIME_DIR) agree on it.
  */
-function darwinUserTemp() {
-  const asked = spawnSync("/usr/bin/getconf", ["DARWIN_USER_TEMP_DIR"], { encoding: "utf8" });
+function darwinUserCache() {
+  const asked = spawnSync("/usr/bin/getconf", ["DARWIN_USER_CACHE_DIR"], { encoding: "utf8" });
   const dir = asked.status === 0 ? asked.stdout.trim() : "";
   return dir && path.isAbsolute(dir) ? dir : null;
 }
 
 export function socketPath() {
   if (process.env.FOXREACH_SOCKET) return process.env.FOXREACH_SOCKET;
-  if (process.env.XDG_RUNTIME_DIR) return path.join(process.env.XDG_RUNTIME_DIR, "foxreach", "browser.sock");
-  const mac = process.platform === "darwin" ? darwinUserTemp() : null;
+  const mac = process.platform === "darwin" ? darwinUserCache() : null;
   if (mac) return path.join(mac, "foxreach", "browser.sock");
+  if (process.env.XDG_RUNTIME_DIR) return path.join(process.env.XDG_RUNTIME_DIR, "foxreach", "browser.sock");
   return path.join(os.tmpdir(), `foxreach-${process.getuid()}`, "foxreach", "browser.sock");
 }

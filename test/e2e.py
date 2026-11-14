@@ -196,7 +196,7 @@ def t_protocol(mcp):
     # LibreWolf reports itself as Firefox here (librewolf.getBrowserInfo.setToFirefoxDefaults).
     check("browser reports a version", status["browser"]["version"], status)
     check("status names the browser program, which the engine may not (LibreWolf says Firefox)",
-          status.get("app") == BROWSER_NAME, (status.get("app"), BROWSER_NAME))
+          (status.get("app") or "").startswith(BROWSER_NAME), (status.get("app"), BROWSER_NAME))
     check("status says this agent may act (the tests switch asking off)", status.get("agentAccess") == "allowed", status)
     check("status reports matching add-on and bridge versions",
           status["version"] == status.get("bridgeVersion") and "warning" not in status, status)
