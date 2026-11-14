@@ -327,7 +327,8 @@ is more than a line or two:
 - `timeout`: seconds to wait for the result, 30 by default, at most 600.
 
 `file` and `save_to` refuse hidden files and folders, also through a link, and `~/Library` on macOS
-(except the cloud folders in it, for `file`).
+except the cloud folders in it (Dropbox, OneDrive and Google Drive in `~/Library/CloudStorage`, and
+iCloud Drive), where documents are kept.
 
 ## What you control
 
@@ -384,7 +385,7 @@ Read this before installing into a profile you browse with.
   `FOXREACH_ALLOW_HIDDEN_UPLOADS=1` for the MCP server to lift the rules on hidden files and
   `~/Library`. Your other files (documents, downloads) can still be uploaded. `save_to` writes only
   files named as images (`.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`), so it cannot replace a script or
-  a key; it can replace an image, though never in `~/Library` on macOS.
+  a key; it can replace an image, though never in `~/Library` on macOS outside its cloud folders.
 - **Updates.** The full add-on updates itself from this project's GitHub Pages, and it runs with
   full browser privileges. Whoever controls that repository controls what your browser installs.
   To stay on a version you have read, set `extensions.update.enabled` to `false` in that profile.

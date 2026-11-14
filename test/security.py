@@ -173,6 +173,48 @@ def main():
         check(f"mod reaches the add-on as {key}, in keys and in modifiers",
               sent.get("press_key", {}).get("keys") == f"{key}+a Delete" and sent.get("click", {}).get("modifiers") == [key, "shift"], seen)
 
+        mcp_for_links = McpClient(str(work / "none.sock"))
+        # A link whose target does not exist yet: writing through it would create the target.
+        hidden_target = work / ".secret-dir/new.json"
+        (work / ".secret-dir").mkdir()
+        dangling = work / "dangling.json"
+        dangling.symlink_to(hidden_target)
+        out = error_of(lambda: mcp_for_links.call("javascript", tabId=1, code="1", save_to=str(dangling)))
+        check("save_to follows a link to a file that does not exist yet (here into a hidden folder)",
+              "refuses hidden" in out and not hidden_target.exists(), out)
+        if sys.platform == "darwin":
+            lib_target = pathlib.Path(os.path.expanduser("~")) / "Library/Application Support/foxreach-security-test/new.json"
+            to_library = work / "to-library.json"
+            to_library.symlink_to(lib_target)
+            out = error_of(lambda: mcp_for_links.call("javascript", tabId=1, code="1", save_to=str(to_library)))
+            check("...and into ~/Library", "refuses ~/Library" in out and not lib_target.exists(), out)
+        mcp_for_links.close()
+
+        # A link that appears while the browser works: the path is checked again when writing.
+        planted = work / "planted.json"
+        late_target = work / ".late/new.json"
+        (work / ".late").mkdir()
+        racer = work / "racer"
+        racer.mkdir(mode=0o700)
+        listener = socket.socket(socket.AF_UNIX)
+        listener.bind(str(racer / "s.sock"))
+        listener.listen(1)
+
+        def plant_then_answer():
+            conn, _ = listener.accept()
+            for line in conn.makefile():
+                request = json.loads(line)
+                if request["tool"] == "javascript":
+                    planted.symlink_to(late_target)
+                conn.sendall(json.dumps({"id": request["id"], "result": {"text": "result"}}).encode() + b"\n")
+        threading.Thread(target=plant_then_answer, daemon=True).start()
+        late = McpClient(str(racer / "s.sock"))
+        out = error_of(lambda: late.call("javascript", tabId=1, code="1", save_to=str(planted)))
+        late.close()
+        listener.close()
+        check("a link put in place while the script ran is refused when the result is written",
+              "refuses hidden" in out and not late_target.exists(), out)
+
         # The socket folder.
         open_dir = work / "open"
         open_dir.mkdir()

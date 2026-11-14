@@ -125,18 +125,15 @@ async function readable(file, what) {
 // iCloud Drive. The rest of ~/Library is settings, keychains, cookies and mail.
 const MAC_CLOUD_DOCS = ["cloudstorage", "mobile documents/com~apple~clouddocs"];
 
-/** The home folder macOS's directory service gives this account, which HOME does not change (Bun's
- * os.userInfo() reads HOME, so it cannot tell). Asked once. */
+/** The home folder of this account, which HOME does not change (Bun's os.userInfo() reads HOME, so
+ * it cannot tell). `id -P` prints the account's password entry through the system's account lookup,
+ * so local, network and directory accounts alike; the home is its ninth field. Asked once. */
 let accountHome;
 function macAccountHome() {
   if (accountHome !== undefined) return accountHome;
-  accountHome = null;
-  const name = spawnSync("/usr/bin/id", ["-un"], { encoding: "utf8" }).stdout?.trim();
-  if (name) {
-    const read = spawnSync("/usr/bin/dscl", [".", "-read", `/Users/${name}`, "NFSHomeDirectory"], { encoding: "utf8" });
-    const home = /NFSHomeDirectory:\s*(\/.*)/.exec(read.stdout ?? "")?.[1]?.trim();
-    if (home) accountHome = home;
-  }
+  const entry = spawnSync("/usr/bin/id", ["-P"], { encoding: "utf8" }).stdout?.trim() ?? "";
+  const home = entry.split(":")[8];
+  accountHome = home && path.isAbsolute(home) ? home : null;
   return accountHome;
 }
 
@@ -170,16 +167,26 @@ function inMacLibrary(real) {
 }
 
 /** The real path a file would be written at: links in it, and in the folders above it, resolved as
- * far as they exist. */
-function realTarget(file) {
+ * far as they exist. A link whose target does not exist yet is followed too, since writing through
+ * it creates that target. */
+function realTarget(file, depth = 0) {
+  if (depth > 40) throw new Error(`Too many links in ${file}.`);
   const rest = [];
   for (let dir = path.resolve(file); ; dir = path.dirname(dir)) {
     try {
       return path.join(fsSync.realpathSync(dir), ...rest);
     } catch {
-      if (dir === path.dirname(dir)) return path.resolve(file);
-      rest.unshift(path.basename(dir));
+      // not there, or a link to something that is not there yet
     }
+    let link = null;
+    try {
+      if (fsSync.lstatSync(dir).isSymbolicLink()) link = fsSync.readlinkSync(dir);
+    } catch {
+      // not there at all
+    }
+    if (link !== null) return realTarget(path.join(path.resolve(path.dirname(dir), link), ...rest), depth + 1);
+    if (dir === path.dirname(dir)) return path.resolve(file);
+    rest.unshift(path.basename(dir));
   }
 }
 
@@ -272,7 +279,7 @@ function checkSavePath(file, tool) {
 }
 
 async function saveTo(file, base64) {
-  checkSavePath(file);
+  checkSavePath(file); // again: the browser took a while, and a link could have appeared meanwhile
   await fs.writeFile(file, Buffer.from(base64, "base64"));
 }
 
@@ -299,6 +306,7 @@ async function present(name, args, result) {
     content.push({ type: "text", text: `Saved ${args.save_to}.` });
   }
   if (result.text !== undefined && name === "javascript" && args.save_to) {
+    checkSavePath(args.save_to, name); // again, as for images: checked before the script ran too
     await fs.writeFile(args.save_to, result.text);
     const bytes = Buffer.byteLength(result.text);
     const head = result.text.length > 300 ? `${result.text.slice(0, 300)}…` : result.text;
