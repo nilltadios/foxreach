@@ -105,7 +105,7 @@ export function probe(argv, { timeoutMs = TIMEOUT_MS } = {}) {
         }
         if (msg.id === 1) {
           send({ jsonrpc: "2.0", method: "notifications/initialized" });
-          send({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "status", arguments: {} } });
+          send({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "status", arguments: { ask: false } } });
         } else if (msg.id === 2) {
           const text = msg.result?.content?.find((c) => c.type === "text")?.text;
           if (msg.error || msg.result?.isError || !text) {

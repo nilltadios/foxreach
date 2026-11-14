@@ -132,14 +132,20 @@ def main():
               installed.returncode == 0 and program.exists() and (home / HOSTS / "foxreach.json").exists()
               and run(program, "version", cwd=work).stdout.strip() == ver, installed.stdout + installed.stderr)
         if sys.platform == "darwin" and run("arch", "-x86_64", "/usr/bin/true", cwd=work).returncode == 0:
-            # Under Rosetta, uname says x86_64: install.sh takes the Intel build, whose signature is
-            # Bun's and no longer matches, and must sign it for this Mac.
+            # The Intel build, asked for by FOXREACH_ARCH (on Apple silicon install.sh takes arm64 even
+            # under Rosetta): its signature is Bun's and no longer matches, so install.sh signs it.
             program.unlink()
-            intel = run("arch", "-x86_64", "sh", repo / "install.sh", "--no-flatpak", cwd=work, env=env)
+            intel = run("arch", "-x86_64", "sh", repo / "install.sh", "--no-flatpak", cwd=work,
+                        env={**env, "FOXREACH_ARCH": "x64"})
             check("install.sh on an Intel Mac (Rosetta here) signs the x64 build so it runs",
                   intel.returncode == 0 and "foxreach-darwin-x64" in intel.stdout
                   and run("codesign", "-v", program, cwd=work).returncode == 0
                   and run("arch", "-x86_64", program, "version", cwd=work).stdout.strip() == ver, intel.stdout + intel.stderr)
+            if run("sysctl", "-n", "hw.optional.arm64", cwd=work).stdout.strip() == "1":
+                program.unlink()
+                rosetta = run("arch", "-x86_64", "sh", repo / "install.sh", "--no-flatpak", cwd=work, env=env)
+                check("install.sh in a Rosetta shell on Apple silicon takes the arm64 build",
+                      rosetta.returncode == 0 and "foxreach-darwin-arm64" in rosetta.stdout, rosetta.stdout + rosetta.stderr)
         (release / "SHA256SUMS").write_text((release / "SHA256SUMS").read_text().replace("0", "1"))
         program.unlink()
         refused = run("sh", repo / "install.sh", "--no-flatpak", cwd=work, env=env)

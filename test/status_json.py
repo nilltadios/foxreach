@@ -25,8 +25,8 @@ def check(name, ok, detail=""):
     print("PASS" if ok else "FAIL", name, "" if ok else detail)
 
 
-def run(home, *args):
-    env = {"HOME": str(home), "PATH": f"{home}/bin:/usr/bin:/bin", "FOXREACH_ADDON_UPDATES": (home / "updates.json").as_uri(), "FOXREACH_AGENT_CLI": "0", "XDG_RUNTIME_DIR": str(home / "run"),
+def run(home, *args, extra=None):
+    env = {**(extra or {}), "HOME": str(home), "PATH": f"{home}/bin:/usr/bin:/bin", "FOXREACH_ADDON_UPDATES": (home / "updates.json").as_uri(), "FOXREACH_AGENT_CLI": "0", "XDG_RUNTIME_DIR": str(home / "run"),
            "FOXREACH_PROFILES": str(home / "profiles")}
     r = subprocess.run([BUN, str(ROOT / "bridge/cli.mjs"), *args], env=env, capture_output=True, text=True, timeout=60)
     return r.returncode, r.stdout, r.stderr
@@ -150,6 +150,7 @@ for line in sys.stdin:
     if m.get("id") == 1:
         print(json.dumps({"jsonrpc": "2.0", "id": 1, "result": {"protocolVersion": "2025-06-18", "capabilities": {}}}), flush=True)
     elif m.get("id") == 2:
+        open(sys.argv[0] + ".args", "w").write(json.dumps(m["params"].get("arguments")))
         text = json.dumps({"version": "9.9.9", "browser": {"name": "Firefox", "version": "160.0"}})
         print(json.dumps({"jsonrpc": "2.0", "id": 2, "result": {"content": [{"type": "text", "text": text}]}}), flush=True)
 """)
@@ -165,6 +166,8 @@ for line in sys.stdin:
     check("test: the real server with no browser says why (TOML entry read)", rows.get("codex", {}).get("ok") is False
           and rows["codex"]["command"].endswith("cli.mjs mcp") and rows["codex"]["error"], rows.get("codex"))
     check("test: agents without foxreach are left out", set(rows) == {"claude-desktop", "codex"}, list(rows))
+    sent = json.loads((home / "bin/fake-mcp.args").read_text()) if (home / "bin/fake-mcp.args").exists() else None
+    check("test: asks status with ask false, so the browser prompts no one", sent == {"ask": False}, sent)
 
     # Grok Build (TOML like Codex) and Muse Code (JSON that must keep "schema_version": 1).
     (home / ".grok").mkdir()
@@ -186,5 +189,40 @@ for line in sys.stdin:
     muse = json.loads((home / ".config/muse/settings.json").read_text())
     check("grok, muse: remove takes out only foxreach", "foxreach" not in (home / ".grok/config.toml").read_text()
           and muse.get("schema_version") == 1 and list(muse["mcp_servers"]) == ["other"], muse)
+
+# macOS (FOXREACH_PLATFORM=darwin takes that path here): browsers are apps, profiles live in
+# Application Support, and an open profile holds .parentlock open.
+with tempfile.TemporaryDirectory() as tmp:
+    home = pathlib.Path(tmp)
+    mac = {"FOXREACH_PLATFORM": "darwin"}
+    exe = home / "Applications/LibreWolf.app/Contents/MacOS/librewolf"
+    exe.parent.mkdir(parents=True)
+    exe.write_text(f'#!/bin/sh\necho "$@" > {home}/opened\n')
+    exe.chmod(0o755)
+    (home / "Applications/Notes.app/Contents/MacOS").mkdir(parents=True)
+    root = home / "Library/Application Support/librewolf"
+    prof = root / "Profiles/x.default-default"
+    prof.mkdir(parents=True)
+    (root / "profiles.ini").write_text("[Profile0]\nName=default-default\nIsRelative=1\nPath=Profiles/x.default-default\n\n"
+                                       "[Install1]\nDefault=Profiles/x.default-default\n")
+    (home / ".librewolf").mkdir()  # a Linux profile folder, which macOS does not use
+    (home / ".librewolf/profiles.ini").write_text("[Profile0]\nName=linux\nIsRelative=1\nPath=.\n")
+    code, out, err = run(home, "status", "--json", extra=mac)
+    rows = json.loads(out)["browsers"] if code == 0 else []
+    lw = rows[0] if rows else {}
+    check("macOS: the app in ~/Applications is found by its executable, other apps are not", len(rows) == 1
+          and lw.get("name") == "LibreWolf" and lw.get("spec") == str(exe) and lw.get("packaging") == "app", out + err)
+    check("macOS: profiles come from Application Support only", [p["path"] for p in lw.get("profiles", [])] == [str(prof)]
+          and lw["profiles"][0]["isDefault"] and lw["profiles"][0]["inUse"] is False, lw.get("profiles"))
+    with open(prof / ".parentlock", "w"):
+        s = json.loads(run(home, "status", "--json", extra=mac)[1])
+        check("macOS: a profile whose .parentlock is held open is in use", s["browsers"][0]["profiles"][0]["inUse"] is True, s["browsers"])
+    (prof / "extensions").mkdir()
+    (prof / "extensions/foxreach@foxreach.local.xpi").write_text("x")
+    with open(prof / ".parentlock", "w"):
+        code, _, err = run(home, "addon", "remove", "--profile", str(prof), extra=mac)
+        check("macOS: addon remove refuses an open profile", code == 1 and "in use" in err, err)
+    code, out, err = run(home, "addon", "remove", "--profile", str(prof), extra=mac)
+    check("macOS: addon remove works once it is closed", code == 0 and not (prof / "extensions/foxreach@foxreach.local.xpi").exists(), out + err)
 
 sys.exit(1 if fails else 0)

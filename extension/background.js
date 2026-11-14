@@ -162,12 +162,14 @@ function requestApproval(conn, name) {
 
 /**
  * For status, which runs without approval: whether this agent may act. One that would have to wait
- * is asked now, so the prompt appears while the user is still there, not at the first real action.
+ * is asked now, so the prompt appears while the user is still there, not at the first real action;
+ * with ask false (`foxreach test`, which promises no prompt) it is only reported, as "unasked".
  */
-function agentAccess(conn, name) {
+function agentAccess(conn, name, ask = true) {
   if (!settings.askApproval) return "allowed";
   if (allowedConns.has(conn) || settings.approvedAgents.includes(name)) return "allowed";
   if (deniedConns.has(conn)) return "refused";
+  if (!ask && !agentRequests.has(conn)) return "unasked";
   requestApproval(conn, name);
   return "waiting";
 }
@@ -677,7 +679,8 @@ const TOOLS = {
         ...(access === "waiting" ? {
           note: `This agent needs the user's permission before any other tool works. The user is being asked ${askedWhere()}: ` +
             "tell the user now to answer it there (Always keeps the answer for this agent).",
-        } : access === "refused" ? { note: "The user refused this agent for this connection." } : {}),
+        } : access === "refused" ? { note: "The user refused this agent for this connection." }
+          : access === "unasked" ? { note: "The user has not allowed this agent yet; its first other tool call will ask them." } : {}),
       }),
     };
   },
@@ -1140,7 +1143,7 @@ async function handleRequest({ id, client, tool, args }) {
     // The part of the id before the colon is the connection, numbered by the host, not by the agent.
     const conn = String(id).split(":")[0];
     const context = {};
-    if (tool === "status") context.access = agentAccess(conn, client);
+    if (tool === "status") context.access = agentAccess(conn, client, args?.ask !== false);
     else {
       await assertAgentAllowed(conn, client).catch((e) => {
         logActivity(client, tool, args, false, 0, e.message);

@@ -340,7 +340,8 @@ The toolbar button shows the bridge's status and recent agent activity, and it h
   Allow (until it disconnects), Always (that name, from now on), or Refuse. Its call waits up to a
   minute, then fails and says why. `status` needs no approval; for an agent that would have to
   wait, it asks you right away and tells the agent to point you to the browser (`agentAccess`:
-  `allowed`, `waiting` or `refused`), so an agent that starts with `status` gets you to answer
+  `allowed`, `waiting` or `refused`; `status` with `ask: false`, as `foxreach test` sends, only
+  reports `unasked`), so an agent that starts with `status` gets you to answer
   before its first real step. The request opens a small window of its own, since the browser
   may keep the button in its extensions menu; the button also shows `?`. The name is what
   the program calls itself, so this keeps out an agent you did not mean to let in, not a program

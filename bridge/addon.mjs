@@ -19,16 +19,22 @@ const UPDATES = process.env.FOXREACH_ADDON_UPDATES || "https://nilltadios.github
 const FULL_PREFS = ["extensions.experiments.enabled", "xpinstall.signatures.required"];
 
 // One family per Firefox-based browser: executable names, Flatpak ids, profile folders (relative
-// to the home it uses). Same list as scripts/browsers.py.
+// to the home it uses; on macOS, macRoots, relative to Application Support). Same list as
+// scripts/browsers.py.
 const KINDS = [
   { name: "Firefox", commands: ["firefox", "firefox-developer-edition", "firefox-devedition", "firefox-nightly", "firefox-beta", "firefox-esr", "firefox-bin"],
-    flatpaks: ["org.mozilla.firefox"], roots: [".mozilla/firefox", ".config/mozilla/firefox"] },
-  { name: "LibreWolf", commands: ["librewolf", "librewolf-bin"], flatpaks: ["io.gitlab.librewolf-community"], roots: [".librewolf", ".config/librewolf/librewolf"] },
-  { name: "Floorp", commands: ["floorp"], flatpaks: ["one.ablaze.floorp"], roots: [".floorp"] },
-  { name: "Waterfox", commands: ["waterfox"], flatpaks: ["net.waterfox.waterfox"], roots: [".waterfox"] },
-  { name: "Zen", commands: ["zen", "zen-browser", "zen-bin"], flatpaks: ["app.zen_browser.zen"], roots: [".zen"] },
+    flatpaks: ["org.mozilla.firefox"], roots: [".mozilla/firefox", ".config/mozilla/firefox"], macRoots: ["Firefox"] },
+  { name: "LibreWolf", commands: ["librewolf", "librewolf-bin"], flatpaks: ["io.gitlab.librewolf-community"], roots: [".librewolf", ".config/librewolf/librewolf"], macRoots: ["librewolf"] },
+  { name: "Floorp", commands: ["floorp"], flatpaks: ["one.ablaze.floorp"], roots: [".floorp"], macRoots: ["Floorp"] },
+  { name: "Waterfox", commands: ["waterfox"], flatpaks: ["net.waterfox.waterfox"], roots: [".waterfox"], macRoots: ["Waterfox"] },
+  { name: "Zen", commands: ["zen", "zen-browser", "zen-bin"], flatpaks: ["app.zen_browser.zen"], roots: [".zen"], macRoots: ["zen"] },
 ];
 const APPIMAGE_DIRS = ["AppImages", "Applications", ".local/bin"];
+// macOS: browsers are apps in /Applications or ~/Applications, profiles in Application Support.
+// FOXREACH_PLATFORM=darwin lets the tests take this path on Linux, as for scripts/browsers.py.
+const MAC = (process.env.FOXREACH_PLATFORM || process.platform) === "darwin";
+const SUPPORT = "Library/Application Support";
+const rootsOf = (kind, h) => (MAC ? kind.macRoots.map((r) => path.join(h, SUPPORT, r)) : kind.roots.map((r) => path.join(h, r)));
 // What an AppImage (this manager, or a browser) exports for itself; none of it may reach a browser.
 const SCRUB = ["LD_LIBRARY_PATH", "LD_PRELOAD", "APPDIR", "APPIMAGE", "ARGV0", "OWD"];
 
@@ -59,7 +65,28 @@ function flatpakIds() {
   return r.error || r.status !== 0 ? [] : r.stdout.split(/\s+/).filter(Boolean);
 }
 
-/** Every Firefox-based browser found: commands on PATH, AppImages in the usual folders, Flatpaks. */
+/** The executable of a macOS app bundle and its family, or null if it is not a known browser. */
+function macApp(app) {
+  let names = [];
+  try {
+    names = fs.readdirSync(path.join(app, "Contents/MacOS")).sort();
+  } catch {
+    return null;
+  }
+  for (const n of names) {
+    const exe = path.join(app, "Contents/MacOS", n);
+    try {
+      fs.accessSync(exe, fs.constants.X_OK);
+      if (kindOf(n) && fs.statSync(exe).isFile()) return { kind: kindOf(n), exe };
+    } catch {
+      // not a program
+    }
+  }
+  return null;
+}
+
+/** Every Firefox-based browser found: commands on PATH, AppImages in the usual folders, Flatpaks;
+ * on macOS, commands on PATH and apps (the spec is the executable inside the app). */
 export function findBrowsers({ h = home() } = {}) {
   const found = [];
   const seen = new Set();
@@ -81,7 +108,19 @@ export function findBrowsers({ h = home() } = {}) {
       if (p) add(kind, p.toLowerCase().endsWith(".appimage") ? "appimage" : "native", p);
     }
   }
-  for (const dir of APPIMAGE_DIRS) {
+  for (const dir of MAC ? ["/Applications", path.join(h, "Applications")] : []) {
+    let names = [];
+    try {
+      names = fs.readdirSync(dir).filter((n) => n.endsWith(".app")).sort();
+    } catch {
+      continue;
+    }
+    for (const n of names) {
+      const app = macApp(path.join(dir, n));
+      if (app) add(app.kind, "app", app.exe);
+    }
+  }
+  for (const dir of MAC ? [] : APPIMAGE_DIRS) {
     let names = [];
     try {
       names = fs.readdirSync(path.join(h, dir)).sort();
@@ -99,7 +138,7 @@ export function findBrowsers({ h = home() } = {}) {
       if (n.toLowerCase().endsWith(".appimage") && kindOf(n) && file) add(kindOf(n), "appimage", p);
     }
   }
-  const installed = flatpakIds();
+  const installed = MAC ? [] : flatpakIds();
   for (const kind of KINDS) for (const id of kind.flatpaks) if (installed.includes(id)) add(kind, "flatpak", `flatpak:${id}`);
   return found;
 }
@@ -176,6 +215,12 @@ export function inUse(profile, appId = null) {
     const r = spawnSync("flatpak", ["ps", "--columns=application"], { encoding: "utf8" });
     return !r.error && r.status === 0 && r.stdout.split(/\s+/).includes(appId);
   }
+  if (MAC) {
+    // macOS builds keep .parentlock open (and locked) while the profile is open; there is no lock
+    // link. lsof finds a browser started any way, from the Dock too.
+    const r = spawnSync(exists("/usr/sbin/lsof") ? "/usr/sbin/lsof" : "lsof", ["-t", "--", path.join(profile, ".parentlock")], { encoding: "utf8" });
+    return !r.error && r.status === 0 && r.stdout.trim() !== "";
+  }
   const lock = path.join(profile, "lock");
   try {
     const pid = fs.readlinkSync(lock).split("+").pop();
@@ -203,7 +248,7 @@ export function browserStatus({ h = home() } = {}) {
   const browsers = findBrowsers({ h });
   const placed = new Set();
   const rows = browsers.map((b) => {
-    const profiles = b.kind.roots.flatMap((r) => iniProfiles(path.join(b.home, r)));
+    const profiles = rootsOf(b.kind, b.home).flatMap((r) => iniProfiles(r));
     for (const [p, spec] of Object.entries(recorded)) {
       if (spec === b.spec && !profiles.some((x) => x.path === p)) profiles.push({ name: path.basename(p), path: p, isDefault: false });
     }

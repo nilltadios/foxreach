@@ -18,10 +18,13 @@ case "$(uname -s)" in
   Darwin) os=darwin ;;
   *) echo "foxreach runs on Linux and macOS only." >&2; exit 1 ;;
 esac
-case "$(uname -m)" in
-  x86_64 | amd64) file="foxreach-$os-x64" ;;
+machine="$(uname -m)"
+# A shell under Rosetta on Apple silicon says x86_64; the processor itself runs the arm64 build.
+if [ "$os" = darwin ] && [ "$(sysctl -n hw.optional.arm64 2>/dev/null)" = 1 ]; then machine=arm64; fi
+case "${FOXREACH_ARCH:-$machine}" in  # FOXREACH_ARCH=x64 or arm64 picks a build (tests use it)
+  x86_64 | amd64 | x64) file="foxreach-$os-x64" ;;
   aarch64 | arm64) file="foxreach-$os-arm64" ;;
-  *) echo "No foxreach build for $(uname -m)." >&2; exit 1 ;;
+  *) echo "No foxreach build for $machine." >&2; exit 1 ;;
 esac
 
 sha256() {

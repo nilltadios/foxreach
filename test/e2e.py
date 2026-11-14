@@ -1137,6 +1137,13 @@ def popup_tests(browser, mcp):
     shown = prompts()
     check("the request is the browser's own prompt, in the browser window", len(shown) == 1 and "newcomer" in shown[0], shown)
     check("...and opens no window of its own", request_windows() == 0, request_windows())
+    quiet = McpClient(mcp_socket, name="quiet-prober")
+    probed = json.loads(quiet.call("status", ask=False))
+    redrawn()
+    check("status with ask false (foxreach test) only reports, asking no one",
+          probed.get("agentAccess") == "unasked" and "quiet-prober" not in text_of("agent-requests"),
+          (probed, text_of("agent-requests")))
+    quiet.close()
     looker = McpClient(mcp_socket, name="looker")
     looked = json.loads(looker.call("status"))
     check("status needs no approval", looked["version"], looked)

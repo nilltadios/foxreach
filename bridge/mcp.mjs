@@ -336,7 +336,8 @@ async function sessionWarning() {
 
 async function callTool(name, args = {}) {
   if (name === "status") {
-    const status = JSON.parse((await callBrowser("status", {})).text);
+    // ask false (`foxreach test`) reports this agent's access without prompting the user.
+    const status = JSON.parse((await callBrowser("status", args.ask === false ? { ask: false } : {})).text);
     versionChecked = true;
     const warning = versionWarning(status.version);
     const text = JSON.stringify({ ...status, bridgeVersion: VERSION, ...(warning ? { warning } : {}) });
