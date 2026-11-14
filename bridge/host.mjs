@@ -3,6 +3,7 @@
 import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
+import { parentApp } from "./browsers.mjs";
 import { assertPrivate, socketPath } from "./socket.mjs";
 
 // The browser accepts at most 1 MB per message; 300k UTF-16 units cannot exceed that once encoded.
@@ -37,6 +38,10 @@ function sendRequest(message) {
 function fromBrowser(message) {
   if (message.hello) {
     hello = message.hello;
+    // The browser started this host: its program says which browser it is, where the browser itself
+    // may only say "Firefox" (LibreWolf does). Only an add-on that asks gets this: an older one
+    // would take any message it does not know for a tool call.
+    if (hello.wantsHostInfo) toBrowser({ hostInfo: { app: parentApp() } });
     return;
   }
   const split = String(message.id).indexOf(":");

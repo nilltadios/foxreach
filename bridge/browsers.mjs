@@ -37,6 +37,24 @@ export function runningBrowsers(procRoot = process.env.FOXREACH_PROC || "/proc")
 }
 
 /**
+ * The Firefox-based browser this process was started by, by name, or null. The native host's parent
+ * is the browser: on Linux its executable is in /proc (inside a Flatpak too), on macOS ps names it.
+ */
+export function parentApp(pid = process.ppid) {
+  let exe = "";
+  try {
+    if (process.platform === "darwin") {
+      exe = spawnSync("/bin/ps", ["-o", "comm=", "-p", String(pid)], { encoding: "utf8" }).stdout?.trim() ?? "";
+    } else {
+      exe = fs.readlinkSync(`/proc/${pid}/exe`);
+    }
+  } catch {
+    return null;
+  }
+  return GECKO.get(path.basename(exe)) ?? null;
+}
+
+/**
  * macOS has no /proc. ps lists this user's processes with each one's executable path, which for a
  * browser is <name>.app/Contents/MacOS/<executable>, the same executable names as on Linux.
  */

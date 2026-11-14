@@ -37,6 +37,7 @@ const HIDDEN_DEFAULT = { typed: false, cards: true, ids: true, answers: true, ad
 let settings = { paused: false, blockedHosts: [], siteAccess: null, allowedHosts: [], askApproval: true, approvedAgents: [], hiddenFields: { ...HIDDEN_DEFAULT } };
 let port = null;
 let hostError = null;
+let hostApp = null; // the browser program by its own name (LibreWolf, Zen...), as the host found it
 let agentGroupId = null;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -147,9 +148,8 @@ const allowedConns = new Set(); // connections allowed until they close
 const deniedConns = new Set();
 const agentRequests = new Map(); // connection -> { name, time, waiters }
 
-async function assertAgentAllowed(conn, name) {
-  if (!settings.askApproval || allowedConns.has(conn) || settings.approvedAgents.includes(name)) return;
-  if (deniedConns.has(conn)) throw new Error(`The user refused the agent "${name}".`);
+/** The user's pending request for this connection, asked now if it was not yet. */
+function requestApproval(conn, name) {
   let request = agentRequests.get(conn);
   if (!request) {
     request = { name, time: Date.now(), waiters: [] };
@@ -157,13 +157,35 @@ async function assertAgentAllowed(conn, name) {
     updateBadge();
     showRequests();
   }
+  return request;
+}
+
+/**
+ * For status, which runs without approval: whether this agent may act. One that would have to wait
+ * is asked now, so the prompt appears while the user is still there, not at the first real action.
+ */
+function agentAccess(conn, name) {
+  if (!settings.askApproval) return "allowed";
+  if (allowedConns.has(conn) || settings.approvedAgents.includes(name)) return "allowed";
+  if (deniedConns.has(conn)) return "refused";
+  requestApproval(conn, name);
+  return "waiting";
+}
+
+/** Where the user answers, as an agent should tell them: the browser by its own name. */
+const askedWhere = () => `in ${hostApp ?? "the browser"} (a foxreach prompt below the address bar, or a small foxreach window; the request is also under the foxreach toolbar button)`;
+
+async function assertAgentAllowed(conn, name) {
+  if (!settings.askApproval || allowedConns.has(conn) || settings.approvedAgents.includes(name)) return;
+  if (deniedConns.has(conn)) throw new Error(`The user refused the agent "${name}".`);
+  const request = requestApproval(conn, name);
   const answer = await new Promise((resolve) => {
     request.waiters.push(resolve);
     setTimeout(() => resolve("unanswered"), APPROVAL_WAIT_MS);
   });
   if (answer === "allow") return;
   if (answer === "deny") throw new Error(`The user refused the agent "${name}".`);
-  throw new Error(`The user has not yet allowed the agent "${name}" to use the browser. The user is being asked in the browser (a foxreach prompt below the address bar, or a small foxreach window; the request is also under the foxreach toolbar button): ask the user to answer it, then try again.`);
+  throw new Error(`The user has not yet allowed the agent "${name}" to use the browser. The user is being asked ${askedWhere()}: ask the user to answer it, then try again.`);
 }
 
 function answerAgent(conn, mode) {
@@ -640,15 +662,22 @@ async function capture(tabId, options) {
 /* ---------- tools ---------- */
 
 const TOOLS = {
-  async status() {
+  async status(args, client, { access } = {}) {
     return {
       text: JSON.stringify({
         version: VERSION,
+        // Forks such as LibreWolf call themselves Firefox to add-ons; the host names the program.
+        app: hostApp,
         browser: await browser.runtime.getBrowserInfo(),
         trustedInput: trusted,
         paused: settings.paused,
         siteAccess: settings.siteAccess,
         agentTabs: agentTabs.size,
+        agentAccess: access,
+        ...(access === "waiting" ? {
+          note: `This agent needs the user's permission before any other tool works. The user is being asked ${askedWhere()}: ` +
+            "tell the user now to answer it there (Always keeps the answer for this agent).",
+        } : access === "refused" ? { note: "The user refused this agent for this connection." } : {}),
       }),
     };
   },
@@ -759,7 +788,14 @@ const TOOLS = {
       (value?.matches ?? []).map((m) => ({ score: m.score, line: frameRef(frame.frameId, m.line) })));
     scored.sort((a, b) => b.score - a.score);
     const total = results.reduce((n, r) => n + (r.value?.total ?? 0), 0);
-    if (!scored.length) return { text: `Nothing matches "${query}".` };
+    if (!scored.length) {
+      const near = results.flatMap(({ frame, value }) =>
+        (value?.partial ?? []).map((m) => ({ score: m.score, line: frameRef(frame.frameId, m.line) })));
+      near.sort((a, b) => b.score - a.score);
+      if (!near.length) return { text: `Nothing matches "${query}".` };
+      return { text: `Nothing matches most of "${query}". Closest, matching some of its words:\n` +
+        near.slice(0, 5).map((m) => m.line).join("\n") };
+    }
     const lines = scored.slice(0, limit).map((m) => m.line);
     return { text: lines.join("\n") + (total > limit ? `\n[${total} matches, best ${limit} shown. Be more specific.]` : "") };
   },
@@ -1080,12 +1116,12 @@ function logActivity(client, tool, args, ok, ms, error) {
   if (activity.length > LOG_LIMIT) activity.shift();
 }
 
-async function runTool(tool, args, client) {
+async function runTool(tool, args, client, context) {
   const started = Date.now();
   try {
     if (settings.paused && tool !== "status") throw new Error("The user has paused agent access from the foxreach toolbar button.");
     if (!Object.hasOwn(TOOLS, tool)) throw new Error(`Unknown tool ${tool}.`);
-    const result = await TOOLS[tool](args, client);
+    const result = await TOOLS[tool](args, client, context);
     logActivity(client, tool, args, true, Date.now() - started);
     if (RECORDED_TOOLS.has(tool) && recordings.has(args.tabId)) {
       recordings.get(args.tabId).label = tool;
@@ -1101,13 +1137,16 @@ async function runTool(tool, args, client) {
 async function handleRequest({ id, client, tool, args }) {
   try {
     // The part of the id before the colon is the connection, numbered by the host, not by the agent.
-    if (tool !== "status") {
-      await assertAgentAllowed(String(id).split(":")[0], client).catch((e) => {
+    const conn = String(id).split(":")[0];
+    const context = {};
+    if (tool === "status") context.access = agentAccess(conn, client);
+    else {
+      await assertAgentAllowed(conn, client).catch((e) => {
         logActivity(client, tool, args, false, 0, e.message);
         throw e;
       });
     }
-    send({ id, result: await runTool(tool, args ?? {}, client) });
+    send({ id, result: await runTool(tool, args ?? {}, client, context) });
   } catch (e) {
     send({ id, error: e.message });
   }
@@ -1209,6 +1248,10 @@ function onHostMessage(message) {
     hostError = message.hostError;
     return;
   }
+  if (message.hostInfo) {
+    hostApp = typeof message.hostInfo.app === "string" ? message.hostInfo.app.slice(0, 40) : null;
+    return;
+  }
   if (message.closed !== undefined) {
     forgetConnection(String(message.closed));
     return;
@@ -1231,7 +1274,7 @@ function connectHost() {
       connectHost();
     }, busy ? RECONNECT_BUSY_MS : RECONNECT_MS);
   });
-  send({ hello: { version: VERSION, trustedInput: trusted } });
+  send({ hello: { version: VERSION, trustedInput: trusted, wantsHostInfo: true } });
 }
 
 /* ---------- popup ---------- */

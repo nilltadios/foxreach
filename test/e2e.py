@@ -195,6 +195,9 @@ def t_protocol(mcp):
     check("trusted input is active", status["trustedInput"] is True, status)
     # LibreWolf reports itself as Firefox here (librewolf.getBrowserInfo.setToFirefoxDefaults).
     check("browser reports a version", status["browser"]["version"], status)
+    check("status names the browser program, which the engine may not (LibreWolf says Firefox)",
+          status.get("app") == BROWSER_NAME, (status.get("app"), BROWSER_NAME))
+    check("status says this agent may act (the tests switch asking off)", status.get("agentAccess") == "allowed", status)
     check("status reports matching add-on and bridge versions",
           status["version"] == status.get("bridgeVersion") and "warning" not in status, status)
 
@@ -422,6 +425,9 @@ def t_read(mcp):
     short = mcp.call("read_page", tabId=tab, max_chars=120)
     check("truncation is at a line and states the size", "[truncated at" in short and "characters" in short, short)
     check("find reports no match", "Nothing matches" in mcp.call("find", tabId=tab, query="zzzznope"))
+    near = mcp.call("find", tabId=tab, query="press button in the toolbar dialog zone")
+    check("a long description that nothing fully matches gets the closest elements",
+          near.startswith("Nothing matches most of") and "Press me" in near, near)
     check("get_page_text", "Some visible paragraph text." in mcp.call("get_page_text", tabId=tab))
 
     # Lean replies: long addresses shortened to where they go, a list item's text said once, no
@@ -1131,13 +1137,23 @@ def popup_tests(browser, mcp):
     shown = prompts()
     check("the request is the browser's own prompt, in the browser window", len(shown) == 1 and "newcomer" in shown[0], shown)
     check("...and opens no window of its own", request_windows() == 0, request_windows())
-    check("status needs no approval", json.loads(one.__class__(mcp_socket, name="looker").call("status"))["version"])
+    looker = McpClient(mcp_socket, name="looker")
+    looked = json.loads(looker.call("status"))
+    check("status needs no approval", looked["version"], looked)
+    redrawn()
+    check("...and asks the user at once for an agent that would have to wait, saying so",
+          looked.get("agentAccess") == "waiting" and "tell the user" in looked.get("note", "")
+          and "looker asks to use the browser" in text_of("agent-requests"), (looked, text_of("agent-requests")))
+    looker.close()
+    time.sleep(0.5)
+    redrawn()
     press("agent-requests", "Allow")
     thread.join(10)
     check("Allow lets the waiting call through", "other tabs" in answers.get("one", ""), answers)
     time.sleep(0.5)
     check("answering in the toolbar popup removes the prompt", prompts() == [], prompts())
     check("...and the agent's later calls", "other tabs" in one.call("tabs_list"))
+    check("status then says the agent is allowed", json.loads(one.call("status")).get("agentAccess") == "allowed")
     one.close()
 
     viaprompt, thread = asking("prompted", "five")
@@ -1197,8 +1213,11 @@ TESTS = {
 mcp_socket = None
 
 
+BROWSER_NAME = None  # the browser under test, by the name foxreach's host gives it
+
+
 def main():
-    global mcp_socket
+    global mcp_socket, BROWSER_NAME
     visible = "--visible" in sys.argv
     only = sys.argv[sys.argv.index("--only") + 1].split(",") if "--only" in sys.argv else None
     subprocess.run(["uv", "run", "--python", "3.15", str(ROOT / "scripts/build_install.py")], check=True, capture_output=True)
@@ -1207,6 +1226,7 @@ def main():
 
     browser = Browser(ROOT / "dist/foxreach.xpi", headless=not visible)
     mcp_socket = browser.socket
+    BROWSER_NAME = browser.browser.name
     try:
         browser.start(marionette=True)
         print("installed", browser.install())

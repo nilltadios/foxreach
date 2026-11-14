@@ -287,6 +287,12 @@ Each tool's description is in [bridge/tools.mjs](bridge/tools.mjs).
 children's is not repeated, and layout-only elements carry no id. `full_links: true` shows every
 address whole; `find` still matches addresses.
 
+`find` lists elements that match most of the query's words. When none does, it lists up to five
+that match some of them, under "Nothing matches most of ...", instead of nothing.
+
+`status` names the browser program in `app` (LibreWolf, Zen...), which the host reads from the
+process that started it: forks such as LibreWolf tell add-ons they are Firefox.
+
 `type_text` and `press_key` say which element received the keys. They refuse to type, or to send
 Delete or Backspace, when focus is not on a text field, so keys meant for a search box cannot act
 as page shortcuts (such as deleting the selected messages in a mail app). `allow_non_text: true`
@@ -325,7 +331,10 @@ The toolbar button shows the bridge's status and recent agent activity, and it h
 - **Pause** stops all agent access at once.
 - **Agents:** a program that connects for the first time waits until you answer its request there:
   Allow (until it disconnects), Always (that name, from now on), or Refuse. Its call waits up to a
-  minute, then fails and says why. The request opens a small window of its own, since the browser
+  minute, then fails and says why. `status` needs no approval; for an agent that would have to
+  wait, it asks you right away and tells the agent to point you to the browser (`agentAccess`:
+  `allowed`, `waiting` or `refused`), so an agent that starts with `status` gets you to answer
+  before its first real step. The request opens a small window of its own, since the browser
   may keep the button in its extensions menu; the button also shows `?`. The name is what
   the program calls itself, so this keeps out an agent you did not mean to let in, not a program
   that lies about its name. You can switch asking off.

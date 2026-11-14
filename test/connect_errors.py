@@ -101,6 +101,9 @@ def main():
         stand_in = work / "bin" / "librewolf"
         stand_in.parent.mkdir()
         shutil.copy(shutil.which("sleep"), stand_in)
+        if sys.platform == "darwin":
+            # macOS kills a copy of one of its own programs that still carries Apple's signature.
+            subprocess.run(["codesign", "--force", "--sign", "-", str(stand_in)], check=True, capture_output=True)
         proc = subprocess.Popen([str(stand_in), "30"])
         try:
             out = message(socket, None if sys.platform == "darwin" else "/proc")
