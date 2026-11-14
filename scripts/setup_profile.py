@@ -149,7 +149,12 @@ def refuse_copy(profile):
     for ini in sorted(r / "profiles.ini" for r in roots):
         if not ini.exists():
             continue
-        lines = ini.read_text().splitlines()
+        try:
+            lines = ini.read_text().splitlines()
+        except PermissionError:
+            # macOS keeps some apps' folders (Firefox's) from programs it has not allowed in.
+            print(f"note: cannot read {ini} (macOS privacy settings); not checked for a copy of this profile")
+            continue
         if f"StoreID={found.group(1)}" not in lines:
             continue
         if not any(line in (f"Path={profile.name}", f"Path={profile}") for line in lines) or profile.parent != ini.parent:
