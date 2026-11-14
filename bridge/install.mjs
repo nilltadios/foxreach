@@ -11,9 +11,19 @@ export const ADDON_ID = "foxreach@foxreach.local";
 const HOST_NAME = "foxreach";
 // What an AppImage browser exports for itself; none of it may reach this program.
 const UNSET = "unset LD_LIBRARY_PATH LD_PRELOAD APPDIR APPIMAGE ARGV0 OWD\n";
-// Folders a browser reads native-messaging manifests from, relative to the home folder. Every
-// Firefox-based build reads .mozilla; a fork may read its own folder as well.
+// Folders a browser reads native-messaging manifests from, relative to the home folder. On Linux
+// every Firefox-based build reads .mozilla; a fork may read its own folder as well. On macOS they
+// read one folder in Application Support (LibreWolf too: checked with LibreWolf 160 on macOS 27).
 const FORK_DIRS = [".librewolf"];
+const darwin = process.platform === "darwin";
+const MAC_HOSTS = "Library/Application Support/Mozilla/NativeMessagingHosts";
+
+/** Where to write the manifest outside a sandbox; with all, every folder one may have gone to. */
+function hostDirs(home, all = false) {
+  if (darwin) return [path.join(home, MAC_HOSTS)];
+  return [".mozilla", ...FORK_DIRS.filter((f) => all || exists(path.join(home, f)))]
+    .map((d) => path.join(home, d, "native-messaging-hosts"));
+}
 // Flatpak browsers, and which of those folders each keeps between runs.
 const FLATPAKS = {
   "org.mozilla.firefox": [".mozilla"],
@@ -105,11 +115,10 @@ export function install({ browsers = [], flatpaks = true, agents = null, home = 
     const wrapper = path.join(dataDir(home), "foxreach-host");
     writeWrapper(wrapper, command);
     log(wrapper);
-    for (const d of [".mozilla", ...FORK_DIRS.filter((f) => exists(path.join(home, f)))]) {
-      log(writeManifest(path.join(home, d, "native-messaging-hosts"), wrapper));
-    }
+    for (const d of hostDirs(home)) log(writeManifest(d, wrapper));
   }
-  if (flatpaks || named.length) for (const id of flatpakBrowsers(named)) installFlatpak(id, home, log);
+  if (named.length && darwin) throw new Error("Flatpak browsers exist on Linux only.");
+  if ((flatpaks || named.length) && !darwin) for (const id of flatpakBrowsers(named)) installFlatpak(id, home, log);
   const mcp = mcpCommand();
   log("\nThe browser can now start foxreach.");
   log(`The MCP server's command, for any agent: ${mcp.join(" ")}`);
@@ -128,7 +137,7 @@ export function uninstall({ home = os.homedir(), agents = true, log = console.lo
     fs.rmSync(p, { recursive: true, force: true });
     log(`removed ${p}`);
   };
-  for (const d of [".mozilla", ...FORK_DIRS]) remove(path.join(home, d, "native-messaging-hosts", `${HOST_NAME}.json`));
+  for (const d of hostDirs(home, true)) remove(path.join(d, `${HOST_NAME}.json`));
   remove(path.join(dataDir(home), "foxreach-host"));
   const apps = path.join(home, ".var/app");
   for (const id of exists(apps) ? fs.readdirSync(apps) : []) {

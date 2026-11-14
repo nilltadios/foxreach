@@ -13,7 +13,7 @@ There are two builds of the add-on. Pick by browser:
 | Browser | Build | Input |
 |---|---|---|
 | Firefox release and beta, distro `firefox` packages, the Firefox Flatpak | Signed build, see [Install](#install) | Script events (`isTrusted=false`), which a few sites ignore; no `drag`, `read_console`, `handle_dialog`, file drops |
-| LibreWolf; Firefox Developer Edition, Nightly | Full build, see [Setup from a checkout](#setup-from-a-checkout). Tested: LibreWolf 159.0.1 (AppImage, Flatpak), Developer Edition 161.0b1 | Real input, all tools |
+| LibreWolf; Firefox Developer Edition, Nightly | Full build, see [Setup from a checkout](#setup-from-a-checkout). Tested: LibreWolf 159.0.1 (AppImage, Flatpak) and 160.0 (macOS app), Developer Edition 161.0b1 | Real input, all tools |
 | Firefox ESR, Floorp, Waterfox, Zen | Either; the full build is expected to work, since they honor the same two prefs, but is not tested | |
 
 Mozilla signs privileged code only for its own add-ons, so the full build cannot be signed, and
@@ -21,7 +21,7 @@ browsers that insist on signatures get the build without it.
 
 ## Install
 
-For any Firefox-based browser on Linux (x86-64 or arm64). Nothing else is needed: no Bun, no `uv`.
+For any Firefox-based browser on Linux or macOS (x86-64 or arm64). Nothing else is needed: no Bun, no `uv`.
 
 1. **The program.** One file, which is the MCP server and the part the browser starts. Download
    [install.sh](install.sh), read it, and run it:
@@ -33,8 +33,16 @@ For any Firefox-based browser on Linux (x86-64 or arm64). Nothing else is needed
    It downloads `foxreach` from the latest [release](https://github.com/nilltadios/foxreach/releases)
    into `~/.local/bin`, checks it against the release's checksums, and runs `foxreach install`,
    which writes the native messaging manifest that lets the browser start it. Installed Flatpak
-   browsers are prepared too ([how](#flatpak-browsers)). Or download `foxreach-linux-x64` or
-   `foxreach-linux-arm64` yourself, make it executable, and run `./foxreach install`.
+   browsers are prepared too ([how](#flatpak-browsers)). Or download `foxreach-linux-x64`,
+   `foxreach-linux-arm64`, `foxreach-darwin-arm64` (Apple silicon) or `foxreach-darwin-x64` (Intel
+   Mac) yourself, make it executable, and run `./foxreach install`. On a Mac, the manifest goes to
+   `~/Library/Application Support/Mozilla/NativeMessagingHosts`, which Firefox and LibreWolf both
+   read. The Intel build is signed ad hoc on the Mac it is installed on (`install.sh` and
+   `foxreach update` do this; by hand: `codesign --force --sign - foxreach`); it was run under
+   Rosetta, not yet on an Intel Mac. A file downloaded with a web browser is marked as from the
+   internet, and macOS will not run an ad hoc signed program with that mark: before running it,
+   clear it with `xattr -d com.apple.quarantine foxreach`. (`install.sh` downloads with `curl`,
+   which sets no such mark.)
 2. **The add-on.** Open `foxreach-<version>-signed.xpi` from the release in the browser and accept.
    Then click the foxreach toolbar button and choose the sites agents may use.
 3. **The agent.** `foxreach install` also adds the MCP server (`foxreach mcp`) to every agent it
@@ -44,7 +52,7 @@ For any Firefox-based browser on Linux (x86-64 or arm64). Nothing else is needed
    | Agent | Settings file |
    |---|---|
    | Claude Code, the Code tab of Claude desktop, T3 Code | `~/.claude.json` (through `claude mcp add -s user` when `claude` is installed) |
-   | Claude desktop (chat) | `~/.config/Claude/claude_desktop_config.json` |
+   | Claude desktop (chat) | `~/.config/Claude/claude_desktop_config.json` (macOS: `~/Library/Application Support/Claude/`) |
    | Codex, the ChatGPT app, T3 Code | `~/.codex/config.toml` |
    | Antigravity (app and `agy`) | `~/.gemini/config/mcp_config.json` |
    | Gemini CLI (retired by Google in 2026; only when the `gemini` program is still installed) | `~/.gemini/settings.json` |
@@ -79,10 +87,11 @@ The first time an agent calls, the browser asks whether to allow it.
 
 ## Setup from a checkout
 
-For the full build, with real input. Needs Linux, `uv`, Bun or Node.js, and a browser that accepts
-unsigned add-ons (the table above). How the browser was installed does not matter: a distro package,
-a tarball, an AppImage, or a Flatpak (Flatpak has its own section below). List what the scripts find
-on this machine:
+For the full build, with real input. Needs Linux or macOS, `uv`, Bun or Node.js, and a browser that
+accepts unsigned add-ons (the table above). How the browser was installed does not matter: a distro
+package, a tarball, an AppImage, a Flatpak (Flatpak has its own section below), or an app in
+`/Applications` or `~/Applications` on macOS, named by its folder (`--browser /Applications/LibreWolf.app`).
+List what the scripts find on this machine:
 
 ```bash
 uv run --python 3.15 scripts/browsers.py
@@ -94,6 +103,13 @@ one at `~/.local/share/foxreach/profile`, which `scripts/foxreach-browser` opens
 ```bash
 uv run --python 3.15 scripts/setup_profile.py --profile /path/to/profile --browser /path/to/browser
 ```
+
+On macOS the browser runs the native host as itself when opened from the Dock, and macOS keeps apps
+out of Documents, Desktop and Downloads until each is allowed. So a checkout there could not start, and
+`build_install.py` runs the host from a copy of the bridge in `~/.local/share/foxreach`, refreshed by
+each `build_install.py` or `update.py`. Agents still run `bridge/cli.mjs mcp` from the checkout,
+so an app that has not been allowed into its folder cannot start them; the single-file program in
+`~/.local/bin` (see [Install](#install)) has no such limit.
 
 `--browser` takes a path, a command on `PATH`, or `flatpak:<application id>`. Leave it out and setup
 uses `FOXREACH_BROWSER`, else the browser whose folder the profile is in, else the only browser
@@ -256,7 +272,7 @@ uv run --python 3.15 scripts/remove_from_profile.py --profile /path/to/profile -
 
 To clear the rest, remove `~/.local/share/foxreach`, `~/.local/state/foxreach` and
 `~/.mozilla/native-messaging-hosts/foxreach.json` (also in `~/.librewolf/native-messaging-hosts`, if you
-have that folder). For a Flatpak browser, remove `~/.var/app/<id>/foxreach` and `foxreach.json` from the
+have that folder; on macOS, `~/Library/Application Support/Mozilla/NativeMessagingHosts/foxreach.json`). For a Flatpak browser, remove `~/.var/app/<id>/foxreach` and `foxreach.json` from the
 `native-messaging-hosts` folders under `~/.var/app/<id>`, and withdraw the permission with
 `flatpak override --user --nofilesystem=xdg-run/foxreach <id>`.
 
@@ -274,10 +290,21 @@ Each tool's description is in [bridge/tools.mjs](bridge/tools.mjs).
 children's is not repeated, and layout-only elements carry no id. `full_links: true` shows every
 address whole; `find` still matches addresses.
 
+`find` lists elements that match most of the query's words. When none does, it lists up to five
+that match some of them, under "Nothing matches most of ...", instead of nothing.
+
+`status` names the browser program in `app` (LibreWolf, Zen...), which the host reads from the
+process that started it: forks such as LibreWolf tell add-ons they are Firefox.
+
 `type_text` and `press_key` say which element received the keys. They refuse to type, or to send
 Delete or Backspace, when focus is not on a text field, so keys meant for a search box cannot act
 as page shortcuts (such as deleting the selected messages in a mail app). `allow_non_text: true`
 overrides this for keyboard-driven pages. `type_text` also warns when the field's value did not change.
+
+`press_key` and the `modifiers` of `click` and `drag` take `mod`, the key shortcuts use on the browser's
+system: Cmd on macOS, Ctrl elsewhere. The MCP server turns it into `meta` or `ctrl` before the add-on
+sees it, so an add-on from before `mod` gets a key it knows. `mod+a` selects all on both; `ctrl` is always the Control key,
+which on macOS moves to the start of a line instead.
 
 The agent's page gets focus and blur events in a background tab, or while the browser is behind
 another app. Firefox sends none there, so widgets that track focus through those events (MUI's
@@ -299,7 +326,9 @@ is more than a line or two:
   agent's context.
 - `timeout`: seconds to wait for the result, 30 by default, at most 600.
 
-`file` and `save_to` refuse hidden files and folders.
+`file` and `save_to` refuse hidden files and folders, also through a link, and `~/Library` on macOS
+except the cloud folders in it (Dropbox, OneDrive and Google Drive in `~/Library/CloudStorage`, and
+iCloud Drive), where documents are kept.
 
 ## What you control
 
@@ -308,7 +337,10 @@ The toolbar button shows the bridge's status and recent agent activity, and it h
 - **Pause** stops all agent access at once.
 - **Agents:** a program that connects for the first time waits until you answer its request there:
   Allow (until it disconnects), Always (that name, from now on), or Refuse. Its call waits up to a
-  minute, then fails and says why. The request opens a small window of its own, since the browser
+  minute, then fails and says why. `status` needs no approval; for an agent that would have to
+  wait, it asks you right away and tells the agent to point you to the browser (`agentAccess`:
+  `allowed`, `waiting` or `refused`), so an agent that starts with `status` gets you to answer
+  before its first real step. The request opens a small window of its own, since the browser
   may keep the button in its extensions menu; the button also shows `?`. The name is what
   the program calls itself, so this keeps out an agent you did not mean to let in, not a program
   that lies about its name. You can switch asking off.
@@ -340,14 +372,20 @@ Read this before installing into a profile you browse with.
   toolbar button, by the name it gives itself (see above); a program that takes an allowed name
   gets in. The socket keeps out other users and websites. The host and the MCP server
   refuse a socket folder that another user owns or can write (this matters where `XDG_RUNTIME_DIR`
-  is not set and the socket falls back to the shared temporary folder).
+  is not set and the socket falls back to the shared temporary folder). On macOS the socket is in
+  the user's own cache folder (`getconf DARWIN_USER_CACHE_DIR`), whatever `XDG_RUNTIME_DIR` says, so
+  a browser opened from the Dock and an agent started from a shell find the same one; the
+  temporary folder beside it is swept of files unused for three days.
 - **Local files.** `file_upload` reads files on the agent's machine and hands them to a page, and a
   page can ask the agent to do that. It refuses hidden files and folders (`~/.ssh`, `~/.config`,
-  `.env`: any name starting with a dot, also through a link), `/proc`, `/sys` and `/dev`. Set
-  `FOXREACH_ALLOW_HIDDEN_UPLOADS=1` for the MCP server to lift the first rule. Your other files
-  (documents, downloads) can still be uploaded. `save_to` writes only files named as images
-  (`.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`), so it cannot replace a script or a key; it can replace
-  an image.
+  `.env`: any name starting with a dot, also through a link), `/proc`, `/sys` and `/dev`, and on
+  macOS `~/Library`, which holds there what hidden folders hold on Linux (keychains, every browser's
+  cookies, mail, app settings), whether `HOME` says so or not; documents kept there by Dropbox,
+  OneDrive and Google Drive (`~/Library/CloudStorage`) and iCloud Drive can still be uploaded. Set
+  `FOXREACH_ALLOW_HIDDEN_UPLOADS=1` for the MCP server to lift the rules on hidden files and
+  `~/Library`. Your other files (documents, downloads) can still be uploaded. `save_to` writes only
+  files named as images (`.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`), so it cannot replace a script or
+  a key; it can replace an image, though never in `~/Library` on macOS outside its cloud folders.
 - **Updates.** The full add-on updates itself from this project's GitHub Pages, and it runs with
   full browser privileges. Whoever controls that repository controls what your browser installs.
   To stay on a version you have read, set `extensions.update.enabled` to `false` in that profile.
@@ -393,8 +431,11 @@ Read this before installing into a profile you browse with.
   some of this back, and was tested and turned down: it shows every site that the browser is
   automated, and opens every tab and cookie to any local program
   ([spikes/bidi/FINDINGS.md](spikes/bidi/FINDINGS.md)).
-- **The program** is built for glibc Linux on x86-64 and arm64. No packages (deb, rpm) are made.
-- **Linux only.** The scripts read `/proc` and use Linux paths. macOS and Windows are not supported.
+- **The program** is built for glibc Linux and macOS, on x86-64 and arm64. No packages (deb, rpm,
+  dmg) are made.
+- **Linux and macOS only.** Windows is not supported. On macOS: tested with LibreWolf 160.0 on Apple
+  silicon (`setup_profile.py`, `test/e2e.py`, `test/binary.py` and the tests that need no browser);
+  the signed build in release Firefox on a Mac, and an Intel Mac, are not yet tested.
 - **Snap browsers** are not handled.
 - **A new profile in Mozilla's own builds opens first-run prompts** (terms of use, welcome). While one
   covers the window the browser will not bring a tab to the front; `tabs_select` says so, and the

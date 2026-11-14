@@ -5,7 +5,8 @@ Run:      uv run --python 3.15 test/connect_errors.py
 Expected: every line PASS, exit 0. Needs no browser: the bridge is pointed at a socket that does not
 exist, and at fake process lists (FOXREACH_PROC) that show no browser, one, two, or none readable,
 and at a fake profile record (FOXREACH_PROFILES).
-One check uses the real /proc, with a stand-in process whose executable is named "librewolf".
+One check uses the real process list (/proc, or ps on macOS), with a stand-in process whose
+executable is named "librewolf".
 """
 import os
 import pathlib
@@ -28,7 +29,8 @@ def check(name, ok, detail=""):
 
 def message(socket, proc):
     """The error text of a first call, as an agent sees it."""
-    os.environ["FOXREACH_PROC"] = str(proc)
+    if proc:
+        os.environ["FOXREACH_PROC"] = str(proc)
     client = McpClient(str(socket))
     try:
         client.call("status")
@@ -37,7 +39,7 @@ def message(socket, proc):
         return str(e)
     finally:
         client.close()
-        del os.environ["FOXREACH_PROC"]
+        os.environ.pop("FOXREACH_PROC", None)
 
 
 def fake_proc(root, exes):
@@ -92,16 +94,40 @@ def main():
         check("no profile record: no hint", "set up in" not in out, out)
 
         out = message(socket, work / "no-proc-here")
-        check("no process list (macOS): generic advice", out.startswith("The browser is not connected. Open the Firefox-based browser"), out)
+        check("no process list: generic advice", out.startswith("The browser is not connected. Open the Firefox-based browser"), out)
 
-        # The real /proc, with a stand-in process whose executable is named like a browser.
+        # macOS lists processes with ps; FOXREACH_PS stands in for its output, on any machine.
+        def ps_message(lines):
+            listing = work / "ps.txt"
+            if lines is None:
+                listing.unlink(missing_ok=True)
+            else:
+                listing.write_text("".join(f"{line}\n" for line in lines))
+            os.environ["FOXREACH_PS"] = str(listing)
+            try:
+                return message(socket, None)
+            finally:
+                del os.environ["FOXREACH_PS"]
+        out = ps_message(["/usr/sbin/cfprefsd", "/System/Library/CoreServices/Finder.app/Contents/MacOS/Finder"])
+        check("ps (macOS): no browser running: says so", out.startswith("No Firefox-based browser is running"), out)
+        out = ps_message(["/usr/sbin/cfprefsd", "/Applications/LibreWolf.app/Contents/MacOS/librewolf",
+                          "/Applications/LibreWolf.app/Contents/MacOS/plugin-container.app/Contents/MacOS/plugin-container"])
+        check("ps (macOS): finds LibreWolf by the executable inside its app", out.startswith("LibreWolf is running"), out)
+        out = ps_message(None)
+        check("ps (macOS): no listing: generic advice", out.startswith("The browser is not connected"), out)
+
+        # The real process list, with a stand-in process whose executable is named like a browser.
+        # (copy, not copy2: macOS refuses to copy the system flags of /bin/sleep.)
         stand_in = work / "bin" / "librewolf"
         stand_in.parent.mkdir()
-        shutil.copy2(shutil.which("sleep"), stand_in)
+        shutil.copy(shutil.which("sleep"), stand_in)
+        if sys.platform == "darwin":
+            # macOS kills a copy of one of its own programs that still carries Apple's signature.
+            subprocess.run(["codesign", "--force", "--sign", "-", str(stand_in)], check=True, capture_output=True)
         proc = subprocess.Popen([str(stand_in), "30"])
         try:
-            out = message(socket, "/proc")
-            check("real /proc: finds a running browser by its executable", "LibreWolf is running" in out
+            out = message(socket, None if sys.platform == "darwin" else "/proc")
+            check("real process list: finds a running browser by its executable", "LibreWolf is running" in out
                   or ("LibreWolf and" in out or "and LibreWolf" in out), out)
         finally:
             proc.kill()

@@ -3,7 +3,7 @@
 
 Run:      uv run --python 3.15 test/release.py
 Expected: every line PASS, "N passed, 0 failed", exit 0. About a minute; the first run downloads
-          Bun's runtime for arm64.
+          Bun's runtime for each target this machine is not.
 
 Copies the work tree as it is now (uncommitted changes included) into a temporary clone, commits
 there, prepares a release with scripts/release.py, tags it, and has scripts/verify_release.py
@@ -22,6 +22,10 @@ import zipfile
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 results = []
+# macOS has shasum where Linux has sha256sum; both read and write the same SHA256SUMS lines.
+SHA256 = ["sha256sum"] if shutil.which("sha256sum") else ["shasum", "-a", "256"]
+HOSTS = ("Library/Application Support/Mozilla/NativeMessagingHosts" if sys.platform == "darwin"
+         else ".mozilla/native-messaging-hosts")
 
 
 def check(name, ok, detail=""):
@@ -70,7 +74,8 @@ def main():
         names = sorted(p.name for p in release.iterdir()) if release.exists() else []
         check("release.py prepares the add-on, both programs, the installer and the checksums",
               out.returncode == 0 and names == sorted(["BUILDINFO.txt", "SHA256SUMS", f"foxreach-{ver}.xpi", f"foxreach-{ver}-signed.xpi",
-                                                       f"foxreach-{ver}-unsigned.xpi", "foxreach-linux-arm64", "foxreach-linux-x64", "install.sh"]),
+                                                       f"foxreach-{ver}-unsigned.xpi", "foxreach-linux-arm64", "foxreach-linux-x64",
+                                                       "foxreach-darwin-arm64", "foxreach-darwin-x64", "install.sh"]),
               (names, made.stderr, out.stdout, out.stderr))
         updates = json.loads((repo / "docs/updates.json").read_text())["addons"]["foxreach@foxreach.local"]["updates"]
         signed_updates = json.loads((repo / "docs/updates-signed.json").read_text())["addons"]["foxreach@foxreach.local"]["updates"]
@@ -80,7 +85,7 @@ def main():
         with zipfile.ZipFile(signed) as z:
             gecko = json.loads(z.read("manifest.json"))["browser_specific_settings"]["gecko"]
         check("the signed build looks for updates in the signed list", gecko.get("update_url", "").endswith("/updates-signed.json"), gecko)
-        sums = run("sha256sum", "-c", "SHA256SUMS", cwd=release)
+        sums = run(*SHA256, "-c", "SHA256SUMS", cwd=release)
         check("SHA256SUMS checks out with sha256sum", sums.returncode == 0, sums.stdout + sums.stderr)
 
         git("add", "docs")
@@ -89,7 +94,7 @@ def main():
         verify = lambda: run(*py, "scripts/verify_release.py", ver, "--dir", release, cwd=repo)  # noqa: E731
         ok = verify()
         check("verify_release.py rebuilds the tag and finds every file the same",
-              ok.returncode == 0 and "6 files match" in ok.stdout and "DIFFERS" not in ok.stdout and "skipped" not in ok.stdout, ok.stdout + ok.stderr)
+              ok.returncode == 0 and "8 files match" in ok.stdout and "DIFFERS" not in ok.stdout and "skipped" not in ok.stdout, ok.stdout + ok.stderr)
         again = run(*py, "scripts/release.py", "--files-only", work / "ci", cwd=repo)
         check("a second build elsewhere, as the release workflow does it, gives the same checksums",
               again.returncode == 0 and (work / "ci/SHA256SUMS").read_text() == (release / "SHA256SUMS").read_text(), again.stderr)
@@ -98,7 +103,7 @@ def main():
             """verify_release.py's output after one file was changed and its checksum line refreshed."""
             keep = {n: (release / n).read_bytes() for n in (name, "SHA256SUMS")}
             change(release / name)
-            fresh = run("sha256sum", name, cwd=release).stdout
+            fresh = run(*SHA256, name, cwd=release).stdout
             (release / "SHA256SUMS").write_text("".join(fresh if line.split()[1] == name else line + "\n"
                                                         for line in keep["SHA256SUMS"].decode().splitlines()))
             result = verify()
@@ -124,8 +129,17 @@ def main():
         installed = run("sh", repo / "install.sh", "--no-flatpak", cwd=work, env=env)
         program = home / ".local/bin/foxreach"
         check("install.sh installs the program for this machine and registers the host",
-              installed.returncode == 0 and program.exists() and (home / ".mozilla/native-messaging-hosts/foxreach.json").exists()
+              installed.returncode == 0 and program.exists() and (home / HOSTS / "foxreach.json").exists()
               and run(program, "version", cwd=work).stdout.strip() == ver, installed.stdout + installed.stderr)
+        if sys.platform == "darwin" and run("arch", "-x86_64", "/usr/bin/true", cwd=work).returncode == 0:
+            # Under Rosetta, uname says x86_64: install.sh takes the Intel build, whose signature is
+            # Bun's and no longer matches, and must sign it for this Mac.
+            program.unlink()
+            intel = run("arch", "-x86_64", "sh", repo / "install.sh", "--no-flatpak", cwd=work, env=env)
+            check("install.sh on an Intel Mac (Rosetta here) signs the x64 build so it runs",
+                  intel.returncode == 0 and "foxreach-darwin-x64" in intel.stdout
+                  and run("codesign", "-v", program, cwd=work).returncode == 0
+                  and run("arch", "-x86_64", program, "version", cwd=work).stdout.strip() == ver, intel.stdout + intel.stderr)
         (release / "SHA256SUMS").write_text((release / "SHA256SUMS").read_text().replace("0", "1"))
         program.unlink()
         refused = run("sh", repo / "install.sh", "--no-flatpak", cwd=work, env=env)

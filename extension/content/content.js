@@ -286,6 +286,7 @@
   }
 
   // find understands plain descriptions without a language model, so it works for any agent.
+  const PARTIAL_LIMIT = 5;
   const FILLER = new Set(("a an and at by for from in into is it me my of on or our that the their this to " +
     "where which with you your").split(" "));
   const TEXT_FIELD = ["textbox", "searchbox", "combobox", "input", "textarea"];
@@ -307,6 +308,7 @@
     const words = q.split(/[^\p{L}\p{N}]+/u).filter((w) => w && !FILLER.has(w));
     const tokens = words.length ? words : [q];
     const scored = [];
+    const partial = []; // half the words or more: shown only when nothing is closer
     const visit = (el) => {
       if (SKIP.has(el.localName) || !isVisible(el)) return;
       const role = roleOf(el);
@@ -320,12 +322,18 @@
           else if (SYNONYMS[token]?.some((alt) => hay.includes(alt))) score += 0.7;
         }
         if (hay.includes(q)) score += 1;
-        if (score >= 0.6 * tokens.length) scored.push({ score: score + (interactive ? 0.25 : 0), line: text });
+        const entry = { score: score + (interactive ? 0.25 : 0), line: text };
+        if (score >= 0.6 * tokens.length) scored.push(entry);
+        else if (score >= Math.max(1, 0.4 * tokens.length)) partial.push(entry);
       }
       for (const node of childNodes(el)) if (node.nodeType === Node.ELEMENT_NODE) visit(node);
     };
     visit(document.documentElement);
     scored.sort((a, b) => b.score - a.score);
+    if (!scored.length) {
+      partial.sort((a, b) => b.score - a.score);
+      return { matches: [], total: 0, partial: partial.slice(0, Math.min(limit, PARTIAL_LIMIT)) };
+    }
     return { matches: scored.slice(0, limit), total: scored.length };
   }
 

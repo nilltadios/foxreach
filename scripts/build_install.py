@@ -6,9 +6,12 @@ Makes:
   dist/foxreach.xpi            trusted input; needs the two prefs in README.md
   dist/foxreach-untrusted.xpi  no privileged code; for browsers that refuse Experiments
   bridge/foxreach-host         wrapper the browser starts, using Bun, or Node.js if Bun is missing
+                               (on macOS: ~/.local/share/foxreach/foxreach-host, with a copy of the
+                               bridge beside it, since the browser may not read this folder)
   ~/.mozilla/native-messaging-hosts/foxreach.json   read by Firefox and every browser built on it,
                                whether a distro package, a tarball or an AppImage; also written to
-                               ~/.librewolf/native-messaging-hosts when ~/.librewolf exists
+                               ~/.librewolf/native-messaging-hosts when ~/.librewolf exists. On macOS:
+                               ~/Library/Application Support/Mozilla/NativeMessagingHosts/foxreach.json
 For each Flatpak browser named, whose sandbox can see neither this folder nor Bun:
   ~/.var/app/<id>/foxreach/    a copy of the bridge and of Bun, with its own wrapper
   foxreach.json in the native-messaging-hosts folder the Flatpak keeps under ~/.var/app/<id>
@@ -116,16 +119,44 @@ def write_manifests(folders, wrapper):
 
 
 def host_dirs():
-    """Where builds outside a sandbox look: ~/.mozilla, and a fork's own folder if the fork is used."""
+    """Where builds outside a sandbox look: ~/.mozilla, and a fork's own folder if the fork is used.
+    On macOS, one folder in Application Support, which every build reads."""
     home = pathlib.Path.home()
+    if browsers.MAC:
+        return [home / browsers.MAC_HOSTS]
     extra = {d for k in browsers.KINDS for d in k.host_dirs if (home / d).is_dir()}
     return [home / d / "native-messaging-hosts" for d in (".mozilla", *sorted(extra))]
 
 
+def mac_copy():
+    """Where the host runs from on macOS: the folder `foxreach install` also uses."""
+    data = os.environ.get("XDG_DATA_HOME") or pathlib.Path.home() / ".local/share"
+    return pathlib.Path(data) / "foxreach"
+
+
 def install_host():
+    if browsers.MAC:
+        # macOS keeps apps out of Documents, Desktop and Downloads until the user allows each app,
+        # and a browser opened from the Dock (or one that relaunches itself) starts the host as
+        # itself. A checkout in one of those folders would then never start, so the host runs from
+        # a copy of the bridge outside them; the runtime (~/.bun, Homebrew's node) is outside too.
+        base = mac_copy()
+        copy_sources(base)
+        wrapper = base / "foxreach-host"
+        write_wrapper(wrapper, runtime(), base / "bridge/host.mjs")
+        return write_manifests(host_dirs(), wrapper)
     wrapper = ROOT / "bridge/foxreach-host"
     write_wrapper(wrapper, runtime(), ROOT / "bridge/host.mjs")
     return write_manifests(host_dirs(), wrapper)
+
+
+def copy_sources(base):
+    """Copy the bridge into base/bridge, with the manifest bridge/version.mjs reads."""
+    (base / "bridge").mkdir(parents=True, exist_ok=True)
+    (base / "extension").mkdir(exist_ok=True)
+    for f in (ROOT / "bridge").glob("*.mjs"):
+        shutil.copy2(f, base / "bridge" / f.name)
+    shutil.copy2(EXT / "manifest.json", base / "extension/manifest.json")
 
 
 def copy_bridge(base):
@@ -133,11 +164,7 @@ def copy_bridge(base):
     node = pathlib.Path(runtime())
     if node.name != "bun":
         raise SystemExit("A Flatpak browser needs Bun: it is one file that runs inside the sandbox; Node.js is not.")
-    (base / "bridge").mkdir(parents=True, exist_ok=True)
-    (base / "extension").mkdir(exist_ok=True)
-    for f in (ROOT / "bridge").glob("*.mjs"):
-        shutil.copy2(f, base / "bridge" / f.name)
-    shutil.copy2(EXT / "manifest.json", base / "extension/manifest.json")  # bridge/version.mjs reads it
+    copy_sources(base)
     if not (base / "bun").exists() or (base / "bun").stat().st_size != node.stat().st_size:
         shutil.copy2(node.resolve(), base / "bun")
     wrapper = base / "foxreach-host"

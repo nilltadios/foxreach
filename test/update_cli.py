@@ -30,7 +30,8 @@ from build_install import version  # noqa: E402
 sys.path.insert(0, str(ROOT / "test"))
 from harness import McpClient  # noqa: E402
 
-ASSET = {"x86_64": "foxreach-linux-x64", "aarch64": "foxreach-linux-arm64"}[platform.machine()]
+ASSET = "foxreach-{}-{}".format("darwin" if sys.platform == "darwin" else "linux",
+                                {"x86_64": "x64", "aarch64": "arm64", "arm64": "arm64"}[platform.machine()])
 fails = 0
 
 
@@ -76,6 +77,21 @@ def serve_one(conn):
             text = json.dumps({"version": "0.0.1", "trustedInput": False, "paused": False})
             f.write(json.dumps({"id": req["id"], "result": {"text": text}}) + "\n")
             f.flush()
+
+
+def mac_signing(work):
+    """foxreach update signs a downloaded Intel build, whose signature is Bun's and no longer matches."""
+    intel = build_binary.build(work / "intel/foxreach", "bun-darwin-x64-baseline")
+    run = lambda *c: subprocess.run([str(x) for x in c], capture_output=True, text=True)  # noqa: E731
+    check("the x64 build comes with a signature that does not match", run("codesign", "-v", intel).returncode != 0)
+    signed = run(build_binary.bun(), "-e", f'(await import("{ROOT / "bridge/update.mjs"}")).signForMac({json.dumps(str(intel))})')
+    check("foxreach update's signing step makes it valid", signed.returncode == 0 and run("codesign", "-v", intel).returncode == 0, signed.stderr)
+    if run("arch", "-x86_64", "/usr/bin/true").returncode == 0:
+        check("...and it runs (under Rosetta here)", run("arch", "-x86_64", intel, "version").stdout.strip() == version())
+    script = work / "intel/not-a-program"
+    script.write_text("#!/bin/sh\n")
+    run(build_binary.bun(), "-e", f'(await import("{ROOT / "bridge/update.mjs"}")).signForMac({json.dumps(str(script))})')
+    check("a file that is not a Mach-O program is left alone", "com.apple.cs" not in run("xattr", script).stdout)
 
 
 def main():
@@ -160,13 +176,15 @@ def main():
         threading.Thread(target=fake_browser, args=(sock_path,), daemon=True).start()
         time.sleep(0.3)
         for label, command, advice in (("release program", [str(program), "mcp"], "foxreach update"),
-                                       ("checkout", ["bun", str(ROOT / "bridge/mcp.mjs")], "scripts/update.py")):
+                                       ("checkout", [build_binary.bun(), str(ROOT / "bridge/mcp.mjs")], "scripts/update.py")):
             client = McpClient(sock_path, command=command)
             try:
                 status = client.call("status")
             finally:
                 client.close()
             check(f"version warning for a {label} says: {advice}", "versions differ" in status and advice in status, status)
+        if sys.platform == "darwin":
+            mac_signing(work)
     finally:
         server.shutdown()
         shutil.rmtree(work, ignore_errors=True)

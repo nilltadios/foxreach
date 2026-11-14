@@ -1,5 +1,6 @@
 // Explains a failed connection to the native host: is any Firefox-based browser running at all?
 // The add-on works in Firefox and its derivatives, so this looks for all of them, not one.
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -15,6 +16,7 @@ const GECKO = new Map([
 
 /** Names of the Firefox-based browsers running now, or null where processes cannot be listed. */
 export function runningBrowsers(procRoot = process.env.FOXREACH_PROC || "/proc") {
+  if (process.env.FOXREACH_PS || (process.platform === "darwin" && !process.env.FOXREACH_PROC)) return psBrowsers();
   let entries;
   try {
     entries = fs.readdirSync(procRoot);
@@ -30,6 +32,50 @@ export function runningBrowsers(procRoot = process.env.FOXREACH_PROC || "/proc")
     } catch {
       // process gone, or not ours to read
     }
+  }
+  return [...found].sort();
+}
+
+/**
+ * The Firefox-based browser this process was started by, by name, or null. The native host's parent
+ * is the browser: on Linux its executable is in /proc (inside a Flatpak too), on macOS ps names it.
+ */
+export function parentApp(pid = process.ppid) {
+  let exe = "";
+  try {
+    if (process.platform === "darwin") {
+      exe = spawnSync("/bin/ps", ["-o", "comm=", "-p", String(pid)], { encoding: "utf8" }).stdout?.trim() ?? "";
+    } else {
+      exe = fs.readlinkSync(`/proc/${pid}/exe`);
+    }
+  } catch {
+    return null;
+  }
+  return GECKO.get(path.basename(exe)) ?? null;
+}
+
+/**
+ * macOS has no /proc. ps lists this user's processes with each one's executable path, which for a
+ * browser is <name>.app/Contents/MacOS/<executable>, the same executable names as on Linux.
+ */
+function psBrowsers() {
+  let out;
+  if (process.env.FOXREACH_PS) {
+    // For tests: a file standing in for what ps prints.
+    try {
+      out = fs.readFileSync(process.env.FOXREACH_PS, "utf8");
+    } catch {
+      return null;
+    }
+  } else {
+    const ps = spawnSync("/bin/ps", ["-x", "-o", "comm="], { encoding: "utf8" });
+    if (ps.status !== 0) return null;
+    out = ps.stdout;
+  }
+  const found = new Set();
+  for (const line of out.split("\n")) {
+    const name = GECKO.get(path.basename(line.trim()));
+    if (name) found.add(name);
   }
   return [...found].sort();
 }
