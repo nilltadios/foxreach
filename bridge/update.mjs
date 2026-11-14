@@ -77,6 +77,12 @@ async function latestVersion() {
   return m[1];
 }
 
+/** {current, latest, newer} for `foxreach update --check --json`. */
+export async function checkLatest() {
+  const latest = await latestVersion();
+  return { current: VERSION, latest, newer: compareVersions(latest, VERSION) > 0 };
+}
+
 export async function update({ check = false, force = false, log = console.log } = {}) {
   if (!compiled) {
     log(`This foxreach (${VERSION}) runs from a checkout, which is updated with git: ` +

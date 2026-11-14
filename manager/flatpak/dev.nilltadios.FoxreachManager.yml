@@ -1,0 +1,86 @@
+# Flatpak manifest for the foxreach manager. Build with flatpak/build.sh, which vendors the crates
+# first: the build sandbox has no network, so every crate comes from flatpak/vendor.
+id: dev.nilltadios.FoxreachManager
+runtime: org.freedesktop.Platform
+runtime-version: '26.08'
+sdk: org.freedesktop.Sdk
+command: foxreach-manager
+
+finish-args:
+  - --share=ipc
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --device=dri
+  # libcosmic reads the COSMIC theme (accent colour, dark mode) from here.
+  - --filesystem=xdg-config/cosmic:ro
+  # foxreach works on the host, not in a sandbox: it writes agents' settings files, the browsers'
+  # native messaging manifests and Flatpak browsers' permissions, and runs `claude` and `flatpak`.
+  # So the app runs the foxreach program on the host through flatpak-spawn --host, which this
+  # permission allows. It amounts to full access to your account: the sandbox does not limit
+  # this app. See "The Flatpak's permissions" in manager/README.md.
+  - --talk-name=org.freedesktop.Flatpak
+
+# Rust is a build tool, removed before export.
+cleanup:
+  - /lib/rust
+
+modules:
+  # The official Rust release pinned in rust-toolchain.toml (the SDK's rust-stable extension lags).
+  # To update: change the version here and in rust-toolchain.toml, and take the sha256 from the
+  # .sha256 file next to the archive on static.rust-lang.org.
+  - name: rust-toolchain
+    buildsystem: simple
+    build-options:
+      no-debuginfo: true
+      strip: false
+    build-commands:
+      - ./install.sh --prefix=/app/lib/rust --components=rustc,cargo,rust-std-x86_64-unknown-linux-gnu --disable-ldconfig
+    sources:
+      - type: archive
+        url: https://static.rust-lang.org/dist/rust-1.100.0-x86_64-unknown-linux-gnu.tar.xz
+        sha256: 98ee6bec240e1cfe944f17e7092412dc5ef6e008484bb668c6936d35a7d15acd
+
+  # The foxreach program the app installs to ~/.local/bin/foxreach on request. A Bun single-file
+  # build: its code is appended to the runtime, so it must not be stripped.
+  - name: foxreach-program
+    buildsystem: simple
+    build-options:
+      no-debuginfo: true
+      strip: false
+    build-commands:
+      - install -Dm755 foxreach /app/share/foxreach-manager/foxreach
+      - /app/share/foxreach-manager/foxreach version
+    sources:
+      - type: file
+        path: ../../dist/foxreach
+
+  - name: foxreach-manager
+    buildsystem: simple
+    build-options:
+      # flatpak-builder's debuginfo pass at the end of this module strips every ELF file in /app,
+      # the foxreach program included, which loses its code. Cargo strips this binary already.
+      no-debuginfo: true
+      strip: false
+      prepend-path: /app/lib/rust/bin
+      env:
+        CARGO_HOME: /run/build/foxreach-manager/cargo
+    build-commands:
+      - rustc --version && cargo --version
+      - mkdir -p .cargo && cp flatpak/cargo-config.toml .cargo/config.toml
+      # Cargo does not follow flatpak-builder's --jobs by itself; pass it on.
+      - cargo --offline build --release --locked -j "${FLATPAK_BUILDER_N_JOBS:-4}"
+      - install -Dm755 target/release/foxreach-manager /app/bin/foxreach-manager
+      - install -Dm644 resources/dev.nilltadios.FoxreachManager.desktop /app/share/applications/dev.nilltadios.FoxreachManager.desktop
+      - install -Dm644 resources/dev.nilltadios.FoxreachManager.svg /app/share/icons/hicolor/scalable/apps/dev.nilltadios.FoxreachManager.svg
+      - install -Dm644 resources/dev.nilltadios.FoxreachManager.metainfo.xml /app/share/metainfo/dev.nilltadios.FoxreachManager.metainfo.xml
+    sources:
+      - type: dir
+        path: ..
+        skip:
+          - target
+          - dist
+          - packaging/cache
+          - flatpak/build-dir
+          - flatpak/repo
+          - flatpak/.flatpak-builder
+          - .cargo

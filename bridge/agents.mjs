@@ -259,6 +259,21 @@ const yamlFormat = {
 
 // Mistral Vibe: [[mcp_servers]] tables in TOML, each with a name. Edited as text: the table
 // named foxreach is replaced as a whole, everything else is kept byte for byte.
+// Muse Code (Meta): ~/.config/muse/settings.json, servers under mcp_servers with a transport. The file
+// must carry "schema_version": 1 or every muse command fails ("malformed settings file"), so a file
+// foxreach creates gets it. mode "optional": Muse skips foxreach with a warning instead of aborting the
+// run when foxreach cannot start. https://dev.meta.ai/docs/muse-code/configuration and /extending
+const museJson = jsonFormat(["mcp_servers"], (c) => ({ transport: "stdio", command: c[0], args: c.slice(1), mode: "optional" }));
+const museFormat = {
+  ...museJson,
+  set(file, command) {
+    const r = museJson.set(file, command);
+    if (r === "already set") return r;
+    const obj = JSON.parse(r.text);
+    return "schema_version" in obj ? r : { verb: r.verb, text: `${JSON.stringify({ schema_version: 1, ...obj }, null, 2)}\n` };
+  },
+};
+
 const vibeFormat = {
   split(text) {
     const lines = text.split("\n");
@@ -407,19 +422,23 @@ export function agents(h = home()) {
       also: "also the ChatGPT app and T3 Code",
     },
     {
+      // Grok Build (xAI): [mcp_servers.<name>] in ~/.grok/config.toml, the same layout as Codex.
+      // https://docs.x.ai/build/features/mcp-servers. It also reads ~/.claude.json, below its own file.
+      id: "grok", name: "Grok Build", file: path.join(h, ".grok/config.toml"),
+      format: tomlFormat,
+      detect: () => exists(path.join(h, ".grok")) || !!onPath("grok"),
+    },
+    {
+      id: "muse", name: "Muse Code", file: path.join(xdgConfig(h), "muse/settings.json"),
+      format: museFormat,
+      detect: () => exists(path.join(xdgConfig(h), "muse")) || !!onPath("muse"),
+    },
+    {
       id: "antigravity", name: "Antigravity (app and agy)", file: path.join(h, ".gemini/config/mcp_config.json"),
       format: jsonFormat(["mcpServers"], commandArgs),
       detect: () => exists(path.join(h, ".gemini/config")) || exists(path.join(h, ".gemini/antigravity")) ||
         exists(path.join(h, ".antigravity")) || !!onPath("agy"),
       restart: true,
-    },
-    {
-      // Google retired Gemini CLI for individual accounts on 2026-06-18 in favour of Antigravity's
-      // agy (above). Its settings.json lingers in ~/.gemini, which Antigravity shares, so only the
-      // program itself counts as installed; the entry stays known so uninstall can remove it.
-      id: "gemini", name: "Gemini CLI (retired by Google in 2026)", file: path.join(h, ".gemini/settings.json"),
-      format: jsonFormat(["mcpServers"], commandArgs),
-      detect: () => !!onPath("gemini"),
     },
     {
       id: "opencode", name: "opencode (CLI and app)",
@@ -570,9 +589,11 @@ export function registerAgents({ command, only = null, h = home(), log = console
   return results;
 }
 
-/** Remove the MCP server's entry from every agent that has one. */
-export function unregisterAgents({ h = home(), log = console.log } = {}) {
-  for (const a of agents(h)) {
+/** Remove the MCP server's entry from every agent that has one, or from the agents named. */
+export function unregisterAgents({ only = null, h = home(), log = console.log } = {}) {
+  const all = agents(h);
+  if (only !== null) chosen(all, only); // unknown names are an error, as for add
+  for (const a of all.filter((x) => only === null || only.includes(x.id))) {
     try {
       const cli = a.cli?.([]);
       if (cli && a.format.current(a.file)) {
@@ -602,6 +623,40 @@ export function describeAgents({ h = home(), log = console.log } = {}) {
     }
     log(`${a.id.padEnd(15)} ${(a.detect() ? "found" : "not found").padEnd(10)} ${set.padEnd(17)} ${a.file}`);
   }
+}
+
+/** The command an agent's foxreach entry runs, as one line, or the entry's text. */
+function entryCommand(entry) {
+  if (entry === null || entry === undefined) return null;
+  if (typeof entry === "string") {
+    // TOML and YAML entries are text: take their command and args (written as JSON strings).
+    const cmd = /^\s*command\s*[=:]\s*("(?:[^"\\]|\\.)*")\s*$/m.exec(entry);
+    const args = /^\s*args\s*[=:]\s*(\[.*\])\s*$/m.exec(entry);
+    try {
+      if (cmd) return [JSON.parse(cmd[1]), ...(args ? JSON.parse(args[1]) : [])].join(" ");
+    } catch {
+      // not JSON-quoted: show the entry as it is
+    }
+    return entry;
+  }
+  const c = entry.command;
+  const parts = [...(Array.isArray(c) ? c : c ? [c] : []), ...(Array.isArray(entry.args) ? entry.args : [])];
+  return parts.length ? parts.join(" ") : JSON.stringify(entry);
+}
+
+/** Every known agent as data, for `foxreach status --json` (the manager app reads it). */
+export function agentStatus({ h = home() } = {}) {
+  return agents(h).map((a) => {
+    const row = { id: a.id, name: a.name, also: a.also ?? null, file: a.file, found: !!a.detect(), set: false, command: null, error: null };
+    try {
+      const now = a.format.current(a.file);
+      row.set = !!now;
+      row.command = entryCommand(now);
+    } catch (e) {
+      row.error = e.message;
+    }
+    return row;
+  });
 }
 
 const indent = (text, n) => text.split("\n").map((l) => " ".repeat(n) + l).join("\n");

@@ -1,0 +1,20 @@
+# rust-analyzer settings for this crate (rust-analyzer reads rust-analyzer.toml at the project root).
+# libcosmic is large: with the defaults rust-analyzer reached 8.4 GB here on 2026-11-12 and ran the
+# laptop out of memory. These keep it to what an editor needs:
+# - no indexing of every dependency at startup (they are indexed when a file needs them);
+# - no `cargo check` on save (that is a full compile; build with the memory cap instead);
+# - proc macros and build scripts off (libcosmic's derive macros and build scripts are the costly part;
+#   code inside derive-generated items is then less precise).
+checkOnSave = false
+
+[cachePriming]
+enable = false
+
+[procMacro]
+enable = false
+
+[cargo.buildScripts]
+enable = false
+
+[lru]
+capacity = 64

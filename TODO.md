@@ -9,7 +9,39 @@ Open items, newest first. Remove an item when it is done.
    signing `install.sh` does); agents other than Claude Code and Claude desktop, whose settings paths
    on macOS were taken to be the same as on Linux.
 
-1. **foxreach manager app.** A desktop app that manages foxreach end to end, built on the same
+1. **Manager app: open items from the 2026-11-12/13 session** (UI reworked into tabs; uncommitted).
+   - **Add-on permissions in the app** (user request, from the toolbar panel): show pause, "ask before
+     a new agent", sites (every site / only these, the list), fields agents may not read, blocked
+     sites and recent activity for the connected browser. Rule: changes that make things safer apply
+     from the app (pause, protection on, remove a site, block a site, ask on); changes that loosen
+     protection (unpause, protection off, allow a site or every site, unblock, ask off) are only
+     requested by the app and confirmed by the user in the browser, like the new-agent prompt. Reason:
+     the app reaches the add-on through the same `foxreach` socket any agent (or an agent's shell) can,
+     so the browser must be where loosening is approved. Needs an add-on release: settings read and
+     change messages in `extension/background.js` (today only the popup changes them, lines ~1220-1295),
+     a `foxreach settings` command, then the app's view. The signed build needs Mozilla to sign again.
+   - Text alignment on the Browsers tab (user feedback): the small "· default" next to a profile name
+     and the "AppImage"/"Flatpak" next to a browser name sit higher than the text beside them. Align
+     those rows' contents vertically (`profile_row` name row, the browser heading row in
+     `browsers_tab`, `manager/src/app.rs`), and check the Agents tab for the same.
+   - Rebuild the AppImage and Flatpak with the new UI (tabs, search, Test, logos) and recheck both.
+   - AppImage segfault in `wl_proxy_destroy` on a background thread (core dump 2026-11-12 23:24),
+     probably when the window closes: find and fix.
+   - Not yet checked for real: the "Add foxreach?" prompt in Firefox from `foxreach addon install`
+     (only the removal is tested, `test/addon_firefox.py`); the AppImage removing itself.
+   - `test/signed_firefox.py` stops Firefox Flatpak with SIGTERM to `flatpak run`, which leaves the
+     headless Firefox running; use `flatpak kill` as `test/addon_firefox.py` does.
+   - rust-analyzer on `manager/` needs more than 3 GB (measured: `~/Documents/Claude/2026-11-13/
+     rust-analyzer-memory/measure.py`), so the 3 GB scope (`~/.local/bin/rust-analyzer`) keeps stopping
+     it after edits. Decide: raise the cap to 5 GB, or turn the rust-analyzer-lsp plugin off for this
+     repository only.
+
+2. **foxreach manager app.** Linux part built in `manager/` (Rust, libcosmic; see
+   `manager/README.md`): program install and update, the signed add-on per browser profile, agents,
+   removal; AppImage (`manager/packaging/container-build.sh`) and Flatpak (`manager/flatpak/build.sh`).
+   Not yet: a published Flatpak repository and `.flatpakref` (signing key, Pages), the AppImage in
+   the release workflow, Windows and macOS. The original plan:
+   A desktop app that manages foxreach end to end, built on the same
    code as the `foxreach` program (`bridge/agents.mjs`, `bridge/install.mjs`, `bridge/update.mjs`):
    - choose which agents get the MCP server (the list `foxreach agents` shows), add and remove them;
    - updates: see whether a newer release exists and apply it (what `foxreach update` does), and
@@ -31,7 +63,7 @@ Open items, newest first. Remove an item when it is done.
    The program runs on Linux and macOS (host registration, socket, release builds, `install.sh`,
    `foxreach update`); Windows needs the host registration and agent paths ported first.
 
-2. **addons.mozilla.org listing: awaiting Mozilla's review.** 0.3.1 submitted 2026-11-11; 0.3.3 (same
+3. **addons.mozilla.org listing: awaiting Mozilla's review.** 0.3.1 submitted 2026-11-11; 0.3.3 (same
    code as 0.3.2, which the unlisted channel took) submitted listed 2026-11-12 so the public page opens
    on current code. Status and reviewer questions:
    https://addons.mozilla.org/en-US/developers/addon/fe1f53e268044b529443/versions
@@ -40,14 +72,14 @@ Open items, newest first. Remove an item when it is done.
    `dist/signed/foxreach-0.3.3-signed.xpi`, run `scripts/release.py`, then commit, tag v0.3.3 and push
    (ask first), and `release.py --verify` / `verify_release.py 0.3.3`.
 
-3. **A command line beside the MCP server.** `foxreach call <tool> --tab N [--name AGENT] ...` reusing
+4. **A command line beside the MCP server.** `foxreach call <tool> --tab N [--name AGENT] ...` reusing
    every tool over the same socket: text out, screenshots to files, the agent's name for the approval
    prompt. For agents without MCP or short on context (MCP tool definitions cost ~4,200 tokens at
    start; a CLI costs nothing until used), and for scripts. Ship a short skill file that says how to
    use it. Keep MCP as the main path: images reach the model directly, agents approve per tool, and
    one connection keeps an agent's refs, pointer and identity.
 
-4. **Agents added 2026-11-12 (OpenClaw, Copilot CLI, Qwen, Kimi, MiMo, MiniMax, Vibe, DeepSeek
+5. **Agents added 2026-11-12 (OpenClaw, Copilot CLI, Qwen, Kimi, MiMo, MiniMax, Vibe, DeepSeek
    Harness)** were checked in a throwaway container: each reads foxreach's entry (Qwen, MiMo and
    OpenClaw also started the server; rerun with `test/agents_container/run.sh`). Not yet seen: one
    of them calling a foxreach tool in a chat, which needs that agent's account.
