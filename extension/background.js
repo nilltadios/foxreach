@@ -468,7 +468,29 @@ function notePointer(tabId, point, result) {
   else pointers.delete(tabId);
 }
 
+// "mod": the key shortcuts are made with on this system, Cmd on macOS and Ctrl elsewhere, so an agent
+// can select all or copy without knowing which system the browser runs on.
+let onMac;
+async function modKey() {
+  onMac ??= browser.runtime.getPlatformInfo().then((i) => i.os === "mac");
+  return (await onMac) ? "meta" : "ctrl";
+}
+
+/** keys with each "mod+" replaced by this system's shortcut key. */
+async function withMod(keys) {
+  if (!/(^|[\s+])mod\+/i.test(keys)) return keys;
+  const mod = await modKey();
+  return keys.replace(/(^|[\s+])mod(?=\+)/gi, `$1${mod}`);
+}
+
+async function withModList(modifiers) {
+  if (!modifiers?.some((m) => String(m).toLowerCase() === "mod")) return modifiers;
+  const mod = await modKey();
+  return modifiers.map((m) => (String(m).toLowerCase() === "mod" ? mod : m));
+}
+
 async function dispatchMouse(tabId, point, { action, button = 0, count = 1, modifiers }) {
+  modifiers = await withModList(modifiers);
   const result = trusted
     ? await privileged(tabId, "mouse", { frameId: point.frameId, x: point.x, y: point.y, action, button, count, modifiers })
     : await contentCall(tabId, point.frameId, "untrustedMouse", { x: point.x, y: point.y, action, button, count });
@@ -777,7 +799,7 @@ const TOOLS = {
     await accessibleTab(tabId);
     await assertNoDialog(tabId);
     if (!trusted) throw new Error("drag needs trusted input, which this build does not have.");
-    const res = await privileged(tabId, "drag", { from: { x: from_x, y: from_y }, to: { x: to_x, y: to_y }, modifiers });
+    const res = await privileged(tabId, "drag", { from: { x: from_x, y: from_y }, to: { x: to_x, y: to_y }, modifiers: await withModList(modifiers) });
     pointers.set(tabId, { x: to_x, y: to_y });
     if (res.blockedByDialog) return { text: `Dragged.${DIALOG_NOTE}` };
     const kind = res.htmlDrag ? (res.dropped ? " The page accepted the drop." : " The page did not accept a drop here.") : "";
@@ -814,7 +836,8 @@ const TOOLS = {
   async press_key({ tabId, keys, repeat = 1, allow_non_text = false }) {
     const before = await accessibleTab(tabId);
     await assertNoDialog(tabId);
-    if (!keys) throw new Error("keys is required, for example \"Enter\" or \"ctrl+a Delete\".");
+    if (!keys) throw new Error("keys is required, for example \"Enter\" or \"mod+a Delete\".");
+    keys = await withMod(keys);
     const target = await focusTarget(tabId);
     const destructive = keys.trim().split(/\s+/).find((k) => DESTRUCTIVE_KEY.test(k));
     if (destructive && target && !target.editable && !allow_non_text) {

@@ -3,6 +3,7 @@
 import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import net from "node:net";
+import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
 import { notConnectedMessage } from "./browsers.mjs";
@@ -95,7 +96,8 @@ async function callBrowser(tool, args, timeoutMs = CALL_TIMEOUT_MS) {
 /**
  * A page can tell the agent reading it to upload a file. So the files most worth stealing are
  * refused whoever asks: keys and settings live in hidden files and folders (~/.ssh, ~/.config,
- * .env), and /proc holds the environment of running programs.
+ * .env), and /proc holds the environment of running programs. On macOS, ~/Library holds what
+ * hidden folders hold on Linux (keychains, every browser's cookies, mail, app settings).
  */
 async function uploadable(file) {
   return readable(file, "file_upload");
@@ -106,13 +108,24 @@ async function readable(file, what) {
   if (!path.isAbsolute(file)) throw new Error(`Use an absolute path: ${file}`);
   const real = await fs.realpath(file); // what a link points at is what would be sent
   if (/^\/(proc|sys|dev)(\/|$)/.test(real)) throw new Error(`${what} does not read ${real}.`);
+  const allow = "If the user wants this, they can start the MCP server with FOXREACH_ALLOW_HIDDEN_UPLOADS=1.";
   if (!ALLOW_HIDDEN_UPLOADS && real.split(path.sep).some((part) => part.startsWith("."))) {
-    throw new Error(`${what} refuses hidden files and folders (${real}): they often hold keys and settings. ` +
-      "If the user wants this, they can start the MCP server with FOXREACH_ALLOW_HIDDEN_UPLOADS=1.");
+    throw new Error(`${what} refuses hidden files and folders (${real}): they often hold keys and settings. ${allow}`);
+  }
+  if (!ALLOW_HIDDEN_UPLOADS && inMacLibrary(real)) {
+    throw new Error(`${what} refuses files in ~/Library (${real}): it holds keychains, cookies and settings. ${allow}`);
   }
   const stat = await fs.stat(real);
   if (!stat.isFile()) throw new Error(`Not a regular file: ${real}`);
   return { real, size: stat.size };
+}
+
+/** True for ~/Library and what is in it, on macOS, whose file system ignores case by default. */
+function inMacLibrary(real) {
+  if (process.platform !== "darwin") return false;
+  const library = path.join(os.homedir(), "Library").toLowerCase();
+  const p = real.toLowerCase();
+  return p === library || p.startsWith(`${library}/`);
 }
 
 async function readUploads(paths) {

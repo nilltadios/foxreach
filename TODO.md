@@ -4,6 +4,11 @@ Open items, newest first. Remove an item when it is done.
 
 ## Next
 
+0. **macOS: still to check.** The signed build in release Firefox on a Mac (only LibreWolf's full build
+   was tested, 2026-11-13); the Intel build on a real Intel Mac (it ran under Rosetta, after the ad hoc
+   signing `install.sh` does); agents other than Claude Code and Claude desktop, whose settings paths
+   on macOS were taken to be the same as on Linux.
+
 1. **foxreach manager app.** A desktop app that manages foxreach end to end, built on the same
    code as the `foxreach` program (`bridge/agents.mjs`, `bridge/install.mjs`, `bridge/update.mjs`):
    - choose which agents get the MCP server (the list `foxreach agents` shows), add and remove them;
@@ -23,8 +28,8 @@ Open items, newest first. Remove an item when it is done.
    - macOS: a signed `.app` in a `.dmg`. Native messaging manifests go in
      `~/Library/Application Support/Mozilla/NativeMessagingHosts`; Claude desktop's settings are
      already handled (`~/Library/Application Support/Claude`).
-   The program today is Linux-only (`install.sh`, `bridge/install.mjs`); Windows and macOS need the
-   host registration and agent paths ported first.
+   The program runs on Linux and macOS (host registration, socket, release builds, `install.sh`,
+   `foxreach update`); Windows needs the host registration and agent paths ported first.
 
 2. **addons.mozilla.org listing: awaiting Mozilla's review.** 0.3.1 submitted 2026-11-11; 0.3.3 (same
    code as 0.3.2, which the unlisted channel took) submitted listed 2026-11-12 so the public page opens

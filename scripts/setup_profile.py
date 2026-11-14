@@ -25,6 +25,7 @@ code. See "Security" in README.md before using a profile you browse with.
 """
 import argparse
 import datetime
+import fcntl
 import json
 import os
 import pathlib
@@ -103,6 +104,8 @@ def record_profile(profile, verified=None, keep=True, browser=None):
 
 
 def in_use(profile):
+    if browsers.MAC:
+        return locked(profile / ".parentlock")
     lock = profile / "lock"
     if not lock.is_symlink():
         return False
@@ -114,6 +117,19 @@ def in_use(profile):
         return app in ps.stdout.split()
     pid = os.readlink(lock).rpartition("+")[2]
     return pid.isdigit() and pathlib.Path(f"/proc/{pid}").exists()
+
+
+def locked(file):
+    """macOS builds hold a POSIX lock on .parentlock while the profile is open (no lock symlink)."""
+    if not file.exists():
+        return False
+    with open(file, "r+b") as f:
+        try:
+            fcntl.lockf(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            return True
+        fcntl.lockf(f, fcntl.LOCK_UN)
+        return False
 
 
 def refuse_copy(profile):
@@ -129,7 +145,7 @@ def refuse_copy(profile):
     # Every profiles.ini this user has, whichever browser or packaging it belongs to.
     home = pathlib.Path.home()
     homes = [home, *(home / ".var/app").glob("*")]
-    roots = {h / r for h in homes for k in browsers.KINDS for r in k.profile_roots} | {profile.parent}
+    roots = {r for h in homes for k in browsers.KINDS for r in k.roots(h)} | {profile.parent}
     for ini in sorted(r / "profiles.ini" for r in roots):
         if not ini.exists():
             continue
@@ -206,6 +222,8 @@ CARRIERS = ("bwrap", "flatpak", "xdg-dbus-proxy")
 def browser_pids(profile, group):
     """The browser's own processes: started by us (same process group, so never this script, whose
     command line can name the profile too) and run on this profile."""
+    if browsers.MAC:
+        return browsers.mac_pids(profile)
     pids = []
     for d in pathlib.Path("/proc").iterdir():
         if d.name.isdigit():
@@ -226,9 +244,20 @@ def stop(profile, proc):
         except OSError:
             pass
     proc.wait(timeout=30)
+    if browsers.MAC:
+        # A relaunched browser is not proc: wait until nothing runs the profile, or the next start
+        # finds it locked ("already open").
+        deadline = time.time() + 30
+        while (left := browser_pids(profile, proc.pid)) and time.time() < deadline:
+            time.sleep(0.5)
+        for pid in left:
+            os.kill(pid, signal.SIGKILL)
 
 
 def start(browser, profile, socket_path):
+    # Each headless start ends without recording a finished startup, so it counts as a crash; after a
+    # few, macOS builds restart by themselves in Troubleshoot Mode, add-ons off. Clear the count first.
+    clear_startup_tracking(profile)
     args = ["--headless", "--no-remote", "--new-instance", "--profile", profile]
     return browser.popen(args, {"FOXREACH_SOCKET": socket_path},
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)

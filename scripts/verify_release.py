@@ -99,7 +99,7 @@ def main():
                 verdict, ok = "same bytes as the source builds", True
             elif name.endswith(".xpi") and entries(file) == entries(rebuilt / name):
                 verdict, ok = "same files as the source builds (packed by another zlib)", True
-            elif name.startswith("foxreach-linux-") and not same_bun:
+            elif name.startswith(("foxreach-linux-", "foxreach-darwin-")) and not same_bun:
                 print(f"skipped  {name}: built with Bun {info.get('bun')}, this machine has {ours.get('bun')}")
                 continue
             else:

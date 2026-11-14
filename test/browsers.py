@@ -28,7 +28,8 @@ def check(name, ok, detail=""):
 
 def run(home, code, path=None, env=None):
     """Run code with scripts/ importable, in the made-up home. Returns what it printed, as JSON."""
-    full = {"HOME": str(home), "PATH": path or f"{home}/bin:/usr/bin", "XDG_RUNTIME_DIR": f"{home}/run"} | (env or {})
+    full = {"HOME": str(home), "PATH": path or f"{home}/bin:/usr/bin", "XDG_RUNTIME_DIR": f"{home}/run",
+            "FOXREACH_PLATFORM": "linux"} | (env or {})
     out = subprocess.run(
         [sys.executable, "-c", f"import sys, json, pathlib; sys.path.insert(0, {str(ROOT / 'scripts')!r})\n{code}"],
         env=full, capture_output=True, text=True,
@@ -43,6 +44,25 @@ def executable(path, text="#!/bin/sh\n"):
     path.write_text(text)
     path.chmod(0o755)
     return path
+
+
+def mac_checks(home):
+    """macOS: apps in /Applications and ~/Applications, profiles and manifests in Application Support."""
+    mac = {"FOXREACH_PLATFORM": "darwin"}
+    app = executable(home / "Applications/LibreWolf.app/Contents/MacOS/librewolf")
+    executable(home / "Applications/Zenity.app/Contents/MacOS/zenity")  # not a browser
+    found = run(home, "import browsers; print(json.dumps([[b.name, b.packaging, b.spec] for b in browsers.find()]))", env=mac)
+    mine = [f for f in found if f[2].startswith(str(home))] if isinstance(found, list) else found
+    check("macOS: finds an app in ~/Applications by the executable inside it, and no AppImage or Flatpak",
+          mine == [["Firefox", "native", f"{home}/bin/firefox-developer-edition"], ["LibreWolf", "app", str(app)]], found)
+    out = run(home, f"import browsers; b = browsers.resolve({str(home / 'Applications/LibreWolf.app')!r}); print(json.dumps([b.name, b.packaging, b.spec]))", env=mac)
+    check("macOS: an app's folder is accepted as a spec", out == ["LibreWolf", "app", str(app)], out)
+    out = run(home, "import build_install; print(json.dumps([str(p) for p in build_install.host_dirs()]))", env=mac)
+    check("macOS: the manifest goes to Mozilla's folder in Application Support",
+          out == [f"{home}/Library/Application Support/Mozilla/NativeMessagingHosts"], out)
+    out = run(home, f"import browsers; print(json.dumps([str(p) for p in browsers.resolve({str(app)!r}).profile_roots()]))", env=mac)
+    check("macOS: LibreWolf's profiles are looked for in Application Support",
+          out == [f"{home}/Library/Application Support/librewolf"], out)
 
 
 def main():
@@ -137,6 +157,8 @@ def main():
         shown = executable(home / "opt/some browser/firefox", '#!/bin/sh\nprintf "%s\\n" "$@"\n')
         (home / ".local/state/foxreach").mkdir(parents=True)
         (home / ".local/state/foxreach/profiles").write_text(f"/other/profile\t0.2.0\t/wrong\n{profile}\t0.2.0\t{shown}\n")
+        mac_checks(home)
+
         launch = lambda env: subprocess.run([str(ROOT / "scripts/foxreach-browser"), "https://example.com/"],  # noqa: E731
                                             env={"HOME": str(home), "PATH": f"{home}/bin:/usr/bin"} | env, capture_output=True, text=True)
         out = launch({})

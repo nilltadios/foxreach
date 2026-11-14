@@ -12,7 +12,33 @@ import { compiled } from "./install.mjs";
 import { VERSION } from "./version.mjs";
 
 const RELEASES = process.env.FOXREACH_RELEASE_URL || "https://github.com/nilltadios/foxreach/releases/latest/download";
-const ASSETS = { x64: "foxreach-linux-x64", arm64: "foxreach-linux-arm64" };
+const PLATFORMS = { linux: "linux", darwin: "darwin" };
+const ARCHES = { x64: "x64", arm64: "arm64" };
+
+/** The release file built for this machine, or null. */
+export function assetName(platform = process.platform, arch = process.arch) {
+  return PLATFORMS[platform] && ARCHES[arch] ? `foxreach-${PLATFORMS[platform]}-${ARCHES[arch]}` : null;
+}
+
+/**
+ * macOS runs no program whose signature does not match it. Bun signs its arm64 builds; its x64
+ * build keeps the signature of Bun's own runtime, which the packed program no longer matches. Sign
+ * such a file ad hoc here, as install.sh does. Files that are not Mach-O programs are left alone.
+ */
+function signForMac(file) {
+  if (process.platform !== "darwin") return;
+  const head = Buffer.alloc(4);
+  const fd = fs.openSync(file, "r");
+  try {
+    fs.readSync(fd, head, 0, 4, 0);
+  } finally {
+    fs.closeSync(fd);
+  }
+  if (head.readUInt32LE(0) !== 0xfeedfacf) return; // 64-bit Mach-O
+  if (spawnSync("/usr/bin/codesign", ["-v", file]).status === 0) return;
+  const signed = spawnSync("/usr/bin/codesign", ["--force", "--sign", "-", file], { encoding: "utf8" });
+  if (signed.status !== 0) throw new Error(`Could not sign ${file} for macOS: ${signed.stderr || signed.error}. Nothing was changed.`);
+}
 
 /** How this copy of foxreach is updated, for messages such as the version warning. */
 export function updateAdvice() {
@@ -68,8 +94,8 @@ export async function update({ check = false, force = false, log = console.log }
     return 0;
   }
 
-  const asset = ASSETS[process.arch];
-  if (!asset) throw new Error(`No foxreach build for ${process.arch}.`);
+  const asset = assetName();
+  if (!asset) throw new Error(`No foxreach build for ${process.platform} on ${process.arch}.`);
   const target = fs.realpathSync(process.execPath);
   const dir = path.dirname(target);
   try {
@@ -91,6 +117,7 @@ export async function update({ check = false, force = false, log = console.log }
   try {
     fs.writeFileSync(fresh, file, { mode: 0o755 });
     fs.chmodSync(fresh, 0o755);
+    signForMac(fresh);
     const says = spawnSync(fresh, ["version"], { encoding: "utf8", timeout: 30_000 });
     const reported = (says.stdout ?? "").trim();
     if (says.status !== 0 || reported !== latest) {

@@ -124,8 +124,8 @@ class Browser:
         if self.marionette:
             self.marionette.close()
             self.marionette = None
-        pids = []
-        for d in pathlib.Path("/proc").iterdir():
+        pids = browsers.mac_pids(self.profile) if browsers.MAC else []
+        for d in [] if browsers.MAC else pathlib.Path("/proc").iterdir():
             if d.name.isdigit():
                 try:
                     if str(self.profile).encode() in (d / "cmdline").read_bytes() and not os.readlink(

@@ -5,7 +5,8 @@ Run:      uv run --python 3.15 test/connect_errors.py
 Expected: every line PASS, exit 0. Needs no browser: the bridge is pointed at a socket that does not
 exist, and at fake process lists (FOXREACH_PROC) that show no browser, one, two, or none readable,
 and at a fake profile record (FOXREACH_PROFILES).
-One check uses the real /proc, with a stand-in process whose executable is named "librewolf".
+One check uses the real process list (/proc, or ps on macOS), with a stand-in process whose
+executable is named "librewolf".
 """
 import os
 import pathlib
@@ -28,7 +29,8 @@ def check(name, ok, detail=""):
 
 def message(socket, proc):
     """The error text of a first call, as an agent sees it."""
-    os.environ["FOXREACH_PROC"] = str(proc)
+    if proc:
+        os.environ["FOXREACH_PROC"] = str(proc)
     client = McpClient(str(socket))
     try:
         client.call("status")
@@ -37,7 +39,7 @@ def message(socket, proc):
         return str(e)
     finally:
         client.close()
-        del os.environ["FOXREACH_PROC"]
+        os.environ.pop("FOXREACH_PROC", None)
 
 
 def fake_proc(root, exes):
@@ -94,14 +96,15 @@ def main():
         out = message(socket, work / "no-proc-here")
         check("no process list (macOS): generic advice", out.startswith("The browser is not connected. Open the Firefox-based browser"), out)
 
-        # The real /proc, with a stand-in process whose executable is named like a browser.
+        # The real process list, with a stand-in process whose executable is named like a browser.
+        # (copy, not copy2: macOS refuses to copy the system flags of /bin/sleep.)
         stand_in = work / "bin" / "librewolf"
         stand_in.parent.mkdir()
-        shutil.copy2(shutil.which("sleep"), stand_in)
+        shutil.copy(shutil.which("sleep"), stand_in)
         proc = subprocess.Popen([str(stand_in), "30"])
         try:
-            out = message(socket, "/proc")
-            check("real /proc: finds a running browser by its executable", "LibreWolf is running" in out
+            out = message(socket, None if sys.platform == "darwin" else "/proc")
+            check("real process list: finds a running browser by its executable", "LibreWolf is running" in out
                   or ("LibreWolf and" in out or "and LibreWolf" in out), out)
         finally:
             proc.kill()

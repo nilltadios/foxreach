@@ -2,8 +2,8 @@
 """Build foxreach as one program that needs neither Bun nor Node.js on the user's machine.
 
 Run:      uv run --python 3.15 scripts/build_binary.py            dist/foxreach, for this machine
-          uv run --python 3.15 scripts/build_binary.py --release  dist/release/foxreach-linux-x64 and -arm64
-Needs:    Bun (the build machine only). --release downloads Bun's runtime for the other target once.
+          uv run --python 3.15 scripts/build_binary.py --release  dist/release/foxreach-{linux,darwin}-{x64,arm64}
+Needs:    Bun (the build machine only). --release downloads Bun's runtime for the other targets once.
 Expected: the paths written, each with its SHA-256, exit 0.
 
 The program is Bun's runtime with bridge/ packed in: `foxreach mcp` is the MCP server, `foxreach
@@ -19,8 +19,16 @@ import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 DIST = ROOT / "dist"
-# "baseline" runs on x86-64 processors older than 2013 too.
-TARGETS = {"foxreach-linux-x64": "bun-linux-x64-baseline", "foxreach-linux-arm64": "bun-linux-arm64"}
+# "baseline" runs on x86-64 processors older than 2013 too. The macOS builds come out the same,
+# byte for byte, whether built on Linux or on a Mac. Bun signs the arm64 one (ad hoc); the x64 one
+# keeps the signature of Bun's own runtime, which no longer matches, so install.sh and `foxreach
+# update` sign it ad hoc on the Mac it is installed on.
+TARGETS = {
+    "foxreach-linux-x64": "bun-linux-x64-baseline",
+    "foxreach-linux-arm64": "bun-linux-arm64",
+    "foxreach-darwin-x64": "bun-darwin-x64-baseline",
+    "foxreach-darwin-arm64": "bun-darwin-arm64",
+}
 
 
 def bun():

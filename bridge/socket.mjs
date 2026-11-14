@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -19,8 +20,21 @@ export function assertPrivate(dir) {
   }
 }
 
+/**
+ * macOS gives each user a private temporary folder (TMPDIR in a login session). Asked of the
+ * system rather than read from TMPDIR, so the browser's host and an agent started without it (from
+ * launchd, ssh or cron) agree on the socket.
+ */
+function darwinUserTemp() {
+  const asked = spawnSync("/usr/bin/getconf", ["DARWIN_USER_TEMP_DIR"], { encoding: "utf8" });
+  const dir = asked.status === 0 ? asked.stdout.trim() : "";
+  return dir && path.isAbsolute(dir) ? dir : null;
+}
+
 export function socketPath() {
   if (process.env.FOXREACH_SOCKET) return process.env.FOXREACH_SOCKET;
-  const base = process.env.XDG_RUNTIME_DIR ?? path.join(os.tmpdir(), `foxreach-${process.getuid()}`);
-  return path.join(base, "foxreach", "browser.sock");
+  if (process.env.XDG_RUNTIME_DIR) return path.join(process.env.XDG_RUNTIME_DIR, "foxreach", "browser.sock");
+  const mac = process.platform === "darwin" ? darwinUserTemp() : null;
+  if (mac) return path.join(mac, "foxreach", "browser.sock");
+  return path.join(os.tmpdir(), `foxreach-${process.getuid()}`, "foxreach", "browser.sock");
 }

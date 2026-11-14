@@ -252,11 +252,11 @@ def t_keyboard(mcp):
     check("typing is trusted", ev and all(e["trusted"] for e in ev), ev[:4])
     check("typed text arrives", js(mcp, tab, "document.getElementById('name').value") == "Hi There 42!")
 
-    mcp.call("press_key", tabId=tab, keys="ctrl+a Delete")
-    check("ctrl+a Delete clears a field", js(mcp, tab, "document.getElementById('name').value") == "")
+    mcp.call("press_key", tabId=tab, keys="mod+a Delete")
+    check("mod+a Delete clears a field", js(mcp, tab, "document.getElementById('name').value") == "")
 
     mcp.call("click", tabId=tab, ref=name)
-    mcp.call("press_key", tabId=tab, keys="ctrl+a Delete")
+    mcp.call("press_key", tabId=tab, keys="mod+a Delete")
     mcp.call("type_text", tabId=tab, text="héllo 日本語 🦊")
     check("non-Latin text and emoji", js(mcp, tab, "document.getElementById('name').value") == "héllo 日本語 🦊",
           js(mcp, tab, "document.getElementById('name').value"))
@@ -266,7 +266,7 @@ def t_keyboard(mcp):
           js(mcp, tab, "document.getElementById('area').value"))
 
     mcp.call("click", tabId=tab, ref=ref_of(tree, "#ce"))
-    mcp.call("press_key", tabId=tab, keys="ctrl+a")
+    mcp.call("press_key", tabId=tab, keys="mod+a")
     mcp.call("type_text", tabId=tab, text="rich")
     check("typing into contenteditable", js(mcp, tab, "document.getElementById('ce').textContent").strip() == "rich",
           js(mcp, tab, "document.getElementById('ce').textContent"))
@@ -283,7 +283,7 @@ def t_keyboard(mcp):
     check("press_key names the focused element", 'textbox "Your name"' in out, out)
     # The report describes the field after the keys: it once showed the value from before them.
     mcp.call("type_text", tabId=tab, ref=name, text="stale")
-    out = mcp.call("press_key", tabId=tab, keys="ctrl+a Backspace")
+    out = mcp.call("press_key", tabId=tab, keys="mod+a Backspace")
     check("press_key reports the value after the keys", "stale" not in out, out)
     out = mcp.call("type_text", tabId=tab, text="fresh")
     check("type_text does not call a value change a focus move", "Focus has moved" not in out, out)
@@ -292,7 +292,7 @@ def t_keyboard(mcp):
     mcp.call("click", tabId=tab, ref=ref_of(tree, "Press me"))
     clear(mcp, tab)
     check("Delete outside a text field is refused",
-          expect_error(lambda: mcp.call("press_key", tabId=tab, keys="ctrl+a Delete"), "not a text field"))
+          expect_error(lambda: mcp.call("press_key", tabId=tab, keys="mod+a Delete"), "not a text field"))
     check("typing outside a text field is refused",
           expect_error(lambda: mcp.call("type_text", tabId=tab, text="abc"), "Nothing was typed"))
     check("refused keys never reach the page", not [e for e in events(mcp, tab) if e["type"] == "keydown"],
@@ -375,7 +375,7 @@ def t_read(mcp):
     check("...including code saved to a file", expect_error(
         lambda: mcp.call("javascript", tabId=tab, code="document.getElementById('pw').value", save_to="/tmp/foxreach-pw-test.txt"),
         "keeps from agents holds a value") and not pathlib.Path("/tmp/foxreach-pw-test.txt").exists())
-    mcp.call("press_key", tabId=tab, keys="ctrl+a Backspace")
+    mcp.call("press_key", tabId=tab, keys="mod+a Backspace")
     check("javascript works again once the field is cleared", js(mcp, tab, "document.getElementById('pw').value") == "")
 
     # Card and ID-number fields are kept from agents by default, found by autofill hint or label.

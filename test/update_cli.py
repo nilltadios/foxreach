@@ -30,7 +30,8 @@ from build_install import version  # noqa: E402
 sys.path.insert(0, str(ROOT / "test"))
 from harness import McpClient  # noqa: E402
 
-ASSET = {"x86_64": "foxreach-linux-x64", "aarch64": "foxreach-linux-arm64"}[platform.machine()]
+ASSET = "foxreach-{}-{}".format("darwin" if sys.platform == "darwin" else "linux",
+                                {"x86_64": "x64", "aarch64": "arm64", "arm64": "arm64"}[platform.machine()])
 fails = 0
 
 
@@ -160,7 +161,7 @@ def main():
         threading.Thread(target=fake_browser, args=(sock_path,), daemon=True).start()
         time.sleep(0.3)
         for label, command, advice in (("release program", [str(program), "mcp"], "foxreach update"),
-                                       ("checkout", ["bun", str(ROOT / "bridge/mcp.mjs")], "scripts/update.py")):
+                                       ("checkout", [build_binary.bun(), str(ROOT / "bridge/mcp.mjs")], "scripts/update.py")):
             client = McpClient(sock_path, command=command)
             try:
                 status = client.call("status")

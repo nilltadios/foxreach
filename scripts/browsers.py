@@ -10,7 +10,9 @@ A browser is named by a spec, which --browser and FOXREACH_BROWSER accept:
   flatpak:<application id>       a Flatpak, for example flatpak:io.gitlab.librewolf-community
 
 Found here: commands on PATH, AppImages in ~/AppImages, ~/Applications and ~/.local/bin, and installed
-Flatpaks. Nothing is executed to find them. Linux only.
+Flatpaks; on macOS, commands on PATH and apps in /Applications and ~/Applications (the spec is the
+executable inside the app, such as /Applications/LibreWolf.app/Contents/MacOS/librewolf). Nothing
+is executed to find them.
 """
 import dataclasses
 import os
@@ -20,6 +22,12 @@ import subprocess
 import sys
 
 HOME = pathlib.Path.home()
+# FOXREACH_PLATFORM (linux or darwin) is for tests, which check each platform's rules on any machine.
+MAC = (os.environ.get("FOXREACH_PLATFORM") or sys.platform) == "darwin"
+# On macOS, profiles live in a folder of Application Support, and every build reads native-messaging
+# manifests from Mozilla's folder there (LibreWolf too: checked with LibreWolf 160).
+SUPPORT = "Library/Application Support"
+MAC_HOSTS = f"{SUPPORT}/Mozilla/NativeMessagingHosts"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -31,6 +39,13 @@ class Kind:
     flatpaks: tuple       # Flatpak application ids
     profile_roots: tuple  # folders holding profiles.ini, relative to the home folder
     host_dirs: tuple      # extra folders read for native-messaging manifests, relative to home
+    mac_roots: tuple = () # on macOS: folders holding profiles.ini, relative to Application Support
+
+    def roots(self, home=HOME):
+        """Folders holding this family's profiles.ini, under home (a Flatpak's own, on Linux)."""
+        if MAC:
+            return [home / SUPPORT / r for r in self.mac_roots]
+        return [home / r for r in self.profile_roots]
 
 
 # Every build reads ~/.mozilla/native-messaging-hosts (toolkit/xre/nsXREDirProvider.cpp hardcodes
@@ -39,20 +54,21 @@ KINDS = (
     Kind("Firefox",
          ("firefox", "firefox-developer-edition", "firefox-devedition", "firefox-nightly", "firefox-beta",
           "firefox-esr", "firefox-bin"),
-         ("org.mozilla.firefox",), (".mozilla/firefox", ".config/mozilla/firefox"), ()),
+         ("org.mozilla.firefox",), (".mozilla/firefox", ".config/mozilla/firefox"), (), ("Firefox",)),
     Kind("LibreWolf", ("librewolf", "librewolf-bin"), ("io.gitlab.librewolf-community",),
-         (".librewolf", ".config/librewolf/librewolf"), (".librewolf",)),
-    Kind("Floorp", ("floorp",), ("one.ablaze.floorp",), (".floorp",), ()),
-    Kind("Waterfox", ("waterfox",), ("net.waterfox.waterfox",), (".waterfox",), ()),
-    Kind("Zen", ("zen", "zen-browser", "zen-bin"), ("app.zen_browser.zen",), (".zen",), ()),
+         (".librewolf", ".config/librewolf/librewolf"), (".librewolf",), ("librewolf",)),
+    Kind("Floorp", ("floorp",), ("one.ablaze.floorp",), (".floorp",), (), ("Floorp",)),
+    Kind("Waterfox", ("waterfox",), ("net.waterfox.waterfox",), (".waterfox",), (), ("Waterfox",)),
+    Kind("Zen", ("zen", "zen-browser", "zen-bin"), ("app.zen_browser.zen",), (".zen",), (), ("zen",)),
 )
 APPIMAGE_DIRS = ("AppImages", "Applications", ".local/bin")
+MAC_APP_DIRS = (pathlib.Path("/Applications"), HOME / "Applications")
 
 
 @dataclasses.dataclass(frozen=True)
 class Browser:
     kind: Kind | None  # None: a path we were given and do not recognize
-    packaging: str     # "native", "appimage" or "flatpak"
+    packaging: str     # "native", "appimage", "flatpak", or "app" (a macOS app)
     spec: str          # what --browser takes to name this browser again
 
     @property
@@ -69,10 +85,12 @@ class Browser:
         return HOME / ".var/app" / self.app_id if self.app_id else HOME
 
     def profile_roots(self):
-        return [self.home / r for r in (self.kind.profile_roots if self.kind else ())]
+        return self.kind.roots(self.home) if self.kind else []
 
     def host_dirs(self):
         """Folders where this build looks for native-messaging manifests."""
+        if MAC:
+            return [HOME / MAC_HOSTS]
         extra = self.kind.host_dirs if self.kind else ()
         return [self.home / d / "native-messaging-hosts" for d in (".mozilla", *extra)]
 
@@ -100,11 +118,39 @@ class Browser:
         return pathlib.Path(os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}") / "foxreach"
 
 
+def mac_pids(profile):
+    """The processes of macOS apps running this profile, of this user. A macOS build may relaunch
+    itself (on the first start with a new add-on, say): the new process belongs to launchd, not to
+    whoever started the browser, and finds its profile in XRE_PROFILE_PATH rather than its
+    arguments. So an app's executable is matched by the profile it runs, as ps shows it with the
+    environment (-E)."""
+    out = subprocess.run(["ps", "-E", "-x", "-o", "pid=,command="], capture_output=True, text=True).stdout
+    marks = (f"XRE_PROFILE_PATH={profile} ", f"-profile {profile} ")
+    pids = []
+    for line in out.splitlines():
+        pid, _, command = line.strip().partition(" ")
+        if not pid.isdigit() or int(pid) == os.getpid() or ".app/Contents/MacOS/" not in command.split(" -", 1)[0]:
+            continue
+        if any(m in f"{command} " for m in marks):
+            pids.append(int(pid))
+    return pids
+
+
 def kind_of(name):
     """The family whose command name this file name carries, longest name first."""
     name = name.lower()
     pairs = sorted(((c, k) for k in KINDS for c in k.commands), key=lambda p: -len(p[0]))
     return next((k for c, k in pairs if name == c or name.startswith((c + ".", c + "-", c + "_"))), None)
+
+
+def mac_app(path):
+    """The executable of a macOS app bundle and its family, or None if it is not a known browser."""
+    folder = path / "Contents/MacOS"
+    for exe in sorted(folder.iterdir()) if folder.is_dir() else ():
+        kind = kind_of(exe.name)
+        if kind and exe.is_file() and os.access(exe, os.X_OK):
+            return kind, exe
+    return None
 
 
 def flatpak_ids():
@@ -129,7 +175,11 @@ def find():
             path = shutil.which(command)
             if path:
                 add(kind, "appimage" if path.lower().endswith(".appimage") else "native", path)
-    for folder in APPIMAGE_DIRS:
+    for folder in MAC_APP_DIRS if MAC else ():
+        for path in sorted(folder.glob("*.app")):
+            if found_app := mac_app(path):
+                add(found_app[0], "app", found_app[1])
+    for folder in () if MAC else APPIMAGE_DIRS:
         for path in sorted((HOME / folder).glob("*")):
             if path.name.lower().endswith(".appimage") and path.is_file() and kind_of(path.name):
                 add(kind_of(path.name), "appimage", path)
@@ -149,11 +199,14 @@ def resolve(spec):
         if app not in flatpak_ids():
             raise SystemExit(f"No Flatpak {app} is installed.")
         return Browser(next((k for k in KINDS if app in k.flatpaks), None), "flatpak", spec)
+    if MAC and spec.rstrip("/").endswith(".app") and (found_app := mac_app(pathlib.Path(spec).expanduser())):
+        return Browser(found_app[0], "app", str(found_app[1]))
     path = shutil.which(os.path.expanduser(spec))
     if not path:
         raise SystemExit(f"No browser at {spec}: not a file that can be run, and not a command on PATH.")
     path = os.path.abspath(path)
-    return Browser(kind_of(os.path.basename(path)), "appimage" if path.lower().endswith(".appimage") else "native", path)
+    packaging = "app" if ".app/Contents/MacOS/" in path else "appimage" if path.lower().endswith(".appimage") else "native"
+    return Browser(kind_of(os.path.basename(path)), packaging, path)
 
 
 def choose(spec=None, profile=None):

@@ -59,7 +59,14 @@ def main():
         check("a file in a hidden folder is not uploaded", "refuses hidden" in upload(str(work / ".ssh/id_ed25519")))
         check("a hidden file is not uploaded", "refuses hidden" in upload(str(work / ".env")))
         check("a link to a hidden file is not uploaded", "refuses hidden" in upload(str(work / "link.txt")))
-        check("/proc is not uploaded", "does not read /proc" in upload("/proc/self/environ"), upload("/proc/self/environ"))
+        if sys.platform == "darwin":
+            # ~/Library holds on macOS what hidden folders hold on Linux: keychains, cookies, settings.
+            library = pathlib.Path.home() / "Library/Preferences/.GlobalPreferences.plist"
+            visible = next((p for p in (pathlib.Path.home() / "Library/Preferences").glob("[!.]*.plist")), library)
+            check("a file in ~/Library is not uploaded", "refuses files in ~/Library" in upload(str(visible)), upload(str(visible)))
+            check("...whatever the case of its path", "refuses files in ~/Library" in upload(str(visible).replace("/Library/", "/library/")))
+        else:
+            check("/proc is not uploaded", "does not read /proc" in upload("/proc/self/environ"), upload("/proc/self/environ"))
         check("a folder or device is not uploaded", "Not a regular file" in upload(str(work)), upload(str(work)))
         check("a relative path is refused", "absolute path" in upload("notes.txt"))
         out = upload(str(work / "notes.txt"))

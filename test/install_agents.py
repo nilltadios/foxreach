@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# /// script
+# dependencies = ["pyyaml"]
+# ///
 """`foxreach install` adds the MCP server to each agent's settings, and `uninstall` takes it out.
 
 Run:      uv run --python 3.15 test/install_agents.py
@@ -19,6 +22,10 @@ import tempfile
 import tomllib
 
 import yaml
+
+# Claude desktop keeps its settings in Application Support on macOS.
+CLAUDE_DESKTOP = ("Library/Application Support/Claude/claude_desktop_config.json" if sys.platform == "darwin"
+                  else ".config/Claude/claude_desktop_config.json")
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 BUN = shutil.which("bun") or str(pathlib.Path.home() / ".bun/bin/bun")
@@ -43,7 +50,7 @@ def seed(home):
     """Settings as agents leave them, each with something that must be kept."""
     files = {
         ".claude.json": json.dumps({"numStartups": 12, "mcpServers": {"other": {"command": "x"}}, "projects": {}}, indent=2),
-        ".config/Claude/claude_desktop_config.json": json.dumps({"preferences": {"theme": "dark"}}, indent=2),
+        CLAUDE_DESKTOP: json.dumps({"preferences": {"theme": "dark"}}, indent=2),
         ".codex/config.toml": '\n'.join([
             'model = "gpt-5"',
             "",
@@ -86,7 +93,7 @@ def entries(home):
     """foxreach's entry in each agent's settings, as that agent would read it."""
     out = {}
     out["claude-code"] = json.loads((home / ".claude.json").read_text()).get("mcpServers", {}).get("foxreach")
-    out["claude-desktop"] = json.loads((home / ".config/Claude/claude_desktop_config.json").read_text()).get("mcpServers", {}).get("foxreach")
+    out["claude-desktop"] = json.loads((home / CLAUDE_DESKTOP).read_text()).get("mcpServers", {}).get("foxreach")
     out["codex"] = tomllib.loads((home / ".codex/config.toml").read_text()).get("mcp_servers", {}).get("foxreach")
     f = home / ".gemini/config/mcp_config.json"
     out["antigravity"] = json.loads(f.read_text()).get("mcpServers", {}).get("foxreach") if f.exists() else None
@@ -151,7 +158,7 @@ def main():
         # Everything else in each file is kept.
         cj = json.loads((home / ".claude.json").read_text())
         check("claude-code: other settings and servers kept", cj["numStartups"] == 12 and "other" in cj["mcpServers"] and "projects" in cj)
-        cd = json.loads((home / ".config/Claude/claude_desktop_config.json").read_text())
+        cd = json.loads((home / CLAUDE_DESKTOP).read_text())
         check("claude-desktop: preferences kept", cd["preferences"] == {"theme": "dark"})
         toml = tomllib.loads((home / ".codex/config.toml").read_text())
         check("codex: other tables and keys kept",

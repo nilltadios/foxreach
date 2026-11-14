@@ -5,8 +5,8 @@ const x = { type: "number", description: "X in CSS pixels from the viewport's le
 const y = { type: "number", description: "Y in CSS pixels from the viewport's top edge." };
 const modifiers = {
   type: "array",
-  items: { type: "string", enum: ["ctrl", "shift", "alt", "meta"] },
-  description: "Modifier keys held during the action.",
+  items: { type: "string", enum: ["ctrl", "shift", "alt", "meta", "mod"] },
+  description: "Modifier keys held during the action. mod is Cmd (meta) on macOS and Ctrl elsewhere.",
 };
 
 const tool = (name, description, properties = {}, required = []) => ({
@@ -67,7 +67,8 @@ export const TOOLS = [
     ref: { ...ref, description: "Click this element first." },
     allow_non_text: { type: "boolean", description: "Type even though focus is not on a text field, for keyboard-driven pages. Default false." },
   }, ["tabId", "text"]),
-  tool("press_key", 'Press keys with real events. Space-separated sequence, + for combos: "Enter", "ctrl+a Delete", "shift+Tab". ' +
+  tool("press_key", 'Press keys with real events. Space-separated sequence, + for combos: "Enter", "mod+a Delete", "shift+Tab". ' +
+    "mod is Cmd on macOS and Ctrl elsewhere, for shortcuts such as select all; ctrl is always Control. " +
     "The reply names the focused element. Refuses Delete and Backspace when focus is not on a text field.", {
     tabId,
     keys: { type: "string" },

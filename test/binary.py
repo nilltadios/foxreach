@@ -57,12 +57,15 @@ def main():
         (home / ".librewolf").mkdir(parents=True)
         env = {k: v for k, v in os.environ.items() if k != "XDG_DATA_HOME"} | {"HOME": str(home)}
         out = run("install", "--no-flatpak", env=env)
-        manifests = [home / d / "native-messaging-hosts/foxreach.json" for d in (".mozilla", ".librewolf")]
+        if sys.platform == "darwin":  # every build reads the one folder in Application Support
+            manifests = [home / "Library/Application Support/Mozilla/NativeMessagingHosts/foxreach.json"]
+        else:
+            manifests = [home / d / "native-messaging-hosts/foxreach.json" for d in (".mozilla", ".librewolf")]
         check("install writes a manifest for Firefox and for a fork that is in use", out.returncode == 0 and all(m.exists() for m in manifests), out.stderr)
         manifest = json.loads(manifests[0].read_text())
         wrapper = pathlib.Path(manifest["path"])
         check("the manifest names the add-on and a wrapper that runs this program as the host",
-              manifest["allowed_extensions"] == ["foxreach@foxreach.local"] and f'exec "{program}" host' in wrapper.read_text()
+              manifest["allowed_extensions"] == ["foxreach@foxreach.local"] and f'exec "{program.resolve()}" host' in wrapper.read_text()
               and os.access(wrapper, os.X_OK), wrapper.read_text())
         check("install says how to add it to an agent", f"{program} mcp" in out.stdout, out.stdout)
         refused = run("install", "--browser", "flatpak:org.example.none", env=env | {"PATH": "/nonexistent"})
@@ -73,7 +76,8 @@ def main():
         browser = Browser(ROOT / "dist/foxreach.xpi")
         try:
             # The browser reads native messaging manifests from its home folder: give it the throwaway one.
-            browser.start(marionette=True, env={"HOME": str(home)})
+            # macOS apps find Application Support from CFFIXED_USER_HOME, not HOME.
+            browser.start(marionette=True, env={"HOME": str(home), "CFFIXED_USER_HOME": str(home)})
             browser.install()
             browser.wait_for_socket()
             mcp = McpClient(browser.socket, command=[str(program), "mcp"])
@@ -89,6 +93,10 @@ def main():
 
         out = run("uninstall", env=env)
         check("uninstall removes what install wrote", not any(m.exists() for m in manifests) and not wrapper.exists(), out.stdout)
+        if sys.platform == "darwin":
+            # macOS gives a Downloads folder (the browser made one in the throwaway home) a rule that
+            # forbids deleting it; drop the rules so the folder can be cleaned up.
+            subprocess.run(["chmod", "-RN", str(home)], check=False)
 
     failed = results.count(False)
     print(f"\n{len(results) - failed} passed, {failed} failed")
