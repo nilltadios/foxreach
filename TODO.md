@@ -15,13 +15,13 @@ Open items, newest first. Remove an item when it is done.
      so the browser must be where loosening is approved. Needs an add-on release: settings read and
      change messages in `extension/background.js` (today only the popup changes them, lines ~1220-1295),
      a `foxreach settings` command, then the app's view. The signed build needs Mozilla to sign again.
-   - Text alignment on the Browsers tab (user feedback): the small "· default" next to a profile name
-     and the "AppImage"/"Flatpak" next to a browser name sit higher than the text beside them. Align
-     those rows' contents vertically (`profile_row` name row, the browser heading row in
-     `browsers_tab`, `manager/src/app.rs`), and check the Agents tab for the same.
    - Rebuild the AppImage and Flatpak with the new UI (tabs, search, Test, logos) and recheck both.
-   - AppImage segfault in `wl_proxy_destroy` on a background thread (core dump 2026-11-12 23:24),
-     probably when the window closes: find and fix.
+   - AppImage segfault in `wl_proxy_destroy` (core dump 2026-11-12 23:24, on closing the window):
+     iced-winit's detached Wayland thread dropped its objects while the main thread was already in
+     `exit()`. Closing now ends the process directly (`Message::Quit`, `on_app_exit`,
+     `on_close_requested` in `manager/src/app.rs`, 2026-11-14). Not reproduced either before or after
+     (5 clean closes each, `~/Documents/Claude/2026-11-14/manager-close-crash/close-loop.sh`); the
+     header's own close button path was not exercised on screen.
    - Not yet checked for real: the "Add foxreach?" prompt in Firefox from `foxreach addon install`
      (only the removal is tested, `test/addon_firefox.py`); the AppImage removing itself.
    - `test/signed_firefox.py` stops Firefox Flatpak with SIGTERM to `flatpak run`, which leaves the

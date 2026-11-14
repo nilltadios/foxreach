@@ -153,6 +153,28 @@ fn caption<'a>(text: impl Into<String>) -> Element<'a, Message> {
     widget::text::caption(text.into()).into()
 }
 
+/// A filled dot in the theme's success colour, shown in place of the word "Connected".
+fn connected_dot<'a>(size: f32) -> Element<'a, Message> {
+    widget::container(widget::space().width(Length::Fixed(size)).height(Length::Fixed(size)))
+        .class(cosmic::theme::Container::custom(move |theme| cosmic::iced::widget::container::Style {
+            background: Some(cosmic::iced::Background::Color(theme.cosmic().success_color().into())),
+            border: cosmic::iced::Border { radius: (size / 2.0).into(), ..Default::default() },
+            ..Default::default()
+        }))
+        .into()
+}
+
+/// A caption beside 14 px body or heading text, in a bottom-aligned row, on the same baseline.
+/// cosmic-text centres glyphs in their line, so a baseline sits (line − (ascent − descent) × size) / 2
+/// above the bottom of its text box: 21 px lines at 14 px against 17 px lines at 12 px leave the
+/// caption (4 − 2 × 0.776) / 2 ≈ 1.2 px low (Open Sans: ascent 1.069, descent 0.293). Measured on
+/// screen before this pad: 1 to 1.5 px low.
+fn inline_caption<'a>(text: impl Into<String>) -> Element<'a, Message> {
+    widget::container(widget::text::caption(text.into()))
+        .padding(cosmic::iced::Padding { bottom: 1.2, ..cosmic::iced::Padding::ZERO })
+        .into()
+}
+
 /// Text with a tooltip (file paths and other detail live there, not on the page).
 fn with_tip<'a>(content: impl Into<Element<'a, Message>>, tip: impl Into<String>) -> Element<'a, Message> {
     tooltip(content, widget::text::caption(tip.into()), tooltip::Position::Bottom).into()
@@ -311,11 +333,17 @@ impl App {
         let status: Option<Element<'_, Message>> = match self.tests.get(&Some(a.id.clone())) {
             Some(TestState::Running) => Some(caption("Testing…")),
             Some(TestState::Done(r)) if r.ok => {
-                let mut text = format!("Connected to {}", r.browser.clone().unwrap_or_default());
+                let mut text = r.browser.clone().unwrap_or_default();
                 if r.warning.is_some() {
                     text.push_str(" · versions differ");
                 }
-                Some(with_tip(widget::text::caption(text), r.warning.clone().unwrap_or_else(|| format!("add-on {}", r.addon.clone().unwrap_or_default()))))
+                let line = widget::row::with_capacity(2)
+                    .spacing(spacing.space_xxs)
+                    .align_y(Alignment::Center)
+                    .push(connected_dot(8.0))
+                    .push(widget::text::caption(text));
+                let tip = r.warning.clone().unwrap_or_else(|| format!("add-on {}", r.addon.clone().unwrap_or_default()));
+                Some(with_tip(line, format!("Connected · {tip}")))
             }
             Some(TestState::Done(r)) => Some(with_tip(widget::text::caption("Cannot reach a browser"), r.error.clone().unwrap_or_default())),
             None if a.error.is_some() => Some(with_tip(widget::text::caption("Cannot read its settings"), a.error.clone().unwrap_or_default())),
@@ -364,11 +392,13 @@ impl App {
                 .on_clear(Message::SearchBrowsers(String::new())),
         );
         // Which browser answers right now.
+        let connected = matches!(self.tests.get(&None), Some(TestState::Done(r)) if r.ok);
         let (line, tip, look_name): (String, String, Option<String>) = match self.tests.get(&None) {
             Some(TestState::Running) => (String::from("Checking…"), String::new(), None),
             Some(TestState::Done(r)) if r.ok => {
                 let b = r.browser.clone().unwrap_or_default();
-                (format!("Connected: {b}"), r.warning.clone().unwrap_or_else(|| format!("add-on {}", r.addon.clone().unwrap_or_default())), Some(b))
+                let tip = r.warning.clone().unwrap_or_else(|| format!("add-on {}", r.addon.clone().unwrap_or_default()));
+                (b.clone(), format!("Connected · {tip}"), Some(b))
             }
             Some(TestState::Done(r)) => (String::from("No browser connected"), r.error.clone().unwrap_or_default(), None),
             None => (String::from("Connection not checked"), String::new(), None),
@@ -381,12 +411,17 @@ impl App {
             }
             None => icon::from_name("network-offline-symbolic").size(32).into(),
         };
+        let mut label = widget::row::with_capacity(2).spacing(spacing.space_xs).align_y(Alignment::Center);
+        if connected {
+            label = label.push(connected_dot(10.0));
+        }
+        label = label.push(widget::text::body(line));
         col = col.push(settings::section().add(settings::item_row(vec![
             widget::row::with_capacity(4)
                 .spacing(spacing.space_s)
                 .align_y(Alignment::Center)
                 .push(conn_icon)
-                .push(with_tip(widget::text::body(line), if tip.is_empty() { String::from("Asks the browser through foxreach, without a prompt") } else { tip }))
+                .push(with_tip(label, if tip.is_empty() { String::from("Asks the browser through foxreach, without a prompt") } else { tip }))
                 .push(widget::space().width(Length::Fill))
                 .push(widget::button::standard("Check").on_press_maybe(
                     (!matches!(self.tests.get(&None), Some(TestState::Running)) && self.busy.is_none()).then_some(Message::Test(None)),
@@ -407,14 +442,20 @@ impl App {
             }
             any = true;
             let look = icons::browser(&b.name, &b.spec);
-            let mut head = widget::row::with_capacity(3)
+            // The name and the smaller "AppImage"/"Flatpak" share a bottom edge, so their baselines
+            // line up (centred, the smaller text sits higher); the pair is centred on the icon.
+            let mut title = widget::row::with_capacity(2)
+                .spacing(spacing.space_xs)
+                .align_y(Alignment::End)
+                .push(with_tip(widget::text::heading(b.name.clone()), b.spec.clone()));
+            if !kind.is_empty() {
+                title = title.push(inline_caption(kind));
+            }
+            let head = widget::row::with_capacity(2)
                 .spacing(spacing.space_xs)
                 .align_y(Alignment::Center)
                 .push(icons::view(&look, &b.name, 24))
-                .push(with_tip(widget::text::heading(b.name.clone()), b.spec.clone()));
-            if !kind.is_empty() {
-                head = head.push(caption(kind));
-            }
+                .push(title);
             let mut section = settings::section();
             if let Some(id) = b.spec.strip_prefix("flatpak:")
                 && let Some(f) = status.host.flatpaks.iter().find(|f| f.id == id)
@@ -449,9 +490,13 @@ impl App {
         let act = self.can_act();
         let install = || Message::InstallAddon { spec: b.spec.clone(), profile: p.path.clone() };
         let remove = || Message::RemoveAddon { spec: b.spec.clone(), profile: p.path.clone() };
-        let mut name = widget::row::with_capacity(2).spacing(spacing.space_xxs).push(widget::text::body(p.name.clone()));
+        // Bottom-aligned, so "· default" sits on the name's baseline rather than at the top.
+        let mut name = widget::row::with_capacity(2)
+            .spacing(spacing.space_xxs)
+            .align_y(Alignment::End)
+            .push(widget::text::body(p.name.clone()));
         if p.is_default {
-            name = name.push(caption("· default"));
+            name = name.push(inline_caption("· default"));
         }
         let (state, buttons): (String, Vec<Element<'_, Message>>) = match &p.addon {
             Some(a) if a.full => (format!("Full build {}", a.version.clone().unwrap_or_default()), vec![]),
@@ -674,9 +719,16 @@ impl Application for App {
 
     fn init(core: cosmic::Core, demo: bool) -> (Self, Task<cosmic::Action<Message>>) {
         let mut tabs = segmented_button::SingleSelectModel::default();
-        tabs.insert().text("Agents").icon(icon::from_name("system-users-symbolic")).data(Tab::Agents).activate();
-        tabs.insert().text("Browsers").icon(icon::from_name("internet-web-browser-symbolic")).data(Tab::Browsers);
-        tabs.insert().text("foxreach").icon(logo(16)).data(Tab::Foxreach);
+        let agents = tabs.insert().text("Agents").icon(icon::from_name("system-users-symbolic")).data(Tab::Agents).id();
+        let browsers = tabs.insert().text("Browsers").icon(icon::from_name("internet-web-browser-symbolic")).data(Tab::Browsers).id();
+        let foxreach = tabs.insert().text("foxreach").icon(logo(16)).data(Tab::Foxreach).id();
+        // FOXREACH_MANAGER_TAB=browsers|foxreach opens on that tab: for screenshots and dev.sh, so a
+        // test needs no click on the user's desktop.
+        tabs.activate(match std::env::var("FOXREACH_MANAGER_TAB").as_deref() {
+            Ok("browsers") => browsers,
+            Ok("foxreach") => foxreach,
+            _ => agents,
+        });
         let mut app = App {
             core,
             demo,
@@ -701,6 +753,16 @@ impl Application for App {
             tasks.push(app.set_window_title(String::from("foxreach"), id));
         }
         (app, Task::batch(tasks))
+    }
+
+    /// The header's close button.
+    fn on_app_exit(&mut self) -> Option<Message> {
+        Some(Message::Quit)
+    }
+
+    /// The compositor's close (Alt+F4, the task bar); this app has one window.
+    fn on_close_requested(&self, _id: cosmic::iced::window::Id) -> Option<Message> {
+        Some(Message::Quit)
     }
 
     fn header_end(&self) -> Vec<Element<'_, Message>> {
@@ -911,7 +973,12 @@ impl Application for App {
                 }
                 return Task::batch([toast, self.refresh()]);
             }
-            Message::Quit => return cosmic::iced::exit(),
+            // End the process here, before iced tears the window down. In that teardown iced-winit's
+            // Wayland thread (detached, never joined) drops its objects while the main thread is
+            // already in exit() with the connection gone: a use-after-free that crashed in
+            // wl_proxy_destroy (core dump 2026-11-12 23:24, AppImage, on closing the window). Nothing
+            // here needs a clean shutdown: settings are written as each action finishes.
+            Message::Quit => std::process::exit(0),
         }
         Task::none()
     }
