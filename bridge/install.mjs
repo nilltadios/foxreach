@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { registerAgents, unregisterAgents } from "./agents.mjs";
+import { TOR_PRIVATE_NOTE, TOR_WARNING, torHostDir, torInstalls } from "./tor.mjs";
 
 export const ADDON_ID = "foxreach@foxreach.local";
 const HOST_NAME = "foxreach";
@@ -100,8 +101,22 @@ function installFlatpak(id, home, log) {
 export function install({ browsers = [], flatpaks = true, agents = null, home = os.homedir(), log = console.log } = {}) {
   const command = self();
   const named = browsers.filter((b) => b.startsWith("flatpak:")).map((b) => b.slice(8));
+  const tor = browsers.filter((b) => b.startsWith("tor:")).map((b) => b.slice(4));
+  const unknown = browsers.filter((b) => !b.startsWith("flatpak:") && !b.startsWith("tor:"));
+  if (unknown.length) throw new Error(`--browser takes flatpak:<application id> or tor:<Browser folder>, not ${unknown.join(", ")}`);
+  if (tor.length) {
+    // Tor Browser reads manifests from its own data folder, and only when named (it is not recommended).
+    const wrapper = path.join(dataDir(home), "foxreach-host");
+    writeWrapper(wrapper, command);
+    for (const dir of tor) {
+      if (!torInstalls(home).includes(path.resolve(dir))) throw new Error(`${dir} is not a Tor Browser install of this user.`);
+      log(writeManifest(torHostDir(path.resolve(dir)), wrapper));
+    }
+    log(TOR_WARNING);
+    log(TOR_PRIVATE_NOTE);
+  }
   // Naming browsers limits the work to them; otherwise everything found is prepared.
-  if (!named.length) {
+  if (!named.length && !tor.length) {
     const wrapper = path.join(dataDir(home), "foxreach-host");
     writeWrapper(wrapper, command);
     log(wrapper);
@@ -109,7 +124,7 @@ export function install({ browsers = [], flatpaks = true, agents = null, home = 
       log(writeManifest(path.join(home, d, "native-messaging-hosts"), wrapper));
     }
   }
-  if (flatpaks || named.length) for (const id of flatpakBrowsers(named)) installFlatpak(id, home, log);
+  if ((flatpaks && !tor.length) || named.length) for (const id of flatpakBrowsers(named)) installFlatpak(id, home, log);
   const mcp = mcpCommand();
   log("\nThe browser can now start foxreach.");
   log(`The MCP server's command, for any agent: ${mcp.join(" ")}`);
@@ -138,6 +153,7 @@ export function uninstall({ home = os.homedir(), agents = true, parts = null, lo
   };
   if (want("host")) {
     for (const d of [".mozilla", ...FORK_DIRS]) remove(path.join(home, d, "native-messaging-hosts", `${HOST_NAME}.json`));
+    for (const dir of torInstalls(home)) remove(path.join(torHostDir(dir), `${HOST_NAME}.json`));
     remove(path.join(dataDir(home), "foxreach-host"));
   }
   for (const id of preparedFlatpaks(home)) {
@@ -170,7 +186,8 @@ export function hostStatus({ home = os.homedir() } = {}) {
     const line = fs.readFileSync(wrapper, "utf8").split("\n").find((l) => l.startsWith("exec "));
     runs = line ? line.slice(5).replace(/ host$/, "").replace(/"/g, "") : null;
   }
-  const manifests = [".mozilla", ...FORK_DIRS].map((d) => path.join(home, d, "native-messaging-hosts", `${HOST_NAME}.json`)).filter(exists);
+  const manifests = [...[".mozilla", ...FORK_DIRS].map((d) => path.join(home, d, "native-messaging-hosts")), ...torInstalls(home).map(torHostDir)]
+    .map((d) => path.join(d, `${HOST_NAME}.json`)).filter(exists);
   const listed = flatpak("list", "--app", "--columns=application");
   const installed = listed.error || listed.status !== 0 ? [] : listed.stdout.split(/\s+/).filter((id) => id in FLATPAKS);
   const prepared = preparedFlatpaks(home);

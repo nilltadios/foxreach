@@ -61,6 +61,8 @@ pub fn browser(name: &str, spec: &str) -> Look {
         ("Floorp", _) => (&["one.ablaze.floorp", "floorp"], Some("floorp")),
         ("Waterfox", _) => (&["net.waterfox.waterfox", "waterfox"], None),
         ("Zen", _) => (&["app.zen_browser.zen", "zen-browser", "zen"], Some("zenbrowser")),
+        // torbrowser-launcher installs this icon; Tor Browser itself installs none.
+        ("Tor Browser", _) => (&["org.torproject.torbrowser-launcher", "torbrowser", "tor-browser"], None),
         _ => (&[], None),
     };
     Look { host, bundled }

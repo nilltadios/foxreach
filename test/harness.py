@@ -73,7 +73,8 @@ class Browser:
         approval, as the tests' own agents have nobody to click Allow for them."""
         self.marionette = Marionette()
         self.marionette.command("WebDriver:NewSession", {})
-        addon = self.marionette.command("Addon:Install", {"path": str(self.xpi), "temporary": False})["value"]
+        # Allowed in private windows too: Tor Browser has no other kind, and runs no add-on otherwise.
+        addon = self.marionette.command("Addon:Install", {"path": str(self.xpi), "temporary": False, "allowPrivateBrowsing": True})["value"]
         if not ask_approval:
             self.popup_message({"popup": "setAsk", "value": False})
             # Leave the add-on's page: it closes when the add-on is updated or reloaded.

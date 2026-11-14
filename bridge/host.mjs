@@ -3,6 +3,7 @@
 import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
+import { fixedSocket, register } from "./connected.mjs";
 import { assertPrivate, socketPath } from "./socket.mjs";
 
 // The browser accepts at most 1 MB per message; 300k UTF-16 units cannot exceed that once encoded.
@@ -17,6 +18,37 @@ const debug = (text) => {
 debug(`start, socket ${sock}`);
 const clients = new Map();
 let nextClient = 1;
+
+// The browser profile this host serves: the folder whose .parentlock the browser that started it
+// holds open (the main browser process starts the host). The user can stop agents in one profile,
+// add-on still installed, with a marker file there (`foxreach addon stop`); the host then refuses
+// every agent call. Checked on each call, so it takes effect at once. FOXREACH_HOST_PROFILE: tests.
+const STOP_MARK = "foxreach-agents-stopped";
+function findProfile() {
+  if (process.env.FOXREACH_HOST_PROFILE) return process.env.FOXREACH_HOST_PROFILE;
+  try {
+    for (const fd of fs.readdirSync(`/proc/${process.ppid}/fd`)) {
+      let target;
+      try {
+        target = fs.readlinkSync(`/proc/${process.ppid}/fd/${fd}`);
+      } catch {
+        continue;
+      }
+      if (path.basename(target) === ".parentlock") return path.dirname(target);
+    }
+  } catch {
+    // no /proc (macOS), or the parent is gone
+  }
+  return null;
+}
+let profile = findProfile();
+debug(`profile ${profile}`);
+function agentsStopped() {
+  profile ??= findProfile();
+  return profile !== null && fs.existsSync(path.join(profile, STOP_MARK));
+}
+const STOPPED = "The user stopped agents in this browser profile (foxreach is still installed there). " +
+  "Ask the user to let agents use it again, from the foxreach manager or with: foxreach addon start --profile <folder>.";
 
 function toBrowser(message) {
   const body = Buffer.from(JSON.stringify(message));
@@ -37,6 +69,7 @@ function sendRequest(message) {
 function fromBrowser(message) {
   if (message.hello) {
     hello = message.hello;
+    registration?.update({ addon: String(hello.version ?? "") || null });
     return;
   }
   const split = String(message.id).indexOf(":");
@@ -57,9 +90,11 @@ process.stdin.on("data", (data) => {
 });
 
 let ownsSocket = false;
+let registration = null; // this browser's own socket and info file, when several may serve agents
 
 function shutdown() {
   debug("shutdown");
+  registration?.remove();
   // Only the host that created the socket may remove it: it may be another browser's.
   if (ownsSocket) {
     try {
@@ -92,6 +127,10 @@ function serveClient(conn) {
       // Only a tool call goes on to the add-on. Its other messages (hello, chunk, hostError) are
       // the host's own and must not be forgeable from the socket.
       const { id, client, tool, args } = request ?? {};
+      if (agentsStopped()) {
+        conn.write(`${JSON.stringify({ id, error: STOPPED })}\n`);
+        continue;
+      }
       sendRequest({ id: `${clientId}:${id}`, client: String(client ?? "agent").slice(0, 80), tool: String(tool), args });
     }
   });
@@ -122,18 +161,40 @@ function isAlive(file) {
     toBrowser({ hostError: e.message });
     process.exit(4);
   }
-  if (await isAlive(sock)) {
-    // Another browser profile already serves agents. Staying up would steal its socket.
-    debug("socket busy");
-    toBrowser({ hostError: `Another browser already serves ${sock}.` });
-    process.exit(3);
+  const serve = (file) =>
+    new Promise((resolve) => {
+      const server = net.createServer(serveClient);
+      const oldMask = process.umask(0o177);
+      server.listen(file, () => {
+        process.umask(oldMask);
+        debug(`listening on ${file}`);
+        resolve();
+      });
+    });
+  if (fixedSocket()) {
+    // One fixed socket (FOXREACH_SOCKET): the first browser serves it, others leave it alone.
+    if (await isAlive(sock)) {
+      debug("socket busy");
+      toBrowser({ hostError: `Another browser already serves ${sock}.` });
+      process.exit(3);
+    }
+    fs.rmSync(sock, { force: true });
+    ownsSocket = true;
+    await serve(sock);
+    return;
   }
-  fs.rmSync(sock, { force: true });
-  ownsSocket = true;
-  const server = net.createServer(serveClient);
-  const oldMask = process.umask(0o177);
-  server.listen(sock, () => {
-    process.umask(oldMask);
-    debug("listening");
-  });
+  // Each browser serves agents on its own socket, described in a file beside it, so several
+  // browsers can be connected at once and agents choose (bridge/connected.mjs).
+  registration = register({ profile });
+  await serve(registration.socket);
+  // Agents from before several browsers could connect use browser.sock: serve it too while no
+  // other browser does.
+  let legacy = false;
+  if (!(await isAlive(sock))) {
+    fs.rmSync(sock, { force: true });
+    ownsSocket = true;
+    legacy = true;
+    await serve(sock);
+  }
+  registration.update({ legacy });
 })();

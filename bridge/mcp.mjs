@@ -6,6 +6,7 @@ import net from "node:net";
 import path from "node:path";
 import readline from "node:readline";
 import { notConnectedMessage } from "./browsers.mjs";
+import { connectedBrowsers, describe, fixedSocket, readDefault } from "./connected.mjs";
 import { assertPrivate, socketPath } from "./socket.mjs";
 import { TOOLS } from "./tools.mjs";
 import { updateAdvice } from "./update.mjs";
@@ -29,11 +30,58 @@ const MIME = {
 const SOCKET = socketPath();
 let clientName = "agent";
 let conn = null;
+// The browser this agent works with, when several are connected: {socket, label, by}. "agent" when
+// it chose with browser_select, "default" for the user's default, "auto" when it was the only one.
+let chosen = null;
+
+const label = (b) => `${b.id} (${b.name}${b.profileName ? `, profile ${b.profileName}` : ""})`;
+
+/**
+ * The socket to use. One browser connected: that one. Several: the agent's choice, else the user's
+ * default profile, else the agent must choose (the error lists them). None: the classic socket,
+ * whose error explains what to open.
+ */
+async function target() {
+  if (fixedSocket()) return SOCKET;
+  const list = await connectedBrowsers();
+  if (chosen) {
+    if (list.some((b) => b.socket === chosen.socket)) return chosen.socket;
+    const gone = chosen;
+    chosen = null;
+    if (gone.by === "agent") {
+      throw new Error(`The browser this agent chose, ${gone.label}, is no longer connected.` +
+        (list.length ? ` Connected now:\n${describe(list)}\nChoose one with browser_select.` : ""));
+    }
+  }
+  if (!list.length) return SOCKET;
+  if (list.length === 1) {
+    chosen = { socket: list[0].socket, label: label(list[0]), by: "auto" };
+    return chosen.socket;
+  }
+  const preferred = readDefault();
+  const d = preferred && list.find((b) => b.profile && path.resolve(b.profile) === preferred);
+  if (d) {
+    chosen = { socket: d.socket, label: label(d), by: "default" };
+    return chosen.socket;
+  }
+  const e = new Error(`Several browsers are connected to foxreach:\n${describe(list)}\n` +
+    "Choose the one to work in with browser_select (browser: its id), then call this tool again. " +
+    "If unsure which, ask the user.");
+  e.several = list;
+  throw e;
+}
+
+function useBrowser(b, by) {
+  chosen = { socket: b.socket, label: label(b), by };
+  conn?.destroy(); // the next call connects to the new one
+  conn = null;
+}
 let nextId = 1;
 const waiting = new Map();
 
-function connect() {
-  if (conn) return Promise.resolve(conn);
+async function connect() {
+  if (conn) return conn;
+  const SOCKET = await target();
   return new Promise((resolve, reject) => {
     try {
       // Before trusting whatever listens there with the agent's requests and uploaded files.
@@ -238,12 +286,45 @@ async function sessionWarning() {
   }
 }
 
+/** browsers_list and browser_select: answered here, from the hosts' files. */
+async function browserTool(name, args) {
+  const list = fixedSocket() ? [] : await connectedBrowsers();
+  const text = (t) => ({ content: [{ type: "text", text: t }] });
+  if (name === "browsers_list") {
+    const preferred = readDefault();
+    return text(JSON.stringify({
+      browsers: list.map(({ socket, legacy, ...b }) => ({
+        ...b, chosen: chosen?.socket === socket, default: !!preferred && !!b.profile && path.resolve(b.profile) === preferred,
+      })),
+      note: list.length > 1 ? "Choose with browser_select; the choice lasts for this session." : undefined,
+    }));
+  }
+  const want = String(args.browser ?? "").trim();
+  const b = list.find((x) => x.id === want) ?? list.find((x) => x.profile === want || x.profileName === want);
+  if (!b) {
+    throw new Error(list.length ? `No connected browser "${want}". Connected:\n${describe(list)}`
+      : "No browser is connected to foxreach. Ask the user to open one with the foxreach add-on.");
+  }
+  useBrowser(b, "agent");
+  return text(`This session now works in ${label(b)}. Tabs from another browser are not available here.`);
+}
+
 async function callTool(name, args = {}) {
+  if (name === "browsers_list" || name === "browser_select") return browserTool(name, args);
   if (name === "status") {
-    const status = JSON.parse((await callBrowser("status", {})).text);
+    let status;
+    try {
+      status = JSON.parse((await callBrowser("status", {})).text);
+    } catch (e) {
+      // Several browsers and none chosen yet: say so, with the list, instead of failing.
+      if (!e.several) throw e;
+      const browsers = e.several.map(({ socket, legacy, ...b }) => b);
+      return { content: [{ type: "text", text: JSON.stringify({ bridgeVersion: VERSION, browsers, note: e.message }) }] };
+    }
     versionChecked = true;
     const warning = versionWarning(status.version);
-    const text = JSON.stringify({ ...status, bridgeVersion: VERSION, ...(warning ? { warning } : {}) });
+    const extra = fixedSocket() ? {} : { chosenBrowser: chosen?.label ?? null };
+    const text = JSON.stringify({ ...status, bridgeVersion: VERSION, ...extra, ...(warning ? { warning } : {}) });
     return { content: [{ type: "text", text }] };
   }
   let result;

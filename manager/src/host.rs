@@ -174,6 +174,25 @@ pub fn bundled_program() -> Option<(PathBuf, PathBuf)> {
     }
 }
 
+/// The checkout a plain build was compiled from, run with Bun (or Node): a development build's own
+/// reader, as packaged builds carry a bundled program. None for packaged builds, or when the
+/// folder or a runtime is missing.
+pub fn dev_checkout() -> Option<Vec<String>> {
+    if packaging() != Packaging::Plain {
+        return None;
+    }
+    let cli = Path::new(env!("CARGO_MANIFEST_DIR")).join("../bridge/cli.mjs").canonicalize().ok()?;
+    let runtime = Some(home().join(".bun/bin/bun"))
+        .filter(|p| p.is_file())
+        .or_else(|| on_path("bun"))
+        .or_else(|| on_path("node"))?;
+    Some(vec![runtime.to_string_lossy().into_owned(), cli.to_string_lossy().into_owned()])
+}
+
+fn on_path(cmd: &str) -> Option<PathBuf> {
+    std::env::var_os("PATH").and_then(|p| std::env::split_paths(&p).map(|d| d.join(cmd)).find(|f| f.is_file()))
+}
+
 /// Run foxreach with arguments.
 pub fn foxreach(program: &[String], args: &[&str]) -> Output {
     let mut argv = program.to_vec();
@@ -240,6 +259,24 @@ pub fn install_bundled(host_src: &Path) -> Output {
     Output { ok: true, text: log.join("\n") }
 }
 
+/// Start a browser on a profile and leave it running: detached in its own process group, with the
+/// environment cleaned as for every host command (an AppImage's libraries must not reach it).
+pub fn open_browser(spec: &str, profile: &str) -> Output {
+    use std::os::unix::process::CommandExt;
+    let argv: Vec<String> = match spec.strip_prefix("flatpak:") {
+        Some(id) => ["flatpak", "run", id, "--profile", profile].map(String::from).to_vec(),
+        None => [spec, "--profile", profile].map(String::from).to_vec(),
+    };
+    match host_command(&argv).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).process_group(0).spawn() {
+        Ok(mut child) => {
+            // Reap it when it exits, so it never lingers as a zombie of this app.
+            std::thread::spawn(move || child.wait());
+            Output { ok: true, text: format!("Started {}", argv.join(" ")) }
+        }
+        Err(e) => Output { ok: false, text: format!("Cannot start {}: {e}", argv[0]) },
+    }
+}
+
 /// Move a file to the trash on the host (reversible), as `gio trash` does.
 pub fn trash(path: &Path) -> Output {
     run(&["gio".into(), "trash".into(), path.to_string_lossy().into_owned()])
@@ -274,10 +311,30 @@ pub fn remove_self() -> Output {
 #[serde(rename_all = "camelCase")]
 pub struct Status {
     pub mcp_command: String,
+    /// The foxreach the browsers and agents actually run (absent from programs before 0.3.4).
+    #[serde(default)]
+    pub setup: Option<Setup>,
     pub agents: Vec<Agent>,
     pub host: HostSide,
     #[serde(default)]
     pub browsers: Vec<Browser>,
+    /// The browsers serving agents now (several can be connected at once).
+    #[serde(default)]
+    pub connected: Vec<Connected>,
+    /// The profile agents use when several browsers are connected.
+    #[serde(default)]
+    pub default_browser: Option<String>,
+}
+
+/// A browser connected to foxreach now: `foxreach browsers --json`, `connected` in status.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Connected {
+    pub id: String,
+    pub name: String,
+    pub packaging: String,
+    pub profile: Option<String>,
+    pub profile_name: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -300,6 +357,18 @@ pub struct HostSide {
     pub flatpaks: Vec<FlatpakBrowser>,
 }
 
+/// `setup` in `foxreach status --json`: what the browsers' host and the agents run.
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct Setup {
+    /// "release", "checkout", "other" or "none".
+    pub kind: String,
+    pub root: Option<String>,
+    /// How to run that foxreach's command line.
+    pub command: Option<Vec<String>>,
+    #[serde(default)]
+    pub mixed: bool,
+}
+
 #[derive(Clone, Debug, Deserialize)]
 pub struct FlatpakBrowser {
     pub id: String,
@@ -312,6 +381,18 @@ pub struct Browser {
     pub packaging: String,
     pub spec: String,
     pub profiles: Vec<Profile>,
+    /// Why this browser is not recommended (Tor Browser).
+    #[serde(default)]
+    pub warning: Option<String>,
+    /// A browser foxreach is connected to only by name (Tor Browser): whether it is, and the spec.
+    #[serde(default)]
+    pub connect: Option<ConnectBrowser>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct ConnectBrowser {
+    pub ready: bool,
+    pub spec: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -329,10 +410,21 @@ pub struct Addon {
     pub version: Option<String>,
     pub active: Option<bool>,
     pub full: bool,
+    /// The user stopped agents in this profile; the add-on stays (absent before 0.3.4).
+    #[serde(default)]
+    pub stopped: bool,
 }
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct Latest {
+    pub version: String,
+    /// The full build's latest release (profiles set up from a checkout); absent before 0.3.4.
+    #[serde(default)]
+    pub full: Option<LatestFull>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct LatestFull {
     pub version: String,
 }
 
@@ -345,50 +437,102 @@ pub struct ProgramUpdate {
 /// Everything the window shows, gathered on a thread.
 #[derive(Clone, Debug, Default)]
 pub struct Snapshot {
-    /// The installed program and its version, when it runs.
+    /// The program at ~/.local/bin/foxreach (or FOXREACH_MANAGER_PROGRAM) and its version, when it runs.
     pub installed: Option<(Vec<String>, String)>,
     /// The bundled program: host path and version.
     pub bundled: Option<(PathBuf, String)>,
+    /// The foxreach this computer uses, which the app acts through: the installed program, or the
+    /// checkout the browsers and agents run. None when nothing is set up.
+    pub in_use: Option<InUse>,
+    /// What read the status: the program in use, else the bundled program or this build's checkout.
+    pub reader: Option<Vec<String>>,
+    /// The installed program's version when it is too old for this app (no `status --json`).
+    pub too_old: Option<String>,
     pub status: Option<Status>,
-    /// Why there is no status, or what it came from.
+    /// Why there is no status.
     pub note: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum Source {
+    /// The compiled program.
+    Release,
+    /// A checkout, by folder.
+    Checkout(String),
+}
+
+#[derive(Clone, Debug)]
+pub struct InUse {
+    pub command: Vec<String>,
+    pub version: String,
+    pub source: Source,
+}
+
+fn read_status(program: &[String]) -> Result<Status, String> {
+    let out = foxreach(program, &["status", "--json"]);
+    if !out.ok {
+        return Err(format!("foxreach status --json failed: {}", out.text));
+    }
+    serde_json::from_str::<Status>(&out.text).map_err(|e| format!("foxreach status --json: {e}"))
 }
 
 pub fn snapshot() -> Snapshot {
     let program = program_command();
-    let installed = version_of(&program).map(|v| (program.clone(), v));
+    let mut snap = Snapshot { installed: version_of(&program).map(|v| (program.clone(), v)), ..Default::default() };
     // Run by its host path, like every other command: the host sees an AppImage's mount and a
     // Flatpak's files, and the environment is cleaned the same way.
-    let bundled = bundled_program().and_then(|(host, _)| version_of(&[host.to_string_lossy().into_owned()]).map(|v| (host, v)));
-    let mut snap = Snapshot { installed: installed.clone(), bundled: bundled.clone(), status: None, note: None };
-    // Read with the installed program; without one (or one too old for `status`), with the
-    // bundled one, which only reads.
-    let mut readers: Vec<(Vec<String>, &str)> = Vec::new();
-    if installed.is_some() {
-        readers.push((program, "installed"));
-    }
-    if let Some((host, _)) = &bundled {
-        readers.push((vec![host.to_string_lossy().into_owned()], "bundled"));
-    }
-    for (reader, which) in readers {
-        let out = foxreach(&reader, &["status", "--json"]);
-        match out.ok.then(|| serde_json::from_str::<Status>(&out.text)) {
-            Some(Ok(status)) => {
-                if which == "bundled" {
-                    snap.note = Some(match &installed {
-                        Some((_, v)) => format!("The installed foxreach ({v}) is too old for this app; shown with the bundled one."),
-                        None => String::from("foxreach is not installed yet; shown with the bundled one."),
-                    });
-                }
+    snap.bundled = bundled_program().and_then(|(host, _)| version_of(&[host.to_string_lossy().into_owned()]).map(|v| (host, v)));
+
+    // The installed program, when it is current, is what the app uses and reads with.
+    if let Some((cmd, v)) = snap.installed.clone() {
+        match read_status(&cmd) {
+            Ok(status) => {
+                snap.in_use = Some(InUse { command: cmd.clone(), version: v, source: Source::Release });
+                snap.reader = Some(cmd);
                 snap.status = Some(status);
                 return snap;
             }
-            Some(Err(e)) => snap.note = Some(format!("foxreach status --json: {e}")),
-            None => snap.note = Some(format!("foxreach status --json failed: {}", out.text)),
+            Err(e) => {
+                snap.too_old = Some(v);
+                snap.note = Some(e);
+            }
         }
     }
+    // Otherwise read with what this app carries (the bundled program, or the checkout a development
+    // build came from), then look at what the browsers and agents actually run.
+    let readers = snap.bundled.iter().map(|(p, _)| vec![p.to_string_lossy().into_owned()]).chain(dev_checkout());
+    for reader in readers {
+        let status = match read_status(&reader) {
+            Ok(s) => s,
+            Err(e) => {
+                snap.note = Some(e);
+                continue;
+            }
+        };
+        snap.note = None;
+        snap.reader = Some(reader.clone());
+        let in_use = status.setup.as_ref().filter(|s| s.kind == "checkout" || s.kind == "release").and_then(|setup| {
+            let cmd = setup.command.clone()?;
+            let version = version_of(&cmd)?;
+            let source = match setup.kind.as_str() {
+                "checkout" => Source::Checkout(setup.root.clone().unwrap_or_default()),
+                _ => Source::Release,
+            };
+            Some(InUse { command: cmd, version, source })
+        });
+        // Read again with the foxreach in use, so its MCP command is the one agents are compared with.
+        snap.status = match &in_use {
+            Some(u) if u.command != reader => read_status(&u.command).ok().or(Some(status)),
+            _ => Some(status),
+        };
+        if in_use.is_some() {
+            snap.too_old = None;
+        }
+        snap.in_use = in_use;
+        return snap;
+    }
     if snap.note.is_none() {
-        snap.note = Some(String::from("No foxreach program found, and none is bundled with this build."));
+        snap.note = Some(String::from("This build carries no foxreach to read with, and none is installed."));
     }
     snap
 }
@@ -430,6 +574,12 @@ mod tests {
             {"name":"default","path":"/p","isDefault":true,"inUse":false,"addon":{"version":"0.3.2","active":true,"file":true,"full":false}}]}]}"#;
         let s: Status = serde_json::from_str(text).unwrap();
         assert_eq!(s.agents[0].id, "codex");
+        assert!(s.setup.is_none(), "a program from before setup still parses");
+        let with_setup = text.replacen(r#""agents":"#, r#""setup":{"kind":"checkout","root":"/c","runtime":"/bun","command":["/bun","/c/bridge/cli.mjs"],"from":"browser","mixed":true},"agents":"#, 1);
+        let s: Status = serde_json::from_str(&with_setup).unwrap();
+        let setup = s.setup.unwrap();
+        assert_eq!((setup.kind.as_str(), setup.root.as_deref(), setup.mixed), ("checkout", Some("/c"), true));
+        assert_eq!(setup.command.unwrap(), ["/bun", "/c/bridge/cli.mjs"]);
         assert_eq!(s.browsers[0].profiles[0].addon.as_ref().unwrap().version.as_deref(), Some("0.3.2"));
     }
 }
