@@ -4,6 +4,21 @@ Open items, newest first. Remove an item when it is done.
 
 ## Next
 
+0. **Manager: add-on update issues seen 2026-11-14** (release build of `manager/` from main, Browsers
+   tab; reported by the user with screenshots):
+   - **Firefox Flatpak is not offered an update.** Profile `default-release` shows `0.3.2` (no "Full
+     build", so the signed build) with no Update button, while LibreWolf Flatpak's full build 0.3.2 gets
+     "Update to 0.3.4". Not checked yet; likely cause is that signed 0.3.4 is still waiting for AMO
+     review (item 3), so `docs/updates-signed.json` has nothing newer. If so, the app should say why
+     (for example "0.3.4 waiting for Mozilla's signature") instead of showing nothing.
+   - **Update can be clicked while the browser is open.** The LibreWolf AppImage `default` profile was
+     updated to full build 0.3.4 with LibreWolf running. Earlier the app refused this (the add-on file
+     is replaced on disk, which needs the browser closed); find what changed and restore the guard, or
+     confirm the open-browser path is now meant to work.
+   - **Blank page after the update.** Updating opens `nilltadios.github.io/foxreach/foxreach-0.3.4.xpi`
+     in the browser and the tab stays an empty dark page after the add-on is installed. Close that tab
+     once the install finishes, or install without leaving a visible page.
+
 0. **Manager AppImage and Flatpak in the release.** v0.3.4 (2026-11-14) shipped only the foxreach
    program and the add-on: `.github/workflows/release.yml` builds `scripts/build_binary.py` targets and
    the `.xpi`s, nothing from `manager/`. The packaging works by hand here
