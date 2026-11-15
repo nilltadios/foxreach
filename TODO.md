@@ -20,13 +20,34 @@ Open items, newest first. Remove an item when it is done.
      so the browser must be where loosening is approved. Needs an add-on release: settings read and
      change messages in `extension/background.js` (today only the popup changes them, lines ~1220-1295),
      a `foxreach settings` command, then the app's view. The signed build needs Mozilla to sign again.
-   - Text alignment on the Browsers tab (user feedback): the small "· default" next to a profile name
-     and the "AppImage"/"Flatpak" next to a browser name sit higher than the text beside them. Align
-     those rows' contents vertically (`profile_row` name row, the browser heading row in
-     `browsers_tab`, `manager/src/app.rs`), and check the Agents tab for the same.
+   - Manager reworked 2026-11-14 (uncommitted): it reads with its own foxreach (bundled, or the
+     checkout a development build came from), acts through the foxreach the browsers and agents run
+     (`status --json` `setup`: release program or checkout), Install downloads the release when there
+     is no bundled copy (`foxreach install-program`), a checkout gets "Use the release program", tabs
+     that cannot be read say why with Install. Not yet clicked in the window: Install, the switch
+     dialog. `scripts/browsers.py` (setup scripts) does not see through wrapper scripts as
+     `bridge/addon.mjs` now does. Merging into the `macos` branch will conflict in `bridge/update.mjs`
+     (asset choice) and `test/status_json.py`.
+   - Several browsers at once (2026-11-14, uncommitted): each native host has its own socket and
+     info file in $XDG_RUNTIME_DIR/foxreach (`bridge/connected.mjs`), the first also serves
+     browser.sock for older agents; agents get `browsers_list` / `browser_select` (one browser: used
+     automatically; several: the default from `foxreach browsers default`, else the agent must
+     choose). Tests: `test/multi_browser.py` (two hosts), `test/multi_real.py` (a real browser).
+     Not yet on the `macos` branch (macOS socket folder differs).
+   - Tor Browser done 2026-11-14 (`bridge/tor.mjs`): manifest in its own data folder
+     (`Browser/TorBrowser/Data/Browser/.mozilla/native-messaging-hosts`, found by asking the running
+     browser for XREUserNativeManifests), add-on must be allowed in private windows; all three builds
+     run (`test/browser_compat.py --private`). Offered with a warning, connected only by name. Not
+     yet: torbrowser-launcher's Flatpak; clicking Connect in the manager window.
+   - More browsers still to add: Mullvad Browser (same start-script family as Tor, likely the same
+     data-folder rule; not installed here), IceCat. Helium is Chromium-based (no support).
    - Rebuild the AppImage and Flatpak with the new UI (tabs, search, Test, logos) and recheck both.
-   - AppImage segfault in `wl_proxy_destroy` on a background thread (core dump 2026-11-12 23:24),
-     probably when the window closes: find and fix.
+   - AppImage segfault in `wl_proxy_destroy` (core dump 2026-11-12 23:24, on closing the window):
+     iced-winit's detached Wayland thread dropped its objects while the main thread was already in
+     `exit()`. Closing now ends the process directly (`Message::Quit`, `on_app_exit`,
+     `on_close_requested` in `manager/src/app.rs`, 2026-11-14). Not reproduced either before or after
+     (5 clean closes each, `~/Documents/Claude/2026-11-14/manager-close-crash/close-loop.sh`); the
+     header's own close button path was not exercised on screen.
    - Not yet checked for real: the "Add foxreach?" prompt in Firefox from `foxreach addon install`
      (only the removal is tested, `test/addon_firefox.py`); the AppImage removing itself.
    - `test/signed_firefox.py` stops Firefox Flatpak with SIGTERM to `flatpak run`, which leaves the

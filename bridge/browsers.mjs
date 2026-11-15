@@ -14,6 +14,11 @@ const GECKO = new Map([
   ["mullvadbrowser", "Mullvad Browser"], ["palemoon", "Pale Moon"], ["icecat", "IceCat"],
 ]);
 
+/** The name to show for a browser executable ("librewolf" -> "LibreWolf"), or null. */
+export function browserName(exe) {
+  return GECKO.get(exe) ?? null;
+}
+
 /** Names of the Firefox-based browsers running now, or null where processes cannot be listed. */
 export function runningBrowsers(procRoot = process.env.FOXREACH_PROC || "/proc") {
   if (process.env.FOXREACH_PS || (process.platform === "darwin" && !process.env.FOXREACH_PROC)) return psBrowsers();

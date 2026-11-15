@@ -4,7 +4,8 @@
 
 use std::path::PathBuf;
 
-use crate::host::{Addon, Agent, Browser, FlatpakBrowser, HostSide, Output, Profile, Snapshot, Status, TestResult};
+use crate::host;
+use crate::host::{Addon, Agent, Browser, FlatpakBrowser, HostSide, InUse, Output, Profile, Setup, Snapshot, Source, Status, TestResult};
 
 fn agent(id: &str, name: &str, found: bool, set: bool, command: Option<&str>) -> Agent {
     Agent {
@@ -73,13 +74,18 @@ pub fn snapshot() -> Snapshot {
         path: format!("/home/you/.mozilla/firefox/{name}"),
         is_default: default,
         in_use,
-        addon: addon.map(|(v, full)| Addon { version: Some(v.into()), active: Some(true), full }),
+        addon: addon.map(|(v, full)| Addon { version: Some(v.into()), active: Some(true), full, stopped: false }),
     };
     Snapshot {
         installed: Some((vec![String::from("/home/you/.local/bin/foxreach")], String::from("0.3.3"))),
         bundled: Some((PathBuf::from("/app/share/foxreach-manager/foxreach"), String::from("0.3.3"))),
         status: Some(Status {
             mcp_command: MCP.into(),
+            setup: Some(Setup {
+                kind: String::from("release"),
+                command: Some(vec![String::from("/home/you/.local/bin/foxreach")]),
+                ..Default::default()
+            }),
             agents,
             host: HostSide {
                 wrapper: Some(String::from("/home/you/.local/share/foxreach/foxreach-host")),
@@ -90,28 +96,51 @@ pub fn snapshot() -> Snapshot {
                     FlatpakBrowser { id: String::from("io.gitlab.librewolf-community"), prepared: true },
                 ],
             },
+            connected: vec![host::Connected {
+                id: String::from("librewolf-appimage"),
+                name: String::from("LibreWolf"),
+                packaging: String::from("appimage"),
+                profile: Some(String::from("/home/you/.librewolf/x.default")),
+                profile_name: Some(String::from("default")),
+            }, host::Connected {
+                id: String::from("firefox"),
+                name: String::from("Firefox"),
+                packaging: String::from("native"),
+                profile: Some(String::from("/home/you/.mozilla/firefox/default-release")),
+                profile_name: Some(String::from("default-release")),
+            }],
+            default_browser: Some(String::from("/home/you/.mozilla/firefox/default-release")),
             browsers: vec![
                 Browser {
                     name: String::from("Firefox"),
                     packaging: String::from("native"),
                     spec: String::from("/usr/bin/firefox"),
+                    warning: None,
+                    connect: None,
                     profiles: vec![profile("default-release", true, false, Some(("0.3.0", false))), profile("work", false, false, None)],
                 },
                 Browser {
                     name: String::from("LibreWolf"),
                     packaging: String::from("appimage"),
                     spec: String::from("/home/you/AppImages/librewolf.appimage"),
+                    warning: None,
+                    connect: None,
                     profiles: vec![profile("default", true, true, Some(("0.3.2", true)))],
                 },
                 Browser {
                     name: String::from("Firefox"),
                     packaging: String::from("flatpak"),
                     spec: String::from("flatpak:org.mozilla.firefox"),
+                    warning: None,
+                    connect: None,
                     profiles: vec![profile("flatpak-default", true, false, None)],
                 },
             ],
         }),
         note: None,
+        in_use: Some(InUse { command: vec![String::from("/home/you/.local/bin/foxreach")], version: String::from("0.3.3"), source: Source::Release }),
+        reader: Some(vec![String::from("/home/you/.local/bin/foxreach")]),
+        too_old: None,
     }
 }
 

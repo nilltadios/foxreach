@@ -200,6 +200,15 @@ def t_protocol(mcp):
     check("status says this agent may act (the tests switch asking off)", status.get("agentAccess") == "allowed", status)
     check("status reports matching add-on and bridge versions",
           status["version"] == status.get("bridgeVersion") and "warning" not in status, status)
+    # Stopping agents in this profile: the host finds the profile from the browser that started it.
+    mark = profile_dir / "foxreach-agents-stopped"
+    mark.write_text("x")
+    try:
+        check("a stopped profile: the host refuses agents there, the add-on still installed",
+              expect_error(lambda: mcp.call("tabs_list"), "stopped agents in this browser profile"))
+    finally:
+        mark.unlink()
+    check("...and agents work again once allowed back, with no restart", "tabs" in mcp.call("tabs_list").lower())
 
 
 def t_click_trusted(mcp):
@@ -1218,13 +1227,14 @@ TESTS = {
 }
 
 mcp_socket = None
+profile_dir = None
 
 
 BROWSER_NAME = None  # the browser under test, by the name foxreach's host gives it
 
 
 def main():
-    global mcp_socket, BROWSER_NAME
+    global mcp_socket, BROWSER_NAME, profile_dir
     visible = "--visible" in sys.argv
     only = sys.argv[sys.argv.index("--only") + 1].split(",") if "--only" in sys.argv else None
     subprocess.run(["uv", "run", "--python", "3.15", str(ROOT / "scripts/build_install.py")], check=True, capture_output=True)
@@ -1234,6 +1244,7 @@ def main():
     browser = Browser(ROOT / "dist/foxreach.xpi", headless=not visible)
     mcp_socket = browser.socket
     BROWSER_NAME = browser.browser.name
+    profile_dir = browser.profile
     try:
         browser.start(marionette=True)
         print("installed", browser.install())

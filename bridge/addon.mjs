@@ -12,9 +12,15 @@ import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { TOR_WARNING, torData, torHostDir, torInstalls } from "./tor.mjs";
 
 export const ADDON_ID = "foxreach@foxreach.local";
+// In a profile folder: agents may not use this profile (bridge/host.mjs refuses them); the add-on stays.
+export const STOP_MARK = "foxreach-agents-stopped";
 const UPDATES = process.env.FOXREACH_ADDON_UPDATES || "https://nilltadios.github.io/foxreach/updates-signed.json";
+// The full (unsigned) build's own update list: what its manifest's update_url names, published from
+// the GitHub releases. Profiles set up from a checkout run this build.
+const UPDATES_FULL = process.env.FOXREACH_ADDON_UPDATES_FULL || "https://nilltadios.github.io/foxreach/updates.json";
 // The prefs scripts/setup_profile.py sets so a profile takes the full (unsigned) build.
 const FULL_PREFS = ["extensions.experiments.enabled", "xpinstall.signatures.required"];
 
@@ -58,6 +64,49 @@ function kindOf(fileName) {
   const n = fileName.toLowerCase();
   const pairs = KINDS.flatMap((k) => k.commands.map((c) => [c, k])).sort((a, b) => b[0].length - a[0].length);
   return pairs.find(([c]) => n === c || [".", "-", "_"].some((s) => n.startsWith(c + s)))?.[1] ?? null;
+}
+
+// Programs that hand a link to the default browser instead of being one (a "firefox" shim that runs
+// xdg-open, say). A script that runs one of these is not a browser to set up.
+const OPENERS = /\b(xdg-open|gio open|kde-open\d*|gnome-open|exo-open|sensible-browser|x-www-browser)\b/;
+
+/**
+ * For a launcher on PATH that is a shell script: the browser it starts, when one of its `exec`
+ * lines names an existing browser program or AppImage ({kind, packaging, path}); "opener" when it
+ * passes links to the default browser and starts no browser itself; null for a binary or a script
+ * that says neither (a distribution's own launcher, which is kept as it is).
+ */
+function scriptTarget(file, h) {
+  let head = "";
+  try {
+    const fd = fs.openSync(file, "r");
+    try {
+      const buf = Buffer.alloc(65536);
+      head = buf.subarray(0, fs.readSync(fd, buf, 0, buf.length, 0)).toString("utf8");
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    return null;
+  }
+  if (!head.startsWith("#!")) return null;
+  const code = head.split("\n").map((l) => l.replace(/(^|\s)#.*$/, "").trim()).filter(Boolean);
+  for (const line of code) {
+    const m = /(?:^|[;&|]\s*)exec\s+(?:-\S+\s+)*("[^"]+"|'[^']+'|\S+)/.exec(line);
+    if (!m) continue;
+    const raw = m[1].replace(/^["']|["']$/g, "").replace(/^~(?=\/)/, h).replace(/\$\{?HOME\}?/g, h);
+    if (!path.isAbsolute(raw)) continue;
+    let real;
+    try {
+      real = fs.realpathSync(raw);
+      if (!fs.statSync(real).isFile()) continue;
+    } catch {
+      continue;
+    }
+    const kind = kindOf(path.basename(raw)) ?? kindOf(path.basename(real));
+    if (kind && real !== fs.realpathSync(file)) return { kind, packaging: real.toLowerCase().endsWith(".appimage") ? "appimage" : "native", path: real };
+  }
+  return code.some((l) => OPENERS.test(l)) ? "opener" : null;
 }
 
 function flatpakIds() {
@@ -105,7 +154,13 @@ export function findBrowsers({ h = home() } = {}) {
   for (const kind of KINDS) {
     for (const c of kind.commands) {
       const p = onPath(c);
-      if (p) add(kind, p.toLowerCase().endsWith(".appimage") ? "appimage" : "native", p);
+      if (!p) continue;
+      // A wrapper script counts as the browser it starts (so a wrapper and its AppImage show once);
+      // a shim that only opens links in the default browser is not a browser.
+      const target = scriptTarget(p, h);
+      if (target === "opener") continue;
+      if (target) add(target.kind, target.packaging, target.path);
+      else add(kind, p.toLowerCase().endsWith(".appimage") ? "appimage" : "native", p);
     }
   }
   for (const dir of MAC ? ["/Applications", path.join(h, "Applications")] : []) {
@@ -137,6 +192,12 @@ export function findBrowsers({ h = home() } = {}) {
       }
       if (n.toLowerCase().endsWith(".appimage") && kindOf(n) && file) add(kindOf(n), "appimage", p);
     }
+  }
+  // Tor Browser: by its install folders (its launcher on PATH is not the browser); offered with a
+  // warning, its profiles in its own data folder.
+  for (const dir of torInstalls(h)) {
+    found.push({ name: "Tor Browser", packaging: "tor", spec: path.join(dir, "start-tor-browser"), appId: null, home: h,
+      kind: { name: "Tor Browser", roots: [] }, roots: [torData(dir)], torDir: dir, warning: TOR_WARNING });
   }
   const installed = MAC ? [] : flatpakIds();
   for (const kind of KINDS) for (const id of kind.flatpaks) if (installed.includes(id)) add(kind, "flatpak", `flatpak:${id}`);
@@ -176,7 +237,9 @@ function iniProfiles(root) {
   }
   return out.filter((p) => p.path).map((p) => {
     const full = p.relative ? path.join(root, p.path) : p.path;
-    return { name: p.name || p.path, path: full, isDefault: p.isDefault || defaults.has(p.path) };
+    // [Install...] Default= is the profile the browser starts with; a profile's own Default=1 is the
+    // older profile manager's choice and counts only when no install names one.
+    return { name: p.name || p.path, path: full, isDefault: defaults.size ? defaults.has(p.path) : p.isDefault };
   }).filter((p) => exists(p.path));
 }
 
@@ -195,8 +258,9 @@ export function addonIn(profile) {
     // the browser has not written its list yet
   }
   const file = exists(path.join(profile, "extensions", `${ADDON_ID}.xpi`));
-  if (!version && !file) return null;
-  return { version, active, file, full: hasFullPrefs(profile) };
+  // No file means removed: the browser still lists it until its next start, then drops it.
+  if (!file) return null;
+  return { version, active, file, full: hasFullPrefs(profile), stopped: exists(path.join(profile, STOP_MARK)) };
 }
 
 function hasFullPrefs(profile) {
@@ -248,13 +312,22 @@ export function browserStatus({ h = home() } = {}) {
   const browsers = findBrowsers({ h });
   const placed = new Set();
   const rows = browsers.map((b) => {
-    const profiles = rootsOf(b.kind, b.home).flatMap((r) => iniProfiles(r));
+    // Profiles: a browser's own folders when it has them (Tor Browser), on macOS Application Support;
+    // inside a Flatpak, XDG_CONFIG_HOME is ~/.var/app/<id>/config (no dot), where newer builds keep
+    // the folders that are ~/.config/... outside it (Firefox keeps its profiles in config/mozilla/firefox).
+    const roots = b.appId ? b.kind.roots.flatMap((r) => (r.startsWith(".config/") ? [r, r.slice(1)] : [r])) : b.kind.roots;
+    const profiles = b.roots ? b.roots.flatMap((r) => iniProfiles(r))
+      : MAC ? rootsOf(b.kind, b.home).flatMap((r) => iniProfiles(r))
+      : roots.flatMap((r) => iniProfiles(path.join(b.home, r)));
     for (const [p, spec] of Object.entries(recorded)) {
       if (spec === b.spec && !profiles.some((x) => x.path === p)) profiles.push({ name: path.basename(p), path: p, isDefault: false });
     }
     const seen = new Set();
     return {
       name: b.name, packaging: b.packaging, spec: b.spec,
+      warning: b.warning ?? null,
+      // A browser foxreach must be connected to by name (Tor Browser): whether it is, and how.
+      connect: b.torDir ? { ready: exists(path.join(torHostDir(b.torDir), "foxreach.json")), spec: `tor:${b.torDir}` } : null,
       profiles: profiles.filter((p) => !seen.has(p.path) && seen.add(p.path)).map((p) => {
         placed.add(p.path);
         return { ...p, inUse: inUse(p.path, b.appId), addon: addonIn(p.path) };
@@ -268,15 +341,17 @@ export function browserStatus({ h = home() } = {}) {
   return rows;
 }
 
-/** The newest signed build: {version, link, hash}. */
-export async function latestAddon() {
+/** The newest released build: {version, link, hash}. The signed one, or with full the full one;
+ * both lists come from the GitHub releases, never from a checkout. */
+export async function latestAddon({ full = false } = {}) {
+  const url = full ? UPDATES_FULL : UPDATES;
   let r;
   try {
-    r = await fetch(UPDATES, { redirect: "follow" });
+    r = await fetch(url, { redirect: "follow" });
   } catch (e) {
-    throw new Error(`Cannot reach ${UPDATES}: ${e.message ?? e}`);
+    throw new Error(`Cannot reach ${url}: ${e.message ?? e}`);
   }
-  if (!r.ok) throw new Error(`${UPDATES}: HTTP ${r.status}`);
+  if (!r.ok) throw new Error(`${url}: HTTP ${r.status}`);
   const updates = (await r.json())?.addons?.[ADDON_ID]?.updates ?? [];
   const num = (v) => String(v).split(".").map(Number);
   const newer = (a, b) => {
@@ -285,7 +360,7 @@ export async function latestAddon() {
     return false;
   };
   const best = updates.filter((u) => u.version && u.update_link?.startsWith("https://")).reduce((a, u) => (!a || newer(u, a) ? u : a), null);
-  if (!best) throw new Error(`${UPDATES} lists no signed build.`);
+  if (!best) throw new Error(`${url} lists no build.`);
   return { version: best.version, link: best.update_link, hash: best.update_hash ?? null };
 }
 
@@ -303,18 +378,17 @@ function profileOf(b, profile) {
 }
 
 /**
- * Open the signed add-on in a browser profile: the browser asks the user to add (or update) it.
- * Returns the command started.
+ * Open the latest released add-on in a browser profile: the browser asks the user to add (or update)
+ * it. A profile with the full build gets the full build of the latest release (the signed one would
+ * replace it); any other the signed build. Returns the command started.
  */
 export async function installAddon({ spec, profile, log = console.log }) {
   const b = browserFor(spec);
   const p = profileOf(b, profile);
-  if (p.addon?.full) {
-    throw new Error(`${p.path} has the full foxreach build (set up from a checkout). Update it with scripts/update.py; the signed build would replace it.`);
-  }
-  const latest = await latestAddon();
+  const latest = await latestAddon({ full: !!p.addon?.full });
   const args = ["--profile", p.path, latest.link];
-  const argv = b.appId ? ["flatpak", "run", b.appId, ...args] : [b.spec, ...args];
+  // Tor Browser's start script picks its own profile; it gets the link only.
+  const argv = b.torDir ? [b.spec, latest.link] : b.appId ? ["flatpak", "run", b.appId, ...args] : [b.spec, ...args];
   const env = { ...process.env };
   for (const k of SCRUB) delete env[k];
   const child = spawn(argv[0], argv.slice(1), { env, detached: true, stdio: "ignore" });
@@ -326,6 +400,20 @@ export async function installAddon({ spec, profile, log = console.log }) {
 }
 
 const today = () => new Date().toISOString().slice(0, 10);
+
+/** Stop agents in a profile, add-on kept (on: true), or let them use it again. Works while it is open. */
+export function setAgentsStopped({ profile, on, log = console.log }) {
+  const real = path.resolve(profile);
+  if (!exists(path.join(real, "prefs.js")) && !exists(path.join(real, "times.json"))) throw new Error(`${real} is not a browser profile.`);
+  const mark = path.join(real, STOP_MARK);
+  if (on) {
+    fs.writeFileSync(mark, "Agents may not use this browser profile; foxreach stays installed. Undo: foxreach addon start --profile <this folder>\n");
+    log(`Agents can no longer use ${real}; the add-on stays installed.`);
+  } else {
+    fs.rmSync(mark, { force: true });
+    log(`Agents can use ${real} again.`);
+  }
+}
 
 /** Remove the add-on from a closed profile; for a full-build profile, also the prefs setup set. */
 export function removeAddon({ profile, spec = null, log = console.log }) {

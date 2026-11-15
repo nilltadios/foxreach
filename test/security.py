@@ -36,8 +36,10 @@ def error_of(fn):
         return str(e)
 
 
-def start_host(sock, log=None):
+def start_host(sock, log=None, profile=None):
     env = dict(os.environ, FOXREACH_SOCKET=str(sock))
+    if profile:
+        env["FOXREACH_HOST_PROFILE"] = str(profile)
     return subprocess.Popen([RUNTIME, str(ROOT / "bridge/host.mjs")], env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
 
 
@@ -248,6 +250,32 @@ def main():
         check("the host survives a line that is not JSON", host.poll() is None)
         check("only a tool call is passed on: no forged host messages",
               set(passed) == {"id", "client", "tool", "args"} and passed["tool"] == "status" and len(passed["client"]) == 80, passed)
+        client.close()
+        host.stdin.close()
+        host.wait(timeout=10)
+
+        # A profile where the user stopped agents: the host answers them itself, the add-on hears nothing.
+        prof = work / "profile"
+        prof.mkdir()
+        (prof / "foxreach-agents-stopped").write_text("x")
+        sock2 = private / "s2.sock"
+        host = start_host(sock2, profile=prof)
+        deadline = time.time() + 10
+        while not sock2.exists() and time.time() < deadline:
+            time.sleep(0.05)
+        client = socket.socket(socket.AF_UNIX)
+        client.connect(str(sock2))
+        reader = client.makefile("r")
+        client.sendall(json.dumps({"id": 7, "client": "agent", "tool": "tabs_list", "args": {}}).encode() + b"\n")
+        answer = json.loads(reader.readline())
+        check("in a stopped profile the host refuses agents and says how to undo it",
+              answer.get("id") == 7 and "stopped agents in this browser profile" in answer.get("error", "")
+              and "foxreach addon start" in answer["error"], answer)
+        (prof / "foxreach-agents-stopped").unlink()
+        client.sendall(json.dumps({"id": 8, "client": "agent", "tool": "tabs_list", "args": {}}).encode() + b"\n")
+        passed = from_host(host)
+        check("...and passes calls on again at once when they are allowed back", passed.get("tool") == "tabs_list"
+              and passed.get("id", "").endswith(":8"), passed)
         client.close()
         host.stdin.close()
         host.wait(timeout=10)

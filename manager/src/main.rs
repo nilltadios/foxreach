@@ -50,6 +50,13 @@ fn check() -> i32 {
         Some((p, v)) => println!("bundled: foxreach {v} ({})", p.display()),
         None => println!("bundled: none"),
     }
+    match &snap.in_use {
+        Some(u) => println!("in use: foxreach {} ({:?}: {})", u.version, u.source, u.command.join(" ")),
+        None => println!("in use: none"),
+    }
+    if let Some(r) = &snap.reader {
+        println!("read with: {}", r.join(" "));
+    }
     if let Some(note) = &snap.note {
         println!("note: {note}");
     }
@@ -79,11 +86,17 @@ fn main() -> cosmic::iced::Result {
         Some("--check") => std::process::exit(check()),
         // Install the bundled program as the Install button does, without a window.
         Some("--install-program") => {
-            let Some((src, _)) = host::bundled_program() else {
-                eprintln!("This build carries no foxreach program.");
-                std::process::exit(1);
+            let out = match host::bundled_program() {
+                Some((src, _)) => host::install_bundled(&src),
+                // No bundled copy: download the release through the foxreach this build reads with.
+                None => match host::snapshot().reader {
+                    Some(reader) => host::foxreach(&reader, &["install-program"]),
+                    None => {
+                        eprintln!("This build carries no foxreach program and has none to download it with.");
+                        std::process::exit(1);
+                    }
+                },
             };
-            let out = host::install_bundled(&src);
             println!("{}", out.text);
             std::process::exit(if out.ok { 0 } else { 1 });
         }
@@ -95,9 +108,8 @@ fn main() -> cosmic::iced::Result {
                 std::process::exit(2);
             };
             let snap = host::snapshot();
-            // The same choice as the window: the installed program when current, else the bundled one.
-            let program = snap.installed.filter(|_| snap.note.is_none()).map(|(p, _)| p)
-                .or_else(|| snap.bundled.map(|(p, _)| vec![p.to_string_lossy().into_owned()]));
+            // The same choice as the window: the foxreach in use, else the one that read the status.
+            let program = snap.in_use.map(|u| u.command).or(snap.reader);
             let (out, _) = app::remove_parts(program, parts);
             println!("{}", out.text);
             std::process::exit(if out.ok { 0 } else { 1 });

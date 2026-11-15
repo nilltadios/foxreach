@@ -1281,6 +1281,43 @@ function connectHost() {
   send({ hello: { version: VERSION, trustedInput: trusted, wantsHostInfo: true } });
 }
 
+/* ---------- after install ---------- */
+
+// Installed or updated from the release link, the browser leaves the tab that showed the .xpi
+// behind, blank. Turn that tab into a short page saying foxreach is ready (welcome/welcome.html).
+const RELEASE_FILES = ["*://nilltadios.github.io/foxreach/*.xpi", "*://github.com/nilltadios/foxreach/releases/*"];
+// Decided by version rather than by the install event alone: allowing the add-on in private
+// windows (the box in the install prompt; Tor Browser needs it) restarts it at once, and an event
+// or a timer from before the restart is lost. A version not welcomed yet is welcomed once.
+browser.runtime.onInstalled.addListener(({ reason }) => {
+  if (reason === "install" || reason === "update") setTimeout(welcomeTab, 1000);
+});
+
+/** Turn the leftover release tab into the welcome page, once per version. */
+let welcoming = false;
+async function welcomeTab() {
+  if (welcoming) return;
+  const { version } = browser.runtime.getManifest();
+  const { welcomed } = await browser.storage.local.get("welcomed");
+  if (welcomed === version) return;
+  welcoming = true;
+  const url = browser.runtime.getURL(`welcome/welcome.html${welcomed ? "?update" : ""}`);
+  // The tab may not be listed at once: look for a few seconds, then stop either way.
+  try {
+    for (let i = 0; i < 10; i++) {
+      const tabs = await browser.tabs.query({ url: RELEASE_FILES }).catch(() => []);
+      if (tabs.length) {
+        for (const t of tabs) browser.tabs.update(t.id, { url }).catch((e) => console.warn("foxreach: welcome page", e));
+        return;
+      }
+      await sleep(500);
+    }
+  } finally {
+    welcoming = false;
+    await browser.storage.local.set({ welcomed: version });
+  }
+}
+
 /* ---------- popup ---------- */
 
 async function popupState() {
@@ -1433,4 +1470,5 @@ browser.webRequest.onErrorOccurred.addListener((d) => {
   settings.siteAccess ??= (await browserGrants("*")) ? "all" : "listed";
   updateBadge();
   connectHost();
+  setTimeout(welcomeTab, 1000); // a new version, also after a restart that cut the install event short
 })();

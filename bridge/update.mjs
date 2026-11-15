@@ -7,6 +7,7 @@
 import { spawnSync } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { compiled } from "./install.mjs";
 import { VERSION } from "./version.mjs";
@@ -60,6 +61,14 @@ export function compareVersions(a, b) {
 
 async function download(name) {
   const url = `${RELEASES}/${name}`;
+  // A local release folder (tests, an offline mirror): Node's fetch does not read file: URLs.
+  if (url.startsWith("file:")) {
+    try {
+      return fs.readFileSync(new URL(url));
+    } catch (e) {
+      throw new Error(`Cannot read ${url}: ${e.message ?? e}`);
+    }
+  }
   let r;
   try {
     r = await fetch(url, { redirect: "follow" });
@@ -68,6 +77,57 @@ async function download(name) {
   }
   if (!r.ok) throw new Error(`${url}: HTTP ${r.status}`);
   return Buffer.from(await r.arrayBuffer());
+}
+
+/** The release file for this machine and SHA256SUMS, checked against each other. */
+async function verifiedAsset(asset) {
+  const [file, sums] = await Promise.all([download(asset), download("SHA256SUMS")]);
+  const want = sums.toString("utf8").split("\n").map((l) => l.trim().split(/\s+/)).find((p) => p[1] === asset)?.[0];
+  const got = crypto.createHash("sha256").update(file).digest("hex");
+  if (!want || want !== got) {
+    throw new Error(`Checksum mismatch for ${asset}: expected ${want ?? "nothing listed"}, got ${got}. Nothing was changed.`);
+  }
+  return file;
+}
+
+/** Where `foxreach install-program` puts the program, as install.sh does. */
+export function programPath() {
+  return path.join(process.env.FOXREACH_BIN_DIR || path.join(os.homedir(), ".local/bin"), "foxreach");
+}
+
+/**
+ * `foxreach install-program`: put the latest release at `to` (default ~/.local/bin/foxreach), as
+ * install.sh does: same file, same checksum check, the old file kept as <to>.previous. Works from a
+ * checkout too, so the manager can install the program without a bundled copy. Registers nothing:
+ * the new program's own `install` does that.
+ */
+export async function installProgram({ to = programPath(), log = console.log } = {}) {
+  const asset = assetName();
+  if (!asset) throw new Error(`No foxreach build for ${process.platform} on ${process.arch}.`);
+  const latest = await latestVersion();
+  log(`Downloading foxreach ${latest} (${asset}) from ${RELEASES}`);
+  const file = await verifiedAsset(asset);
+  const dir = path.dirname(to);
+  fs.mkdirSync(dir, { recursive: true });
+  const fresh = path.join(dir, `.foxreach-install-${process.pid}`);
+  try {
+    fs.writeFileSync(fresh, file, { mode: 0o755 });
+    fs.chmodSync(fresh, 0o755);
+    signForMac(fresh);
+    const says = spawnSync(fresh, ["version"], { encoding: "utf8", timeout: 30_000 });
+    if (says.status !== 0 || (says.stdout ?? "").trim() !== latest) {
+      throw new Error(`The downloaded program does not run as foxreach ${latest} (it said: ${(says.stdout ?? "").trim() || says.stderr || says.error}). Nothing was changed.`);
+    }
+    if (fs.existsSync(to)) {
+      fs.copyFileSync(to, `${to}.previous`);
+      log(`kept the old program as ${to}.previous`);
+    }
+    fs.renameSync(fresh, to);
+  } finally {
+    fs.rmSync(fresh, { force: true });
+  }
+  log(`installed ${to} (foxreach ${latest})`);
+  return { program: to, version: latest };
 }
 
 async function latestVersion() {
@@ -111,12 +171,7 @@ export async function update({ check = false, force = false, log = console.log }
   }
 
   log(`Downloading foxreach ${latest} (${asset}) from ${RELEASES}`);
-  const [file, sums] = await Promise.all([download(asset), download("SHA256SUMS")]);
-  const want = sums.toString("utf8").split("\n").map((l) => l.trim().split(/\s+/)).find((p) => p[1] === asset)?.[0];
-  const got = crypto.createHash("sha256").update(file).digest("hex");
-  if (!want || want !== got) {
-    throw new Error(`Checksum mismatch for ${asset}: expected ${want ?? "nothing listed"}, got ${got}. Nothing was changed.`);
-  }
+  const file = await verifiedAsset(asset);
 
   // Next to the program, so the final rename replaces it in one step (same filesystem).
   const fresh = path.join(dir, `.foxreach-update-${process.pid}`);

@@ -146,6 +146,23 @@ browser's manifest to `setup_profile.py`:
 takes the entries out. For any other agent, use `~/.bun/bin/bun /path/to/foxreach/bridge/cli.mjs mcp`
 as a stdio MCP server.
 
+### Tor Browser (not recommended)
+
+An add-on that agents drive makes a Tor Browser look and behave unlike other Tor Browsers, which
+can undo the anonymity Tor gives; the Tor Project advises against adding add-ons. foxreach still
+works there if you choose to (tested with Tor Browser 15): it is never set up by default.
+
+- Connect it by name, with its `Browser` folder (`foxreach addon` lists it), or with Connect in the
+  manager app: `foxreach install --browser tor:<path>/tor-browser/Browser --agents none`. Tor
+  Browser reads native-messaging manifests from its own data folder
+  (`Browser/TorBrowser/Data/Browser/.mozilla/native-messaging-hosts`), not from `~/.mozilla`.
+- Install the add-on in it, and when it asks, allow it in private windows: Tor Browser is always
+  in private browsing and runs no add-on that is not allowed there.
+- Found in torbrowser-launcher's folder (`~/.local/share/torbrowser`) and in unpacked downloads
+  named `tor-browser*` in the home folder, Downloads, Applications or `/opt`. The Flatpak of
+  torbrowser-launcher is not supported yet.
+- `foxreach uninstall --part host` removes its manifest too.
+
 ### Flatpak browsers
 
 ```bash
@@ -336,6 +353,16 @@ iCloud Drive), where documents are kept.
 The toolbar button shows the bridge's status and recent agent activity, and it has these controls:
 
 - **Pause** stops all agent access at once.
+- **Several browsers at once:** every browser with the add-on serves agents on its own socket in
+  `$XDG_RUNTIME_DIR/foxreach`. With one connected, agents use it. With several, they use the
+  profile set with `foxreach browsers default --profile <folder>` (or a profile's ⋮ menu in the
+  manager app), or else they must pick one with `browser_select` (ids from `browsers_list` or
+  `foxreach browsers`); the choice lasts for that agent's session.
+- **Stop agents in one profile**, add-on still installed: `foxreach addon stop --profile <folder>`
+  (or the profile's ⋮ menu in the manager app); `foxreach addon start --profile <folder>` undoes
+  it. It leaves a file named `foxreach-agents-stopped` in the profile, and the native host refuses
+  every agent call there at once, even while the browser runs. The host finds its profile from the
+  `.parentlock` file the browser that started it holds open.
 - **Agents:** a program that connects for the first time waits until you answer its request there:
   Allow (until it disconnects), Always (that name, from now on), or Refuse. Its call waits up to a
   minute, then fails and says why. `status` needs no approval; for an agent that would have to
