@@ -10,6 +10,11 @@ How:      two fresh throwaway profiles (inside the Flatpak's own folder, the onl
           automation, no user profile touched.
 Expected: every line PASS, exit 0.
 """
+import os
+if os.name == "nt":
+    raise SystemExit("This test runs on Linux and macOS only: Windows ignores its throwaway HOME, so it "
+                     "would act on the real foxreach setup. The Windows test is test/windows_hosts.py.")
+
 import argparse
 import json
 import pathlib

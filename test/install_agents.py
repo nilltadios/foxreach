@@ -12,6 +12,11 @@ How:      the real `foxreach install`/`uninstall`/`agents` (bun bridge/cli.mjs),
           and a PATH without them), except one check with a stand-in `claude` that only records
           how it was called. No real settings file is read or written.
 """
+import os
+if os.name == "nt":
+    raise SystemExit("This test runs on Linux and macOS only: Windows ignores its throwaway HOME, so it "
+                     "would act on the real foxreach setup. The Windows test is test/windows_hosts.py.")
+
 import json
 import os
 import pathlib

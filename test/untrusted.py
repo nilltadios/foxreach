@@ -4,6 +4,11 @@
 Run: uv run --python 3.15 test/untrusted.py    Expected: all PASS, exit 0.
 Signature checks are off here only because unsigned add-ons need that outside AMO.
 """
+import os
+if os.name == "nt":
+    raise SystemExit("This test runs on Linux and macOS only: Windows ignores its throwaway HOME, so it "
+                     "would act on the real foxreach setup. The Windows test is test/windows_hosts.py.")
+
 import http.server, json, pathlib, subprocess, sys, threading, time, zipfile
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 from harness import ROOT, Browser, McpClient, ToolError

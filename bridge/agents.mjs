@@ -10,24 +10,35 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { WIN, appData, localAppData } from "./win.mjs";
 
 export const NAME = "foxreach";
 
 const exists = (p) => fs.existsSync(p);
 const env = (k) => process.env[k] || "";
 
-function onPath(cmd) {
-  for (const dir of env("PATH").split(":").filter(Boolean)) {
-    const file = path.join(dir, cmd);
-    try {
-      fs.accessSync(file, fs.constants.X_OK);
-      if (fs.statSync(file).isFile()) return file;
-    } catch {
-      // not here
+// Windows: PATH is split on ";" and a command is a file with one of PATHEXT's endings.
+const EXTS = WIN ? ["", ...(env("PATHEXT") || ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean)] : [""];
+
+function onPath(cmd, wanted = () => true) {
+  for (const dir of env(WIN && !process.env.PATH ? "Path" : "PATH").split(path.delimiter).filter(Boolean)) {
+    for (const ext of EXTS) {
+      const file = path.join(dir, cmd + ext);
+      try {
+        fs.accessSync(file, fs.constants.X_OK);
+        if (fs.statSync(file).isFile() && wanted(file)) return file;
+      } catch {
+        // not here
+      }
     }
   }
   return null;
 }
+
+/** A program that can be started without a shell: on Windows the first .exe on PATH (npm's .cmd
+ * shims, often found earlier, need cmd.exe, which would reparse every argument), elsewhere anything
+ * on PATH. */
+const runnable = (cmd) => onPath(cmd, (file) => !WIN || /\.exe$/i.test(file));
 
 /** Agent programs may be run (claude mcp add) unless FOXREACH_AGENT_CLI=0, as in the tests. */
 const cliAllowed = () => env("FOXREACH_AGENT_CLI") !== "0";
@@ -177,9 +188,11 @@ const tomlFormat = {
   },
   remove(file) {
     if (!exists(file)) return null;
-    const { keep, ours } = this.split(fs.readFileSync(file, "utf8"));
+    const text = fs.readFileSync(file, "utf8");
+    const { keep, ours } = this.split(text);
     if (!ours.trim()) return null;
-    return `${keep.replace(/\s*$/, "")}\n`;
+    // The file's own line ending at the end too (CRLF, as Windows editors write).
+    return `${keep.replace(/\s*$/, "")}${text.includes("\r\n") ? "\r\n" : "\n"}`;
   },
   snippet(command) {
     return this.block(command).trim();
@@ -371,6 +384,25 @@ const dshFormat = {
 
 /* ---------- the agents ---------- */
 
+/**
+ * Claude desktop on Windows keeps its settings in %APPDATA%\Claude, except the Microsoft Store
+ * (MSIX) build, whose writes to %APPDATA% land in its package's own folder: that one when it exists.
+ */
+function windowsClaudeDesktop(h) {
+  const packages = path.join(localAppData(h), "Packages");
+  let ids = [];
+  try {
+    ids = fs.readdirSync(packages).filter((n) => /^Claude_[a-z0-9]+$/i.test(n)).sort();
+  } catch {
+    // no Store apps
+  }
+  for (const id of ids) {
+    const dir = path.join(packages, id, "LocalCache", "Roaming", "Claude");
+    if (exists(dir)) return dir;
+  }
+  return path.join(appData(h), "Claude");
+}
+
 const home = () => os.homedir();
 const xdgConfig = (h) => env("XDG_CONFIG_HOME") || path.join(h, ".config");
 
@@ -381,6 +413,7 @@ const xdgConfig = (h) => env("XDG_CONFIG_HOME") || path.join(h, ".config");
 export function agents(h = home()) {
   const claudeDesktop = process.platform === "darwin"
     ? path.join(h, "Library/Application Support/Claude")
+    : WIN ? windowsClaudeDesktop(h)
     : path.join(xdgConfig(h), "Claude");
   const codexHome = env("CODEX_HOME") || path.join(h, ".codex");
   const opencodeDir = path.join(xdgConfig(h), "opencode");
@@ -406,8 +439,10 @@ export function agents(h = home()) {
       detect: () => exists(path.join(h, ".claude.json")) || exists(path.join(h, ".claude")) || !!onPath("claude"),
       also: "also the Code tab of Claude desktop, and T3 Code",
       // Running sessions rewrite ~/.claude.json, so its own command is used when it is installed.
-      cli: (command) => onPath("claude") && cliAllowed()
-        ? { add: ["claude", "mcp", "add", "-s", "user", NAME, "--", ...command], remove: ["claude", "mcp", "remove", "-s", "user", NAME] }
+      // On Windows the .exe's full path (a bare name could start an npm .cmd shim); elsewhere as before.
+      cli: (command) => runnable("claude") && cliAllowed()
+        ? { add: [WIN ? runnable("claude") : "claude", "mcp", "add", "-s", "user", NAME, "--", ...command],
+          remove: [WIN ? runnable("claude") : "claude", "mcp", "remove", "-s", "user", NAME] }
         : null,
     },
     {

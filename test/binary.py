@@ -8,6 +8,11 @@ Needs:    FOXREACH_BROWSER if more than one browser is installed (not a Flatpak)
 Everything is installed under a throwaway home folder, which the test browser is given as its
 own: the real native messaging manifest and the real browser are not touched.
 """
+import os
+if os.name == "nt":
+    raise SystemExit("This test runs on Linux and macOS only: Windows ignores its throwaway HOME, so it "
+                     "would act on the real foxreach setup. The Windows test is test/windows_hosts.py.")
+
 import http.server
 import json
 import os

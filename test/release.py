@@ -11,6 +11,11 @@ compare the release's files with a rebuild from the tag. Then it damages the fil
 time and expects verify_release.py to say so. install.sh is run against those files, with a
 throwaway home folder.
 """
+import os
+if os.name == "nt":
+    raise SystemExit("This test runs on Linux and macOS only: Windows ignores its throwaway HOME, so it "
+                     "would act on the real foxreach setup. The Windows test is test/windows_hosts.py.")
+
 import json
 import os
 import pathlib
@@ -75,7 +80,8 @@ def main():
         check("release.py prepares the add-on, both programs, the installer and the checksums",
               out.returncode == 0 and names == sorted(["BUILDINFO.txt", "SHA256SUMS", f"foxreach-{ver}.xpi", f"foxreach-{ver}-signed.xpi",
                                                        f"foxreach-{ver}-unsigned.xpi", "foxreach-linux-arm64", "foxreach-linux-x64",
-                                                       "foxreach-darwin-arm64", "foxreach-darwin-x64", "install.sh"]),
+                                                       "foxreach-darwin-arm64", "foxreach-darwin-x64", "foxreach-windows-x64.exe",
+                                                       "foxreach-windows-arm64.exe", "install.sh", "install.ps1"]),
               (names, made.stderr, out.stdout, out.stderr))
         updates = json.loads((repo / "docs/updates.json").read_text())["addons"]["foxreach@foxreach.local"]["updates"]
         signed_updates = json.loads((repo / "docs/updates-signed.json").read_text())["addons"]["foxreach@foxreach.local"]["updates"]
@@ -94,7 +100,7 @@ def main():
         verify = lambda: run(*py, "scripts/verify_release.py", ver, "--dir", release, cwd=repo)  # noqa: E731
         ok = verify()
         check("verify_release.py rebuilds the tag and finds every file the same",
-              ok.returncode == 0 and "8 files match" in ok.stdout and "DIFFERS" not in ok.stdout and "skipped" not in ok.stdout, ok.stdout + ok.stderr)
+              ok.returncode == 0 and "11 files match" in ok.stdout and "DIFFERS" not in ok.stdout and "skipped" not in ok.stdout, ok.stdout + ok.stderr)
         again = run(*py, "scripts/release.py", "--files-only", work / "ci", cwd=repo)
         check("a second build elsewhere, as the release workflow does it, gives the same checksums",
               again.returncode == 0 and (work / "ci/SHA256SUMS").read_text() == (release / "SHA256SUMS").read_text(), again.stderr)

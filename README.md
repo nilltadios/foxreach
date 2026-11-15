@@ -8,6 +8,8 @@ agent ── stdio MCP ── foxreach mcp ── private Unix socket ── fox
 (one server per agent)                (mode 0600)            (started by the browser)
 ```
 
+(On Windows, a named pipe that proves itself with a private token: see [Windows](#windows).)
+
 There are two builds of the add-on. Pick by browser:
 
 | Browser | Build | Input |
@@ -22,6 +24,7 @@ browsers that insist on signatures get the build without it.
 ## Install
 
 For any Firefox-based browser on Linux or macOS (x86-64 or arm64). Nothing else is needed: no Bun, no `uv`.
+On Windows, see [Windows](#windows).
 
 1. **The program.** One file, which is the MCP server and the part the browser starts. Download
    [install.sh](install.sh), read it, and run it:
@@ -85,6 +88,76 @@ For any Firefox-based browser on Linux or macOS (x86-64 or arm64). Nothing else 
 The first time an agent calls, the browser asks whether to allow it.
 `foxreach uninstall` removes what `foxreach install` wrote, including the agents' entries
 (`--keep-agents` keeps those).
+
+## Windows
+
+The signed add-on with the `foxreach` program, as above. What has run: Windows 11 (x64), LibreWolf
+with the signed build, foxreach from a checkout (Bun and `bridge\cli.mjs`, see "From a checkout"
+below), and the release program `foxreach-windows-x64.exe` built here: the browser started the
+host, an agent's calls went through it. `install.ps1`, `foxreach update` and `install-program` ran
+against local release folders. Not yet run: a published Windows release, the arm64 build (no arm64
+machine), and Firefox, Floorp, Waterfox and Zen (same registry key and profile layout, found by the
+same code with stand-ins, so expected to work).
+
+1. **The program.** Once a release carries the Windows builds: download [install.ps1](install.ps1),
+   read it, and run it:
+
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File install.ps1
+   ```
+
+   It downloads `foxreach-windows-x64.exe` (or `-arm64.exe`) from the latest release, checks it
+   against `SHA256SUMS`, puts it at `%LOCALAPPDATA%\Programs\foxreach\foxreach.exe`, adds that
+   folder to your PATH, and runs `foxreach install`. Or download the file yourself, rename it
+   `foxreach.exe`, and run `foxreach.exe install`.
+2. **The add-on** and **the agent**: as in [Install](#install). Agents' settings files are the same
+   paths under your user folder (`C:\Users\<you>\.claude.json`, `.codex\config.toml`, ...), except
+   Claude desktop: `%APPDATA%\Claude\claude_desktop_config.json`, or for the Microsoft Store build
+   `%LOCALAPPDATA%\Packages\Claude_<id>\LocalCache\Roaming\Claude\` (where that build's writes to
+   `%APPDATA%` land; not yet confirmed that Claude desktop reads foxreach's entry there).
+   Tor Browser and Mullvad Browser are not set up on Windows. They probably read the same registry
+   key, so once foxreach is installed they could start it too; the host would call them Firefox.
+
+What differs from Linux and macOS:
+
+- **Registration.** Browsers find the host through the registry: `foxreach install` writes the
+  default value of `HKCU\Software\Mozilla\NativeMessagingHosts\foxreach` (every Firefox-based
+  browser reads this key), naming `%LOCALAPPDATA%\foxreach\foxreach.json`, whose `path` is
+  `foxreach.exe` itself. `foxreach uninstall` deletes both.
+- **Named pipes, not a socket.** Each browser's host listens on its own pipe
+  (`\\.\pipe\foxreach-<16 hex digits>`), listed with a random token in
+  `%LOCALAPPDATA%\foxreach\run\browser-<key>.json`, a folder only you can read. Any local user can
+  see pipe names and take one that is free, so there is no fixed pipe, and an agent sends a pipe
+  nothing but a challenge until the pipe proves it holds the token from that private file. A pipe
+  that cannot prove it is not listed, and its stale info file is removed (`test/windows_hosts.py`
+  checks a squatted pipe gets nothing else).
+- **Which profile.** With no `/proc`, the host takes the profile from the browser's command line
+  (`-profile <folder>`, or `-P <name>` looked up in `profiles.ini`), else the one profile of that
+  browser whose `parent.lock` is held. If two are open and neither is named, it cannot tell: it
+  then refuses agents if either was stopped with `foxreach addon stop`.
+- **Files agents may upload or save.** `AppData` (every browser's cookies and saved passwords,
+  apps' settings) is refused, as `~/Library` is on macOS, and so are `\\server\share` paths and
+  device paths outside a drive (`\\.\pipe\...`). A path is resolved first, so `\\?\C:\...` is
+  judged as the plain `C:\...` it names.
+- **Install from a normal terminal.** An app from the Microsoft Store (Claude desktop, for one)
+  runs in a sandbox whose new files in AppData and registry keys only that app sees. `foxreach
+  install` run by an agent inside such an app would register foxreach where no browser looks, so
+  it refuses there and says so; run it from a terminal opened from the Start menu. Agents inside
+  such an app still reach the browser (they see the hosts' info files and pipes).
+- **Smart App Control.** A Windows with Smart App Control on may block unsigned programs that have
+  no reputation yet, and `foxreach.exe` is not signed with a code-signing certificate. On the
+  machine it was tried on, the same build was blocked once ("An Application Control policy has
+  blocked this file") and ran later, and the arm64 build was blocked. Where it is blocked the
+  browser cannot start it either, and `install.ps1` and `foxreach update` stop before replacing
+  anything. Run foxreach from a checkout instead (below); Bun itself is signed.
+- **From a checkout** (`bun bridge\cli.mjs install`): the manifest points at
+  `%LOCALAPPDATA%\foxreach\foxreach-host.bat`, which runs Bun on `bridge\cli.mjs host`. The
+  Python setup scripts for the full build (`scripts/setup_profile.py`, `build_install.py`) and the
+  manager app are not ported to Windows yet, nor Tor Browser.
+- **Updating.** `foxreach update` moves the running program aside to `foxreach.exe.previous`
+  (Windows lets nobody replace a running program) and puts the new one in its place. A
+  `.previous` still in use from an earlier update is kept as `foxreach.exe.previous-<number>`
+  and deleted by a later update once it has closed.
 
 ## Setup from a checkout
 
@@ -462,7 +535,9 @@ Read this before installing into a profile you browse with.
   ([spikes/bidi/FINDINGS.md](spikes/bidi/FINDINGS.md)).
 - **The program** is built for glibc Linux and macOS, on x86-64 and arm64. No packages (deb, rpm,
   dmg) are made.
-- **Linux and macOS only.** Windows is not supported. On macOS: tested with LibreWolf 160.0 on Apple
+- **Windows: the program and the signed build only**, tried with LibreWolf on Windows 11 x64 (see
+  [Windows](#windows)); the full build's setup scripts and the manager app are Linux and macOS
+  only, and an unsigned `foxreach.exe` may not start where Smart App Control is on. On macOS: tested with LibreWolf 160.0 on Apple
   silicon (`setup_profile.py`, `test/e2e.py`, `test/binary.py` and the tests that need no browser);
   the signed build in release Firefox on a Mac, and an Intel Mac, are not yet tested.
 - **Snap browsers** are not handled.

@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { WIN, localAppData } from "./win.mjs";
 
 /**
  * Refuse a socket folder someone else could swap: whoever controls the folder, or one above it,
@@ -9,6 +10,9 @@ import path from "node:path";
  * the root must belong to this user or root, and only a sticky one (/tmp) may be writable by others.
  */
 export function assertPrivate(dir) {
+  // Windows: the folder is in %LOCALAPPDATA%, which only this user (and administrators) may open,
+  // and the endpoints are named pipes, not files in it (see socketPath).
+  if (WIN) return;
   const me = process.getuid();
   for (let d = path.resolve(dir), first = true; ; d = path.dirname(d), first = false) {
     const st = fs.statSync(d);
@@ -33,8 +37,28 @@ function darwinUserCache() {
   return dir && path.isAbsolute(dir) ? dir : null;
 }
 
+/**
+ * Windows: hosts listen on named pipes, not sockets in a private folder. Every local user can list
+ * pipe names and take one that is free, so there is no fixed pipe there (an agent would trust
+ * whoever took it first). Each host gets a pipe of its own, listed with a secret token in a file in
+ * the private folder below, and an agent talks to a pipe only once it has proved it knows that token
+ * (bridge/connected.mjs, bridge/mcp.mjs). socketPath() is null on Windows unless FOXREACH_SOCKET
+ * names one (tests).
+ */
+export const pipeName = (key) => String.raw`\\.\pipe\foxreach-` + key;
+export const PIPE_RE = /^\\\\\.\\pipe\\foxreach-[0-9a-f]{16}$/;
+/** True for any named pipe (\\.\pipe\... or \\?\pipe\...), which is no file to remove. */
+export const isPipe = (p) => /^\\\\[.?]\\pipe\\/i.test(String(p ?? ""));
+
+/** The folder holding each host's info file: the socket's folder, except on Windows. */
+export function runFolder() {
+  if (WIN && !process.env.FOXREACH_SOCKET) return path.join(localAppData(), "foxreach", "run");
+  return path.dirname(socketPath());
+}
+
 export function socketPath() {
   if (process.env.FOXREACH_SOCKET) return process.env.FOXREACH_SOCKET;
+  if (WIN) return null;
   const mac = process.platform === "darwin" ? darwinUserCache() : null;
   if (mac) return path.join(mac, "foxreach", "browser.sock");
   if (process.env.XDG_RUNTIME_DIR) return path.join(process.env.XDG_RUNTIME_DIR, "foxreach", "browser.sock");
