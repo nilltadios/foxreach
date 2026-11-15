@@ -4,6 +4,22 @@ Open items, newest first. Remove an item when it is done.
 
 ## Next
 
+0. **Manager AppImage and Flatpak in the release.** v0.3.4 (2026-11-14) shipped only the foxreach
+   program and the add-on: `.github/workflows/release.yml` builds `scripts/build_binary.py` targets and
+   the `.xpi`s, nothing from `manager/`. The packaging works by hand here
+   (`manager/packaging/container-build.sh` for the AppImage, `manager/flatpak/build.sh` for the
+   Flatpak) but was never wired into CI. To do:
+   - a release job that builds the AppImage in the same container (`manager/packaging/Containerfile`,
+     pinned quick-sharun and uruntime) and attaches `foxreach-manager-<version>-x86_64.AppImage` and
+     its `.sha256` to the release; aarch64 too if the runner allows;
+   - a Flatpak job (flatpak-builder with the vendored cargo sources, offline) that exports a signed
+     repository to GitHub Pages and publishes a `.flatpakref` (needs a GPG key kept as a repository
+     secret), or a bundle `.flatpak` attached to the release as a first step;
+   - one version for the manager and the release (the manager's `Cargo.toml` says 0.1.0 while
+     foxreach is 0.3.4): decide whether it follows foxreach's number;
+   - `scripts/verify_release.py` and `test/release.py` checking the new files the way they check the
+     programs (reproducible builds, hashes in `SHA256SUMS`).
+
 0. **macOS: still to check.** The signed build in release Firefox on a Mac (only LibreWolf's full build
    was tested, 2026-11-13); the Intel build on a real Intel Mac (it ran under Rosetta, after the ad hoc
    signing `install.sh` does); agents other than Claude Code and Claude desktop, whose settings paths
