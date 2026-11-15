@@ -84,14 +84,17 @@ Open items, newest first. Remove an item when it is done.
    The program runs on Linux and macOS (host registration, socket, release builds, `install.sh`,
    `foxreach update`); Windows needs the host registration and agent paths ported first.
 
-3. **addons.mozilla.org listing: awaiting Mozilla's review.** 0.3.1 submitted 2026-11-11; 0.3.3 (same
-   code as 0.3.2, which the unlisted channel took) submitted listed 2026-11-12 so the public page opens
-   on current code. Status and reviewer questions:
+3. **addons.mozilla.org listing: 0.3.4 awaiting Mozilla's review.** One version number for both, so the
+   listing and the GitHub release stay in sync: 0.3.4 was released on GitHub 2026-11-14 without a signed
+   build and submitted listed the same day (AMO disabled the pending 0.3.3 then). Signed installs stay
+   on 0.3.2 until approval. Status and reviewer questions:
    https://addons.mozilla.org/en-US/developers/addon/fe1f53e268044b529443/versions
-   When 0.3.3 is approved, sync GitHub to it: download the signed file from
-   https://addons.mozilla.org/en-US/developers/addon/fe1f53e268044b529443/versions/6701599 to
-   `dist/signed/foxreach-0.3.3-signed.xpi`, run `scripts/release.py`, then commit, tag v0.3.3 and push
-   (ask first), and `release.py --verify` / `verify_release.py 0.3.3`.
+   When 0.3.4 is approved: download the signed file from
+   https://addons.mozilla.org/en-US/developers/addon/fe1f53e268044b529443/versions/6710498 to
+   `dist/signed/foxreach-0.3.4-signed.xpi`, run `scripts/release.py` (it adds the file and its entry in
+   `docs/updates-signed.json`), commit `docs/` and push (ask first), then `release.py --verify`. The
+   release's own files stay as they are; add the signed file to the v0.3.4 release with
+   `gh release upload v0.3.4 docs/foxreach-0.3.4-signed.xpi` if it should be listed there too.
 
 4. **A command line beside the MCP server.** `foxreach call <tool> --tab N [--name AGENT] ...` reusing
    every tool over the same socket: text out, screenshots to files, the agent's name for the approval
