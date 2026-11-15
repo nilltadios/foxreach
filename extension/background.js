@@ -239,10 +239,12 @@ function tabLine(tab) {
 /** A frame keeps its own site: a blocked one stays unreadable inside a page that is allowed. */
 async function assertFrameAllowed(tabId, frameId) {
   if (!frameId) return;
-  const frame = await browser.webNavigation.getFrame({ tabId, frameId }).catch(() => null);
+  const frames = await allFrames(tabId);
+  const frame = frames.find((f) => f.frameId === frameId);
   if (!frame) return;
-  if (hostBlocked(frame.url)) throw new Error("The user has blocked agents on this frame's site.");
-  await assertSiteAllowed(frame.url);
+  const owner = ownerUrl(frames, frame);
+  if (hostBlocked(owner)) throw new Error("The user has blocked agents on this frame's site.");
+  await assertSiteAllowed(owner);
 }
 
 async function accessibleTab(tabId) {
@@ -353,7 +355,8 @@ function updateBadge() {
 
 async function ensureInjected(tabId) {
   try {
-    await browser.tabs.executeScript(tabId, { file: "/content/content.js", allFrames: true, runAt: "document_start" });
+    // matchAboutBlank: a page can write fields into a blank frame of its own, which pictures must check.
+    await browser.tabs.executeScript(tabId, { file: "/content/content.js", allFrames: true, matchAboutBlank: true, runAt: "document_start" });
   } catch (e) {
     const tab = await browser.tabs.get(tabId);
     throw new Error(`Cannot read this page (${tab.url}): ${e.message}`);
@@ -383,6 +386,16 @@ async function allFrames(tabId) {
   return (await browser.webNavigation.getAllFrames({ tabId })) ?? [{ frameId: 0, url: "" }];
 }
 
+/**
+ * The address that decides a frame's site: its own, or for a frame with no site of its own (blank,
+ * srcdoc, data:, blob:, another add-on's) that of the nearest frame above it that has one. A blank
+ * frame is its maker's document: inside a blocked frame it is blocked too.
+ */
+function ownerUrl(frames, f) {
+  for (let steps = 0; f && f.frameId && !isWeb(f.url) && steps < 30; steps++) f = frames.find((p) => p.frameId === f.parentFrameId);
+  return f?.url ?? "";
+}
+
 async function eachFrame(tabId, op, args) {
   await assertNoDialog(tabId);
   await ensureInjected(tabId);
@@ -390,8 +403,9 @@ async function eachFrame(tabId, op, args) {
   frames.sort((a, b) => a.frameId - b.frameId);
   const results = await Promise.all(
     frames.map(async (f) => {
-      if (f.frameId && hostBlocked(f.url)) return { frame: { frameId: f.frameId, url: "blocked site" }, error: "the user has blocked agents on this frame's site" };
-      if (f.frameId && !(await siteAllowed(f.url))) return { frame: f, error: "agents are not allowed on this frame's site" };
+      const owner = ownerUrl(frames, f);
+      if (f.frameId && hostBlocked(owner)) return { frame: { frameId: f.frameId, url: "blocked site" }, error: "the user has blocked agents on this frame's site" };
+      if (f.frameId && !(await siteAllowed(owner))) return { frame: f, error: "agents are not allowed on this frame's site" };
       try {
         const value = await withTimeout(
           browser.tabs.sendMessage(tabId, { foxreachOp: op, args }, { frameId: f.frameId }),
@@ -608,24 +622,112 @@ async function checkUrl(url) {
   return parsed.href;
 }
 
+/** The part two boxes share (empty: width or height 0); a null box is the whole tab. */
+function intersect(a, b) {
+  if (!a) return b;
+  const x = Math.max(a.x, b.x);
+  const y = Math.max(a.y, b.y);
+  return {
+    x, y,
+    width: Math.max(0, Math.min(a.x + a.width, b.x + b.width) - x),
+    height: Math.max(0, Math.min(a.y + a.height, b.y + b.height) - y),
+  };
+}
+
+/**
+ * Where a frame's viewport is in the tab's viewport, without privileged code, or null when any step
+ * cannot tell. Each parent frame's script lists its frame elements, which the browser matches to
+ * frame ids (content.js, childFrames): nothing goes through the page, so it can neither answer for
+ * a frame nor see the question. Every frame on the way must be drawn plainly (not scaled, rotated
+ * or mirrored); with `whole` (covering a frame that could not be checked) the frame itself may be,
+ * and its drawn bounds are used. `size`, the frame's own viewport size when it reported one, must
+ * match the box its parent sees, or the frame's own measurements cannot be trusted.
+ * Gives {x, y, width, height, clip}: the frame's viewport (or bounds) in the tab, and the part of
+ * the tab that the frames around it leave it; {hidden: true} when it is not drawn at all.
+ * `asked` keeps each parent's list for one picture.
+ */
+async function frameOffset(tabId, frameId, frames, { asked = new Map(), whole = false, size = null } = {}) {
+  const call = (id, op, args) => withTimeout(browser.tabs.sendMessage(tabId, { foxreachOp: op, args }, { frameId: id }), CONTENT_TIMEOUT_MS, "frame timed out");
+  const hops = []; // each frame's box in its parent's viewport, innermost first
+  for (let id = frameId, steps = 0; id; steps++) {
+    const frame = frames.find((f) => f.frameId === id);
+    const parent = frame && frames.find((f) => f.frameId === frame.parentFrameId);
+    if (!parent || steps > 20) return null;
+    if (parent.frameId) {
+      const owner = ownerUrl(frames, parent);
+      if (hostBlocked(owner) || !(await siteAllowed(owner))) return null;
+    }
+    if (!asked.has(parent.frameId)) asked.set(parent.frameId, call(parent.frameId, "childFrames", {}).then((r) => r?.frames ?? null, () => null));
+    const at = (await asked.get(parent.frameId))?.find((f) => f.frameId === id);
+    if (!at) return null;
+    if (!at.shown) return { hidden: true }; // display: none, here or above: nothing of it is drawn
+    if (!at.inBounds) return null; // under an SVG filter or a drop-shadow: its pixels can be elsewhere too
+    if (at.plain) {
+      if (!hops.length && size && (Math.abs(at.width - size.width) > 2 || Math.abs(at.height - size.height) > 2)) return null;
+      hops.push(at);
+    } else if (whole && !hops.length) {
+      hops.push(at.bounds); // the frame's drawn bounds hold all of it, whatever the transform
+    } else {
+      return null;
+    }
+    id = parent.frameId;
+  }
+  if (!hops.length) return { x: 0, y: 0, width: null, height: null, clip: null };
+  let x = 0;
+  let y = 0;
+  let clip = null;
+  for (let i = hops.length - 1; i >= 0; i--) {
+    x += hops[i].x;
+    y += hops[i].y;
+    clip = intersect(clip, { x, y, width: hops[i].width, height: hops[i].height });
+  }
+  return { x, y, width: hops[0].width, height: hops[0].height, clip };
+}
+
 /**
  * Filled secret fields (passwords, cards, ID numbers: content.js, secretKind) as boxes in the
- * tab's viewport, for capture to paint over. A field in an iframe is placed through the privileged
- * code; without it, an iframe cannot be placed, so the picture is refused rather than sent.
+ * tab's viewport, for capture to paint over. A field in a frame is placed by asking each frame
+ * above it where its child is (frameOffset), and cut to what those frames show; if it cannot be
+ * placed, the picture is refused rather than sent. A frame that cannot be checked (a site agents
+ * may not use, a blocked one, another add-on's, or one nothing can run in) is covered whole, since
+ * it may hold such a field; one that cannot even be placed refuses the picture too.
  */
 async function secretBoxes(tabId) {
   const results = await eachFrame(tabId, "secretRects", {}).catch(() => []);
   const boxes = [];
-  for (const { frame, value } of results) {
-    for (const r of value?.rects ?? []) {
-      if (!frame.frameId) {
-        boxes.push(r);
-        continue;
-      }
-      const at = trusted ? await privileged(tabId, "viewportPoint", { frameId: frame.frameId, x: r.x, y: r.y }).catch(() => null) : null;
-      if (!at) throw new Error("No picture: a password or another field the user keeps from agents, in a frame, holds a value, and foxreach cannot place it to cover it. Use read_page, or take the picture once the field is cleared or submitted.");
-      boxes.push({ ...r, x: at.x, y: at.y });
+  const frames = await allFrames(tabId);
+  const asked = new Map();
+  const REFUSE = "No picture: a password or another field the user keeps from agents, in a frame, holds a value, and foxreach cannot place it to cover it. Use read_page, or take the picture once the field is cleared or submitted.";
+  // Frames it could not look into. A frame inside one is covered with it.
+  const unchecked = new Set(results.filter((r) => r.frame.frameId && !r.value).map((r) => r.frame.frameId));
+  const byId = new Map(frames.map((f) => [f.frameId, f]));
+  const insideUnchecked = (id) => {
+    for (let f = byId.get(id), steps = 0; f && f.parentFrameId > 0 && steps < 30; f = byId.get(f.parentFrameId), steps++) {
+      if (unchecked.has(f.parentFrameId)) return true;
     }
+    return false;
+  };
+  const add = (b) => {
+    if (b.width > 0 && b.height > 0) boxes.push(b);
+  };
+  for (const id of unchecked) {
+    if (insideUnchecked(id)) continue;
+    const whole = await frameOffset(tabId, id, frames, { asked, whole: true }).catch(() => null);
+    if (!whole) throw new Error("No picture: a frame on this page could not be checked for fields the user keeps from agents (a site agents may not use, another add-on's frame, or one nothing can run in), and foxreach cannot place it to cover it. Use read_page instead.");
+    if (!whole.hidden) add(whole.clip);
+  }
+  for (const { frame, value } of results) {
+    if (frame.frameId && insideUnchecked(frame.frameId)) continue;
+    const rects = value?.rects ?? [];
+    if (!rects.length) continue;
+    if (!frame.frameId) {
+      for (const r of rects) add(r);
+      continue;
+    }
+    const off = await frameOffset(tabId, frame.frameId, frames, { asked, size: value }).catch(() => null);
+    if (!off) throw new Error(REFUSE);
+    if (off.hidden) continue;
+    for (const r of rects) add(intersect(off.clip, { ...r, x: r.x + off.x, y: r.y + off.y }));
   }
   return boxes;
 }
@@ -637,7 +739,11 @@ async function capture(tabId, options) {
     throw new Error("The browser gives pictures of pages only to an add-on that is allowed on every site, and the user has allowed single sites. read_page and find work without pictures; for pictures, ask the user to choose \"Every site\" under the foxreach toolbar button.");
   }
   const boxes = await secretBoxes(tabId);
-  const dataUrl = await browser.tabs.captureTab(tabId, options);
+  // The browser's page zoom scales the picture too: ask for it smaller by as much, so that image
+  // pixels stay viewport coordinates times scale, which is what the boxes and the agents count in.
+  const zoom = await browser.tabs.getZoom(tabId).catch(() => 1);
+  const shot = { ...options, scale: (options?.scale ?? 1) / zoom };
+  const dataUrl = await browser.tabs.captureTab(tabId, shot);
   if (!boxes.length) return dataUrl;
   // options.rect is in document coordinates; the boxes are in the viewport's.
   let left = 0;
@@ -929,7 +1035,10 @@ const TOOLS = {
     await accessibleTab(tabId);
     const parsed = parseRef(ref);
     const p = await contentCall(tabId, parsed.frameId, "scrollTo", { ref: parsed.ref });
-    return { text: `Ref ${ref} is centred at (${Math.round(p.x)}, ${Math.round(p.y)}).` };
+    // A frame's script measures in the frame's own viewport: say where that is in the tab.
+    const off = parsed.frameId ? await frameOffset(tabId, parsed.frameId, await allFrames(tabId), { size: p }).catch(() => null) : { x: 0, y: 0 };
+    if (!off || off.hidden) return { text: `Ref ${ref} is centred at (${Math.round(p.x)}, ${Math.round(p.y)}) in its frame (where the frame is in the tab is not known).` };
+    return { text: `Ref ${ref} is centred at (${Math.round(p.x + off.x)}, ${Math.round(p.y + off.y)}).` };
   },
 
   async form_input({ tabId, ref, value }) {
