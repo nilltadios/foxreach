@@ -9,6 +9,11 @@ Expected: "3 passed, 0 failed", exit 0, on a browser that opens a first-run prom
 While such a prompt is open the browser ignores requests to switch tabs. The other tests switch
 these prompts off (test/harness.py); this one leaves them on.
 """
+import os
+if os.name == "nt":
+    raise SystemExit("This test runs on Linux and macOS only: Windows ignores its throwaway HOME, so it "
+                     "would act on the real foxreach setup. The Windows test is test/windows_hosts.py.")
+
 import re
 import sys
 

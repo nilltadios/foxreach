@@ -8,6 +8,11 @@ The made-up home holds a distro-style command, an AppImage, a Flatpak (through a
 command) and files that are not browsers. Each check runs scripts/ in a fresh process with that
 home, since the scripts read the home folder once, at import.
 """
+import os
+if os.name == "nt":
+    raise SystemExit("This test runs on Linux and macOS only: Windows ignores its throwaway HOME, so it "
+                     "would act on the real foxreach setup. The Windows test is test/windows_hosts.py.")
+
 import json
 import os
 import pathlib

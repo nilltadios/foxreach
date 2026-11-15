@@ -9,6 +9,11 @@ offers a higher version; the browser's own background update check (the daily ti
 it. The served file has the same layout scripts/release.py writes to docs/updates.json. Only
 extensions.checkUpdateSecurity is off here, because the local server is http, not https.
 """
+import os
+if os.name == "nt":
+    raise SystemExit("This test runs on Linux and macOS only: Windows ignores its throwaway HOME, so it "
+                     "would act on the real foxreach setup. The Windows test is test/windows_hosts.py.")
+
 import hashlib
 import http.server
 import json

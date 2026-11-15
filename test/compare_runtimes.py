@@ -4,6 +4,11 @@
 Run:      uv run --python 3.15 test/compare_runtimes.py
 Measures: time from launch to the initialize reply, and PSS once idle, 10 runs each. No browser needed.
 """
+import os
+if os.name == "nt":
+    raise SystemExit("This test runs on Linux and macOS only: Windows ignores its throwaway HOME, so it "
+                     "would act on the real foxreach setup. The Windows test is test/windows_hosts.py.")
+
 import json, os, pathlib, shutil, statistics, subprocess, time
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 SEARCH = f"{pathlib.Path.home()}/.bun/bin:/usr/bin:" + os.environ["PATH"]

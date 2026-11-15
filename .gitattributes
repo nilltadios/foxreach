@@ -1,0 +1,6 @@
+# LF in every checkout, Windows too: the add-on built from a checkout must hold the same bytes
+# as the published one (scripts/release.py), and install.sh must run as checked out.
+* text=auto eol=lf
+*.xpi binary
+*.png binary
+*.ico binary

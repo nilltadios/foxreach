@@ -4,6 +4,7 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { WIN, ancestors, exeBase, runningImages } from "./win.mjs";
 
 // Executable names of Firefox-based browsers, with the name to show. AppImage, Flatpak and distro
 // builds all end in one of these.
@@ -21,6 +22,10 @@ export function browserName(exe) {
 
 /** Names of the Firefox-based browsers running now, or null where processes cannot be listed. */
 export function runningBrowsers(procRoot = process.env.FOXREACH_PROC || "/proc") {
+  if (WIN && !process.env.FOXREACH_PROC && !process.env.FOXREACH_PS) {
+    const images = runningImages();
+    return images ? [...new Set(images.map((n) => GECKO.get(n)).filter(Boolean))].sort() : null;
+  }
   if (process.env.FOXREACH_PS || (process.platform === "darwin" && !process.env.FOXREACH_PROC)) return psBrowsers();
   let entries;
   try {
@@ -46,6 +51,7 @@ export function runningBrowsers(procRoot = process.env.FOXREACH_PROC || "/proc")
  * is the browser: on Linux its executable is in /proc (inside a Flatpak too), on macOS ps names it.
  */
 export function parentApp(pid = process.ppid) {
+  if (WIN) return windowsBrowser()?.name ?? null;
   let exe = "";
   try {
     if (process.platform === "darwin") {
@@ -57,6 +63,19 @@ export function parentApp(pid = process.ppid) {
     return null;
   }
   return GECKO.get(path.basename(exe)) ?? null;
+}
+
+/**
+ * Windows: the browser that started this host, from the process table: the nearest ancestor that is
+ * a Firefox-based browser (the parent, or the parent of the cmd.exe that runs a .bat wrapper).
+ * {name, exe, cmd} or null.
+ */
+export function windowsBrowser() {
+  for (const p of ancestors(process.pid).slice(1)) {
+    const name = GECKO.get(exeBase(p.exe || p.name));
+    if (name) return { name, exe: p.exe, cmd: p.cmd };
+  }
+  return null;
 }
 
 /**

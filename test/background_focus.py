@@ -26,6 +26,11 @@ another app in front:
         uv run --python 3.15 test/background_focus.py
 Expected: PASS on every line and exit 0. Before the fix: value "" and no focus event.
 """
+import os
+if os.name == "nt":
+    raise SystemExit("This test runs on Linux and macOS only: Windows ignores its throwaway HOME, so it "
+                     "would act on the real foxreach setup. The Windows test is test/windows_hosts.py.")
+
 import http.server
 import json
 import pathlib

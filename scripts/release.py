@@ -9,7 +9,7 @@ Makes:    docs/foxreach-<version>.xpi and an entry in docs/updates.json: the ful
             installed copies fetch by themselves (GitHub Pages serves docs/; older entries stay).
           docs/foxreach-<version>-signed.xpi and an entry in docs/updates-signed.json, if
             dist/signed/ holds the signed build of this version.
-          dist/release/: the foxreach program for x64 and arm64, install.sh, the add-ons, SHA256SUMS
+          dist/release/: the foxreach program for x64 and arm64, install.sh, install.ps1, the add-ons, SHA256SUMS
             and BUILDINFO.txt: the same files the release workflow builds and publishes.
 Publish:  this script changes no remote. It prints the commit, tag and push commands; pushing the
           tag makes .github/workflows/release.yml build the same files and publish the release.
@@ -25,6 +25,7 @@ import shutil
 import subprocess
 import sys
 import urllib.request
+import zipfile
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -81,6 +82,12 @@ def commit():
         return "unknown (not built in a git checkout)"
 
 
+def entries(xpi):
+    """An add-on's files and their hashes, whatever the compression."""
+    with zipfile.ZipFile(xpi) as z:
+        return {n: hashlib.sha256(z.read(n)).hexdigest() for n in z.namelist() if not n.endswith("/")}
+
+
 def release_files(ver, out):
     """Everything a release carries, built into out from this folder alone. The release workflow
     and scripts/verify_release.py call this too (--files-only), so all three make the same files."""
@@ -88,7 +95,11 @@ def release_files(ver, out):
     full = build(out / f"foxreach-{ver}.xpi", True)
     published = DOCS / full.name
     if published.exists() and sha256(published) != sha256(full):
-        raise SystemExit(f"{published.relative_to(ROOT)} is not what this source builds: {sha256(published)} there, {sha256(full)} built.")
+        # Another zlib (Python on Windows packs with zlib-ng) compresses the same files differently:
+        # the same entries are the same add-on, and the release carries the published bytes.
+        if entries(published) != entries(full):
+            raise SystemExit(f"{published.relative_to(ROOT)} is not what this source builds: {sha256(published)} there, {sha256(full)} built.")
+        shutil.copyfile(published, full)
     # What Mozilla signed, before signing: the signed file must hold exactly these files and a signature.
     build_store(out / f"foxreach-{ver}-unsigned.xpi", "unlisted")
     signed = DOCS / signed_path(ver).name
@@ -97,11 +108,13 @@ def release_files(ver, out):
     for name, target in build_binary.TARGETS.items():
         build_binary.build(out / name, target)
     shutil.copyfile(ROOT / "install.sh", out / "install.sh")
+    shutil.copyfile(ROOT / "install.ps1", out / "install.ps1")
     names = sorted(p.name for p in out.iterdir() if p.name not in ("SHA256SUMS", "BUILDINFO.txt"))
-    (out / "SHA256SUMS").write_text("".join(f"{sha256(out / n)}  {n}\n" for n in names))
+    # newline="\n": Windows would write CRLF, which sha256sum -c reads as part of each name.
+    (out / "SHA256SUMS").write_text("".join(f"{sha256(out / n)}  {n}\n" for n in names), newline="\n")
     (out / "BUILDINFO.txt").write_text(
         f"foxreach {ver}\ncommit {commit()}\nbun {build_binary.bun_version()}\n"
-        "Rebuild and compare: uv run --python 3.15 scripts/verify_release.py " + ver + "\n")
+        "Rebuild and compare: uv run --python 3.15 scripts/verify_release.py " + ver + "\n", newline="\n")
     return names
 
 

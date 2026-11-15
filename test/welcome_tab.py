@@ -7,6 +7,11 @@ How:      a throwaway headless browser and profile (test/harness.py). A tab on a
           address stands in for the one the browser leaves after installing from the .xpi link;
           then the add-on is installed and the tab is read back.
 """
+import os
+if os.name == "nt":
+    raise SystemExit("This test runs on Linux and macOS only: Windows ignores its throwaway HOME, so it "
+                     "would act on the real foxreach setup. The Windows test is test/windows_hosts.py.")
+
 import base64
 import pathlib
 import sys

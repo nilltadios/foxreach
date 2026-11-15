@@ -9,6 +9,11 @@ How:      a real single-file foxreach (built from this checkout) is installed in
           9.9.9 and records any `install` call. Nothing is downloaded from the internet and no
           real file outside the throwaway folder is touched.
 """
+import os
+if os.name == "nt":
+    raise SystemExit("This test runs on Linux and macOS only: Windows ignores its throwaway HOME, so it "
+                     "would act on the real foxreach setup. The Windows test is test/windows_hosts.py.")
+
 import hashlib
 import http.server
 import json

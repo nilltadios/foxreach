@@ -7,6 +7,11 @@ for a trusted click, so the token in the agent's answer proves the whole path wo
 Run:      uv run --python 3.15 test/real_agents.py [claude] [codex]
 Expected: PASS per agent that is installed and signed in, exit 0. Uses a little of each agent's quota.
 """
+import os
+if os.name == "nt":
+    raise SystemExit("This test runs on Linux and macOS only: Windows ignores its throwaway HOME, so it "
+                     "would act on the real foxreach setup. The Windows test is test/windows_hosts.py.")
+
 import http.server
 import json
 import pathlib

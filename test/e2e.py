@@ -6,6 +6,11 @@ Browser:  FOXREACH_BROWSER (a path or a command), default the only Firefox-based
 Expected: every line PASS, exit 0. The browser is a throwaway instance on a temporary profile;
           it is restarted without Marionette before the tool tests, as in daily use.
 """
+import os
+if os.name == "nt":
+    raise SystemExit("This test runs on Linux and macOS only: Windows ignores its throwaway HOME, so it "
+                     "would act on the real foxreach setup. The Windows test is test/windows_hosts.py.")
+
 import http.server
 import json
 import os

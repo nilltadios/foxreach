@@ -12,6 +12,11 @@ application itself is not started), with a folder shared the same way, and plays
 an agent connecting to the socket from outside, and the browser on the host's stdin and stdout.
 It does not show that a Flatpak browser finds the manifest and starts the host: that needs one.
 """
+import os
+if os.name == "nt":
+    raise SystemExit("This test runs on Linux and macOS only: Windows ignores its throwaway HOME, so it "
+                     "would act on the real foxreach setup. The Windows test is test/windows_hosts.py.")
+
 import json
 import os
 import pathlib

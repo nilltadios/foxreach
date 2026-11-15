@@ -11,14 +11,16 @@ import os from "node:os";
 import path from "node:path";
 import { compiled } from "./install.mjs";
 import { VERSION } from "./version.mjs";
+import { WIN, localAppData } from "./win.mjs";
 
 const RELEASES = process.env.FOXREACH_RELEASE_URL || "https://github.com/nilltadios/foxreach/releases/latest/download";
-const PLATFORMS = { linux: "linux", darwin: "darwin" };
+const PLATFORMS = { linux: "linux", darwin: "darwin", win32: "windows" };
 const ARCHES = { x64: "x64", arm64: "arm64" };
 
 /** The release file built for this machine, or null. */
 export function assetName(platform = process.platform, arch = process.arch) {
-  return PLATFORMS[platform] && ARCHES[arch] ? `foxreach-${PLATFORMS[platform]}-${ARCHES[arch]}` : null;
+  if (!PLATFORMS[platform] || !ARCHES[arch]) return null;
+  return `foxreach-${PLATFORMS[platform]}-${ARCHES[arch]}${platform === "win32" ? ".exe" : ""}`;
 }
 
 /**
@@ -92,7 +94,71 @@ async function verifiedAsset(asset) {
 
 /** Where `foxreach install-program` puts the program, as install.sh does. */
 export function programPath() {
+  // Windows: a per-user program's usual place, %LOCALAPPDATA%\Programs (install.ps1 puts it there).
+  if (WIN) return path.join(process.env.FOXREACH_BIN_DIR || path.join(localAppData(), "Programs", "foxreach"), "foxreach.exe");
   return path.join(process.env.FOXREACH_BIN_DIR || path.join(os.homedir(), ".local/bin"), "foxreach");
+}
+
+/** A new file to download into, beside `target`: Windows runs only files named .exe. */
+const freshName = (dir, what) => path.join(dir, WIN ? `foxreach-${what}-${process.pid}.exe` : `.foxreach-${what}-${process.pid}`);
+
+/**
+ * Put `fresh` at `target`, the old file kept as <target>.previous. Elsewhere a rename replaces a
+ * running program; Windows refuses to replace one, but lets it be renamed aside first.
+ */
+function swapIn(fresh, target, log) {
+  const previous = `${target}.previous`;
+  if (!fs.existsSync(target)) {
+    fs.renameSync(fresh, target);
+    return false;
+  }
+  if (!WIN) {
+    fs.copyFileSync(target, previous);
+    fs.chmodSync(previous, 0o755);
+    fs.renameSync(fresh, target); // a running agent keeps the old file open; new starts get this one
+    return true;
+  }
+  // A program from an earlier update may still run (a browser's host, an agent): Windows will not
+  // delete it, but lets it be renamed aside. Such leftovers are deleted once they have closed.
+  const dir = path.dirname(target);
+  const aside = `${path.basename(previous)}-`;
+  for (const n of fs.readdirSync(dir)) {
+    if (!n.startsWith(aside)) continue;
+    try {
+      fs.rmSync(path.join(dir, n), { force: true });
+    } catch {
+      // still running
+    }
+  }
+  try {
+    fs.rmSync(previous, { force: true });
+  } catch {
+    try {
+      fs.renameSync(previous, `${previous}-${Date.now()}`);
+    } catch (e) {
+      throw new Error(`${previous} is still running (an agent or browser started it) and cannot be moved aside: close them, then try again. Nothing was changed. (${e.code})`);
+    }
+  }
+  fs.renameSync(target, previous); // allowed while it runs: agents and browsers keep the old one
+  try {
+    fs.renameSync(fresh, target);
+  } catch (e) {
+    fs.renameSync(previous, target);
+    throw e;
+  }
+  log?.(`kept the old program as ${previous}`);
+  return true;
+}
+
+/** Windows: a program it would not start at all was most likely blocked by Smart App Control. */
+const sacHint = (says) => (WIN && says.error ? " Windows did not start it: Smart App Control may block programs that are not signed." : "");
+
+/** How to undo, in this system's words: on Windows for PowerShell and for cmd.exe, which differ. */
+function undo(target) {
+  if (!WIN) return `mv ${target}.previous ${target} && ${target} install --agents none`;
+  const ps = (p) => `'${p.replace(/'/g, "''")}'`;
+  return `\n  PowerShell: Move-Item -Force ${ps(`${target}.previous`)} ${ps(target)}; & ${ps(target)} install --agents none` +
+    `\n  cmd.exe:    move /y "${target}.previous" "${target}" && "${target}" install --agents none`;
 }
 
 /**
@@ -109,20 +175,22 @@ export async function installProgram({ to = programPath(), log = console.log } =
   const file = await verifiedAsset(asset);
   const dir = path.dirname(to);
   fs.mkdirSync(dir, { recursive: true });
-  const fresh = path.join(dir, `.foxreach-install-${process.pid}`);
+  const fresh = freshName(dir, "install");
   try {
     fs.writeFileSync(fresh, file, { mode: 0o755 });
     fs.chmodSync(fresh, 0o755);
     signForMac(fresh);
     const says = spawnSync(fresh, ["version"], { encoding: "utf8", timeout: 30_000 });
     if (says.status !== 0 || (says.stdout ?? "").trim() !== latest) {
-      throw new Error(`The downloaded program does not run as foxreach ${latest} (it said: ${(says.stdout ?? "").trim() || says.stderr || says.error}). Nothing was changed.`);
+      throw new Error(`The downloaded program does not run as foxreach ${latest} (it said: ${(says.stdout ?? "").trim() || says.stderr || says.error}).${sacHint(says)} Nothing was changed.`);
     }
-    if (fs.existsSync(to)) {
+    if (!WIN && fs.existsSync(to)) {
       fs.copyFileSync(to, `${to}.previous`);
       log(`kept the old program as ${to}.previous`);
+      fs.renameSync(fresh, to);
+    } else {
+      swapIn(fresh, to, log);
     }
-    fs.renameSync(fresh, to);
   } finally {
     fs.rmSync(fresh, { force: true });
   }
@@ -174,7 +242,7 @@ export async function update({ check = false, force = false, log = console.log }
   const file = await verifiedAsset(asset);
 
   // Next to the program, so the final rename replaces it in one step (same filesystem).
-  const fresh = path.join(dir, `.foxreach-update-${process.pid}`);
+  const fresh = freshName(dir, "update");
   try {
     fs.writeFileSync(fresh, file, { mode: 0o755 });
     fs.chmodSync(fresh, 0o755);
@@ -182,11 +250,9 @@ export async function update({ check = false, force = false, log = console.log }
     const says = spawnSync(fresh, ["version"], { encoding: "utf8", timeout: 30_000 });
     const reported = (says.stdout ?? "").trim();
     if (says.status !== 0 || reported !== latest) {
-      throw new Error(`The downloaded program does not run as foxreach ${latest} (it said: ${reported || says.stderr || says.error}). Nothing was changed.`);
+      throw new Error(`The downloaded program does not run as foxreach ${latest} (it said: ${reported || says.stderr || says.error}).${sacHint(says)} Nothing was changed.`);
     }
-    fs.copyFileSync(target, `${target}.previous`);
-    fs.chmodSync(`${target}.previous`, 0o755);
-    fs.renameSync(fresh, target); // a running agent keeps the old file open; new starts get this one
+    swapIn(fresh, target);
   } finally {
     fs.rmSync(fresh, { force: true });
   }
@@ -197,10 +263,10 @@ export async function update({ check = false, force = false, log = console.log }
   log("Refreshing the browser side with the new version:");
   const refreshed = spawnSync(target, ["install", "--agents", "none"], { stdio: "inherit" });
   if (refreshed.status !== 0) {
-    log(`The refresh failed. To go back: mv ${target}.previous ${target} && ${target} install --agents none`);
+    log(`The refresh failed. To go back: ${undo(target)}`);
     return 1;
   }
   log("Agents use the new version in their next session.");
-  log(`Undo: mv ${target}.previous ${target} && ${target} install --agents none`);
+  log(`Undo: ${undo(target)}`);
   return 0;
 }

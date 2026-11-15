@@ -15,6 +15,11 @@ not (the Firefox Flatpak, an official release) gets the untrusted build, loaded 
 the way about:debugging loads one; the test says which it used. Either way the path under test is
 the same: manifest, host in the sandbox, socket outside.
 """
+import os
+if os.name == "nt":
+    raise SystemExit("This test runs on Linux and macOS only: Windows ignores its throwaway HOME, so it "
+                     "would act on the real foxreach setup. The Windows test is test/windows_hosts.py.")
+
 import http.server
 import json
 import os

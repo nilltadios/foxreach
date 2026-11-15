@@ -6,7 +6,9 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { registerAgents, unregisterAgents } from "./agents.mjs";
+import { manifestRuns } from "./setup.mjs";
 import { TOR_PRIVATE_NOTE, TOR_WARNING, torHostDir, torInstalls } from "./tor.mjs";
+import { HOSTS_KEY, WIN, localAppData, regDefault, regDelete, regSetDefault } from "./win.mjs";
 
 export const ADDON_ID = "foxreach@foxreach.local";
 const HOST_NAME = "foxreach";
@@ -34,8 +36,9 @@ const FLATPAKS = {
   "app.zen_browser.zen": [".mozilla"],
 };
 
-/** True inside the single-file build, where this program is its own runtime. */
-export const compiled = typeof Bun !== "undefined" && Bun.main.startsWith("/$bunfs/");
+/** True inside the single-file build, where this program is its own runtime. Bun names the packed
+ * script /$bunfs/... on Linux and macOS, B:/~BUN/... on Windows. */
+export const compiled = typeof Bun !== "undefined" && (Bun.main.startsWith("/$bunfs/") || /^[A-Za-z]:[\\/]~BUN[\\/]/.test(Bun.main));
 
 /** The command that starts this program again: the binary itself, or the runtime and the script. */
 function self() {
@@ -67,7 +70,8 @@ function writeManifest(folder, wrapper) {
   return file;
 }
 
-const dataDir = (home) => path.join(process.env.XDG_DATA_HOME || path.join(home, ".local/share"), "foxreach");
+const dataDir = (home) => (WIN ? path.join(localAppData(home), "foxreach")
+  : path.join(process.env.XDG_DATA_HOME || path.join(home, ".local/share"), "foxreach"));
 const exists = (p) => fs.existsSync(p);
 
 function flatpak(...args) {
@@ -108,7 +112,79 @@ function installFlatpak(id, home, log) {
   log(`permission for ${id}: xdg-run/foxreach`);
 }
 
+/*
+ * Windows: the browser finds a native host through the registry: the default value of
+ * HKCU\Software\Mozilla\NativeMessagingHosts\foxreach names the manifest file, whose path is the
+ * program it starts. The single-file program is started directly (it knows it was started by the
+ * browser from its arguments, bridge/cli.mjs); a checkout through a .bat file, which Firefox runs
+ * with cmd.exe.
+ */
+const HOST_KEY = `${HOSTS_KEY}\\${HOST_NAME}`;
+const winWrapper = (home) => path.join(dataDir(home), "foxreach-host.bat");
+
+function writeBat(file, command) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const q = (w) => `"${String(w).replace(/%/g, "%%")}"`;
+  // cmd.exe reads a .bat in the console's code page, and the browser starts it in a new console with
+  // the OEM one: without chcp a path to Bun or the checkout with letters outside ASCII is mangled.
+  fs.writeFileSync(file, `@echo off\r\nchcp 65001 >nul\r\n${command.map(q).join(" ")} host\r\n`);
+}
+
+/** Windows: true when this process runs inside a Store (MSIX) app's sandbox: a new file it writes to
+ * AppData really lands in the app's private copy (%LOCALAPPDATA%\Packages\<app>\LocalCache\...), and
+ * so do its registry writes. FOXREACH_IGNORE_SANDBOX=1 skips the check. */
+export function storeSandboxed(dir) {
+  if (process.env.FOXREACH_IGNORE_SANDBOX === "1") return false;
+  const probe = path.join(dir, `.sandbox-probe-${process.pid}`);
+  try {
+    fs.writeFileSync(probe, "");
+    return /\\Packages\\[^\\]+\\LocalCache\\/i.test(fs.realpathSync.native(probe));
+  } catch {
+    return false;
+  } finally {
+    fs.rmSync(probe, { force: true });
+  }
+}
+
+function installWindows({ browsers, agents, home, log }) {
+  if (browsers.length) throw new Error("--browser names Flatpak or Tor Browser installs, which foxreach does not set up on Windows.");
+  fs.mkdirSync(dataDir(home), { recursive: true });
+  if (storeSandboxed(dataDir(home))) {
+    throw new Error("This runs inside a Microsoft Store app's sandbox (an agent in a Store app, for one), " +
+      "whose writes to AppData and the registry only that app sees: browsers would never find foxreach. " +
+      "Nothing was registered. Run foxreach install from a terminal opened from the Start menu.");
+  }
+  const command = self();
+  let program = command[0];
+  if (!compiled) {
+    writeBat(winWrapper(home), command);
+    program = winWrapper(home);
+    log(program);
+  } else {
+    fs.rmSync(winWrapper(home), { force: true });
+  }
+  const manifest = writeManifest(dataDir(home), program);
+  regSetDefault(HOST_KEY, manifest);
+  log(manifest);
+  log(`registry: ${HOST_KEY}`);
+  finish({ agents, home, log });
+}
+
+function finish({ agents, home, log }) {
+  const mcp = mcpCommand();
+  log("\nThe browser can now start foxreach.");
+  log(`The MCP server's command, for any agent: ${mcp.join(" ")}`);
+  if (agents === null || agents.length) {
+    log(agents === null ? "Agents found on this machine:" : "Agents:");
+    registerAgents({ command: mcp, only: agents, h: home, log });
+  }
+  log("Next: install the foxreach add-on in the browser, if it is not there yet. " +
+    "Agents that are running pick up the server when they start a new session.");
+  log("Undo with: foxreach uninstall");
+}
+
 export function install({ browsers = [], flatpaks = true, agents = null, home = os.homedir(), log = console.log } = {}) {
+  if (WIN) return installWindows({ browsers, agents, home, log });
   const command = self();
   const named = browsers.filter((b) => b.startsWith("flatpak:")).map((b) => b.slice(8));
   const tor = browsers.filter((b) => b.startsWith("tor:")).map((b) => b.slice(4));
@@ -134,16 +210,7 @@ export function install({ browsers = [], flatpaks = true, agents = null, home = 
   }
   if (named.length && darwin) throw new Error("Flatpak browsers exist on Linux only.");
   if (((flatpaks && !tor.length) || named.length) && !darwin) for (const id of flatpakBrowsers(named)) installFlatpak(id, home, log);
-  const mcp = mcpCommand();
-  log("\nThe browser can now start foxreach.");
-  log(`The MCP server's command, for any agent: ${mcp.join(" ")}`);
-  if (agents === null || agents.length) {
-    log(agents === null ? "Agents found on this machine:" : "Agents:");
-    registerAgents({ command: mcp, only: agents, h: home, log });
-  }
-  log("Next: install the foxreach add-on in the browser, if it is not there yet. " +
-    "Agents that are running pick up the server when they start a new session.");
-  log("Undo with: foxreach uninstall");
+  finish({ agents, home, log });
 }
 
 /**
@@ -160,7 +227,20 @@ export function uninstall({ home = os.homedir(), agents = true, parts = null, lo
     fs.rmSync(p, { recursive: true, force: true });
     log(`removed ${p}`);
   };
-  if (want("host")) {
+  if (want("host") && WIN) {
+    if (regDelete(HOST_KEY)) log(`removed ${HOST_KEY}`);
+    remove(path.join(dataDir(home), `${HOST_NAME}.json`));
+    remove(winWrapper(home));
+    // The hosts' info folder, and foxreach's own, once nothing is left in them (a running browser's
+    // host keeps its info file there until the browser closes).
+    for (const dir of [path.join(dataDir(home), "run"), dataDir(home)]) {
+      try {
+        fs.rmdirSync(dir);
+      } catch {
+        // not empty, or not there
+      }
+    }
+  } else if (want("host")) {
     for (const d of hostDirs(home, true)) remove(path.join(d, `${HOST_NAME}.json`));
     for (const dir of torInstalls(home)) remove(path.join(torHostDir(dir), `${HOST_NAME}.json`));
     remove(path.join(dataDir(home), "foxreach-host"));
@@ -183,12 +263,30 @@ export function uninstall({ home = os.homedir(), agents = true, parts = null, lo
 
 /** Flatpak browsers that hold a copy of foxreach (install prepared them). */
 function preparedFlatpaks(home) {
+  if (WIN) return [];
   const apps = path.join(home, ".var/app");
   return (exists(apps) ? fs.readdirSync(apps) : []).filter((id) => exists(path.join(apps, id, "foxreach/foxreach-host"))).sort();
 }
 
 /** What install wrote, as data: the host wrapper, the manifests, the prepared Flatpak browsers. */
 export function hostStatus({ home = os.homedir() } = {}) {
+  if (WIN) {
+    // The manifest the registry names, and what it starts (the program, or the checkout's .bat).
+    const manifest = regDefault(HOST_KEY);
+    const manifests = manifest && exists(manifest) ? [manifest] : [];
+    const runs = manifests.length ? manifestRuns(manifest) : null;
+    let target = null;
+    try {
+      target = manifests.length ? JSON.parse(fs.readFileSync(manifest, "utf8")).path : null;
+    } catch {
+      // unreadable manifest
+    }
+    return {
+      wrapper: target && exists(target) ? target : null,
+      wrapperRuns: runs ? runs.filter((w, i) => !(i === runs.length - 1 && w === "host")).join(" ") : null,
+      manifests, flatpaks: [],
+    };
+  }
   const wrapper = path.join(dataDir(home), "foxreach-host");
   let runs = null;
   if (exists(wrapper)) {
