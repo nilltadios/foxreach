@@ -444,9 +444,12 @@ Read this before installing into a profile you browse with.
 - In the build without privileged code, `javascript` runs in the page's own world. A page whose
   security policy forbids `eval` refuses it.
 - **That build asks for no site at install.** You grant single sites, or all, from the toolbar
-  button, and the browser enforces it. With single sites granted the browser gives no pictures of
-  pages (`screenshot`, `record`): it offers those only to an add-on that holds every site. Blocked
-  sites are then enforced by not being granted, not per request.
+  button, and the browser enforces it. The toolbar panel opens a foxreach tab that asks the browser
+  (Continue, then the browser's own prompt): asked from the panel itself, the browser's prompt
+  opened hidden behind the panel, and once Allow in it did nothing after the panel had closed.
+  With single sites granted the browser gives no pictures of pages (`screenshot`, `record`): it
+  offers those only to an add-on that holds every site. Blocked sites are then enforced by not
+  being granted, not per request.
 - The full build holds every site as far as the browser is concerned, because its privileged code
   could reach them anyway; there the list of sites is enforced by foxreach itself.
 

@@ -48,9 +48,13 @@ button { margin-top: 4px; font: inherit; }
 }
 .request-window body { width: auto; padding: 0; background: var(--bg); }
 .request-window body > :not(#request-view):not(script) { display: none !important; }
-#request-view { padding: 18px 20px 16px; border-top: 4px solid var(--accent); }
-#request-view .brand { display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 13px; color: var(--muted); letter-spacing: 0.02em; }
-#request-view .mark { width: 10px; height: 10px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 25%, transparent); }
+/* The page that asks the browser for a site, in a tab of its own (popup.js, grantPage). */
+.grant-page body { width: auto; max-width: 460px; margin: 12vh auto 0; padding: 0 16px; background: var(--bg); }
+.grant-page body > :not(#grant-view):not(script) { display: none !important; }
+#grant-card { margin-top: 14px; }
+#request-view, #grant-view { padding: 18px 20px 16px; border-top: 4px solid var(--accent); }
+#request-view .brand, #grant-view .brand { display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 13px; color: var(--muted); letter-spacing: 0.02em; }
+#request-view .mark, #grant-view .mark { width: 10px; height: 10px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 25%, transparent); }
 #request-status { font-weight: 400; color: var(--bad); }
 #request-cards { display: flex; flex-direction: column; gap: 12px; margin-top: 14px; }
 .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px 16px 14px; }
@@ -72,5 +76,5 @@ button { margin-top: 4px; font: inherit; }
 .action.ghost { color: var(--muted); }
 .action.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
 .action.primary:hover { filter: brightness(1.08); }
-#request-view .fineprint { margin: 14px 2px 0; font-size: 11.5px; color: var(--muted); }
+#request-view .fineprint, #grant-view .fineprint { margin: 14px 2px 0; font-size: 11.5px; color: var(--muted); }
 .hint { margin: 2px 0 6px; font-size: 0.85em; opacity: 0.75; }
