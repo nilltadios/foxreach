@@ -219,7 +219,8 @@ export function addonIn(profile) {
     // the browser has not written its list yet
   }
   const file = exists(path.join(profile, "extensions", `${ADDON_ID}.xpi`));
-  if (!version && !file) return null;
+  // No file means removed: the browser still lists it until its next start, then drops it.
+  if (!file) return null;
   return { version, active, file, full: hasFullPrefs(profile), stopped: exists(path.join(profile, STOP_MARK)) };
 }
 

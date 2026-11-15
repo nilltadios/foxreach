@@ -102,8 +102,14 @@ pub fn snapshot() -> Snapshot {
                 packaging: String::from("appimage"),
                 profile: Some(String::from("/home/you/.librewolf/x.default")),
                 profile_name: Some(String::from("default")),
+            }, host::Connected {
+                id: String::from("firefox"),
+                name: String::from("Firefox"),
+                packaging: String::from("native"),
+                profile: Some(String::from("/home/you/.mozilla/firefox/default-release")),
+                profile_name: Some(String::from("default-release")),
             }],
-            default_browser: None,
+            default_browser: Some(String::from("/home/you/.mozilla/firefox/default-release")),
             browsers: vec![
                 Browser {
                     name: String::from("Firefox"),

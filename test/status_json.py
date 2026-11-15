@@ -167,6 +167,9 @@ with tempfile.TemporaryDirectory() as tmp:
     check("addon remove: file and the two prefs gone, other prefs kept, backup made", code == 0
           and not (full / "extensions/foxreach@foxreach.local.xpi").exists() and js == 'user_pref("a", 1);\n'
           and any(full.glob("user.js.bak-*")), out + err + js)
+    after = {p["name"]: p for p in json.loads(run(home, "status", "--json")[1])["browsers"][0]["profiles"]}
+    check("addon remove: status shows it gone although the browser's extensions.json still lists it",
+          after["dev"]["addon"] is None and "foxreach@foxreach.local" in (full / "extensions.json").read_text(), after["dev"])
 
     # foxreach test: a stand-in MCP server that answers status, and the real server with no browser.
     fake = home / "bin/fake-mcp"

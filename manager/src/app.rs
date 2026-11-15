@@ -118,6 +118,10 @@ pub enum Message {
     LatestAddon(Result<host::Latest, String>),
     ApplyUpdate,
     InstallAddon { spec: String, profile: String },
+    /// The install link was opened in the browser (or failed to open).
+    AddonOpened { profile: String, before: Option<String>, out: Output },
+    /// A watch ended: the snapshot read last, and whether what it waited for happened.
+    Watched(Box<Snapshot>, bool),
     /// Stop agents in a profile (true), add-on kept, or let them use it again.
     SetStopped { profile: String, stopped: bool },
     /// The profile agents use when several browsers are connected; None clears it.
@@ -127,7 +131,7 @@ pub enum Message {
     CloseMenu,
     /// Start a browser on the profile that has foxreach, then check the connection.
     OpenBrowser { spec: String, profile: String },
-    Opened(Output),
+    Opened(Output, String),
     RemoveAddon { spec: String, profile: String },
     TogglePart(Part, bool),
     AskRemove { everything: bool },
@@ -137,6 +141,39 @@ pub enum Message {
     DismissError,
     CloseToast(widget::ToastId),
     Quit,
+}
+
+/// Something the user finishes in the browser, which the app watches for by reading again.
+#[derive(Clone, Debug)]
+enum Watch {
+    /// The add-on in this profile changes version (installed, or updated): the user said Add.
+    Addon { profile: String, before: Option<String> },
+    /// The browser on this profile is connected to foxreach.
+    Connected { profile: String },
+}
+
+impl Watch {
+    fn done(&self, snap: &Snapshot) -> bool {
+        let Some(status) = &snap.status else { return false };
+        match self {
+            Watch::Addon { profile, before } => status
+                .browsers
+                .iter()
+                .flat_map(|b| b.profiles.iter())
+                .find(|p| &p.path == profile)
+                .and_then(|p| p.addon.as_ref())
+                .is_some_and(|a| a.version != *before),
+            Watch::Connected { profile } => status.connected.iter().any(|c| c.profile.as_deref() == Some(profile.as_str())),
+        }
+    }
+
+    /// How long the user may take: confirming an install, or a browser starting.
+    fn patience(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(match self {
+            Watch::Addon { .. } => 120,
+            Watch::Connected { .. } => 40,
+        })
+    }
 }
 
 enum Dialog {
@@ -170,6 +207,8 @@ pub struct App {
     packaging: Packaging,
     /// The profile whose ⋮ menu is open.
     menu: Option<String>,
+    /// What the app waits for the user to finish in the browser, shown under the header.
+    watching: Option<String>,
 }
 
 /// Run blocking work on a thread and hand the result back as a message.
@@ -330,6 +369,26 @@ impl App {
                 host::foxreach(&program, &refs)
             },
             move |out| Message::Ran(label, out),
+        )
+    }
+
+    /// Read again every 2 s until `watch` is done or the user has had long enough; the window
+    /// stays usable meanwhile.
+    fn watch(&mut self, watch: Watch, waiting: String) -> Task<cosmic::Action<Message>> {
+        self.watching = Some(waiting);
+        background(
+            move || {
+                let deadline = std::time::Instant::now() + watch.patience();
+                loop {
+                    std::thread::sleep(std::time::Duration::from_secs(2));
+                    let snap = host::snapshot();
+                    let done = watch.done(&snap);
+                    if done || std::time::Instant::now() >= deadline {
+                        return (snap, done);
+                    }
+                }
+            },
+            |(snap, done)| Message::Watched(Box::new(snap), done),
         )
     }
 
@@ -510,13 +569,11 @@ impl App {
             .flat_map(|b| b.profiles.iter().filter(|p| p.addon.is_some()).map(move |p| (b, p)))
             .min_by_key(|(_, p)| !p.is_default);
         let open_now = status.browsers.iter().find(|b| b.profiles.iter().any(|p| p.in_use && p.addon.is_some()));
-        let mut text = widget::column::with_capacity(connected.len() + 1).spacing(4);
-        let mut open = None;
-        let conn_icon: Element<'_, Message> = match connected.first() {
-            Some(c) => icons::view(&icons::browser(&c.name, if c.packaging == "flatpak" { "flatpak:" } else { "" }), &c.name, 32),
-            None => icon::from_name("network-offline-symbolic").size(32).into(),
-        };
+        let idle = self.busy.is_none();
+        let check = || widget::button::standard("Check").on_press_maybe(idle.then_some(Message::Refresh));
+        let mut conn_section = settings::section();
         if connected.is_empty() {
+            let mut open = None;
             let (line, hint) = match (open_now, with_foxreach) {
                 (Some(b), _) => (format!("{} is open, but foxreach is not connected", b.name), String::from("Restart the browser, then Check")),
                 (None, Some((b, p))) => {
@@ -525,8 +582,19 @@ impl App {
                 }
                 (None, None) => (String::from("No browser has foxreach yet"), String::from("Install it in a profile below")),
             };
-            text = text.push(widget::text::body(line)).push(caption(hint));
+            let text = widget::column::with_capacity(2).spacing(4).push(widget::text::body(line)).push(caption(hint));
+            let mut conn = widget::row::with_capacity(5)
+                .spacing(spacing.space_s)
+                .align_y(Alignment::Center)
+                .push(icon::from_name("network-offline-symbolic").size(32))
+                .push(text)
+                .push(widget::space().width(Length::Fill));
+            if let Some((name, spec, profile)) = open {
+                conn = conn.push(widget::button::suggested(format!("Open {name}")).on_press_maybe(idle.then_some(Message::OpenBrowser { spec, profile })));
+            }
+            conn_section = conn_section.add(settings::item_row(vec![conn.push(check()).into()]));
         } else {
+            // One row per connected browser, each with its own icon.
             for c in connected {
                 let kind = packaging_label(&c.packaging);
                 let mut line = widget::row::with_capacity(4)
@@ -534,36 +602,35 @@ impl App {
                     .align_y(Alignment::End)
                     .push(widget::container(connected_dot(10.0)).padding(cosmic::iced::Padding { bottom: 5.0, ..cosmic::iced::Padding::ZERO }))
                     .push(widget::text::body(if kind.is_empty() { c.name.clone() } else { format!("{} {kind}", c.name) }));
-                if let Some(pn) = &c.profile_name {
-                    line = line.push(inline_caption(format!("· profile {pn}")));
-                }
                 if is_default(c.profile.as_ref()) {
                     line = line.push(inline_note("(default for agents)"));
                 }
                 if c.profile.as_deref().is_some_and(|p| stopped_profiles.contains(&p)) {
                     line = line.push(inline_caption("· agents stopped"));
                 }
-                text = text.push(with_tip(line, format!("Agents call it \"{}\" (browser_select)", c.id)));
+                let detail = match &c.profile_name {
+                    Some(pn) => format!("Profile {pn} · agents call it \"{}\"", c.id),
+                    None => format!("Agents call it \"{}\"", c.id),
+                };
+                let text = widget::column::with_capacity(2).spacing(4).push(line).push(caption(detail));
+                let icon = icons::view(&icons::browser(&c.name, if c.packaging == "flatpak" { "flatpak:" } else { "" }), &c.name, 32);
+                let row = widget::row::with_capacity(2).spacing(spacing.space_s).align_y(Alignment::Center).push(icon).push(text);
+                conn_section = conn_section.add(settings::item_row(vec![row.into()]));
             }
             let hint = match connected.len() {
                 1 => String::from("Agents use this browser"),
                 _ if connected.iter().any(|c| is_default(c.profile.as_ref())) => String::from("Agents use your default unless they choose another"),
                 _ => String::from("Agents choose one, or make one the default in its profile's ⋮ menu"),
             };
-            text = text.push(caption(hint));
+            let foot = widget::row::with_capacity(3)
+                .spacing(spacing.space_s)
+                .align_y(Alignment::Center)
+                .push(caption(hint))
+                .push(widget::space().width(Length::Fill))
+                .push(check());
+            conn_section = conn_section.add(settings::item_row(vec![foot.into()]));
         }
-        let idle = self.busy.is_none();
-        let mut conn = widget::row::with_capacity(5)
-            .spacing(spacing.space_s)
-            .align_y(Alignment::Center)
-            .push(conn_icon)
-            .push(text)
-            .push(widget::space().width(Length::Fill));
-        if let Some((name, spec, profile)) = open {
-            conn = conn.push(widget::button::suggested(format!("Open {name}")).on_press_maybe(idle.then_some(Message::OpenBrowser { spec, profile })));
-        }
-        conn = conn.push(widget::button::standard("Check").on_press_maybe(idle.then_some(Message::Refresh)));
-        col = col.push(settings::section().add(settings::item_row(vec![conn.into()])));
+        col = col.push(conn_section);
 
         let q = self.browser_search.trim().to_lowercase();
         let latest = self.latest_addon.as_deref();
@@ -1013,6 +1080,7 @@ impl Application for App {
             dialog: None,
             packaging: host::packaging(),
             menu: None,
+            watching: None,
         };
         app.set_header_title(String::from(if demo { "foxreach (demo)" } else { "foxreach" }));
         let mut tasks = vec![app.refresh(), app.start_test(None)];
@@ -1127,7 +1195,8 @@ impl Application for App {
                     let first = out.text.lines().find(|l| !l.trim().is_empty()).unwrap_or("Done").trim().to_string();
                     self.toast(if self.demo || label.is_empty() { first } else { label.clone() })
                 } else {
-                    self.error = Some((label, out.text));
+                    // The label says what success looks like ("Connected …"): a failure shows its error alone.
+                    self.error = Some((String::new(), out.text));
                     Task::none()
                 };
                 return Task::batch([task, self.refresh()]);
@@ -1169,6 +1238,16 @@ impl Application for App {
                 ]);
             }
             Message::SetUpFlatpak(id) => {
+                // A checkout cannot copy itself into a Flatpak from its command line: its setup script does
+                // (the bridge and Bun go into the Flatpak's own folder).
+                if let Some(Source::Checkout(root)) = self.snap.in_use.as_ref().map(|u| u.source.clone()) {
+                    self.busy = Some(String::from("Connecting…"));
+                    let argv: Vec<String> =
+                        ["uv", "run", "--python", "3.15", &format!("{root}/scripts/build_install.py"), "--browser", &format!("flatpak:{id}")]
+                            .map(String::from)
+                            .to_vec();
+                    return background(move || host::run(&argv), move |out| Message::Ran(format!("Connected {id}"), out));
+                }
                 return self.run_foxreach(
                     &format!("Connected {id}"),
                     vec![String::from("install"), String::from("--browser"), format!("flatpak:{id}"), String::from("--agents"), String::from("none")],
@@ -1178,26 +1257,17 @@ impl Application for App {
                 if self.demo {
                     return self.start_test(None);
                 }
-                // The add-on connects a few seconds after the browser starts; the list is read then.
+                // The add-on connects a few seconds after the browser starts: watched for, not guessed.
                 self.busy = Some(String::from("Opening the browser…"));
-                return background(
-                    move || {
-                        let out = host::open_browser(&spec, &profile);
-                        if out.ok {
-                            std::thread::sleep(std::time::Duration::from_secs(8));
-                        }
-                        out
-                    },
-                    Message::Opened,
-                );
+                return background(move || (host::open_browser(&spec, &profile), profile), |(out, profile)| Message::Opened(out, profile));
             }
-            Message::Opened(out) => {
+            Message::Opened(out, profile) => {
+                self.busy = None;
                 if !out.ok {
-                    self.busy = None;
                     self.error = Some((String::from("Open browser"), out.text));
                     return Task::none();
                 }
-                return self.refresh();
+                return self.watch(Watch::Connected { profile }, String::from("Waiting for the browser to connect…"));
             }
             Message::AskSwitch => self.dialog = Some(Dialog::Switch { agents: self.set_agents() }),
             Message::InstallProgram(agents) => {
@@ -1279,10 +1349,38 @@ impl Application for App {
                 return self.run_foxreach("Updated foxreach", vec![String::from("update")]);
             }
             Message::InstallAddon { spec, profile } => {
-                return self.run_foxreach(
-                    "Opened in the browser: confirm there",
-                    vec![String::from("addon"), String::from("install"), String::from("--browser"), spec, String::from("--profile"), profile],
+                if self.demo {
+                    return self.update(Message::Ran(String::from("Opened in the browser"), Output { ok: true, text: String::from("demo") }));
+                }
+                let Some(program) = self.program() else {
+                    return Task::none();
+                };
+                let before = self.snap.status.as_ref().and_then(|s| {
+                    s.browsers.iter().flat_map(|b| b.profiles.iter()).find(|p| p.path == profile).and_then(|p| p.addon.as_ref()?.version.clone())
+                });
+                self.busy = Some(String::from("Opening the add-on in the browser…"));
+                let target = profile.clone();
+                return background(
+                    move || host::foxreach(&program, &["addon", "install", "--browser", &spec, "--profile", &target]),
+                    move |out| Message::AddonOpened { profile, before, out },
                 );
+            }
+            Message::AddonOpened { profile, before, out } => {
+                self.busy = None;
+                if !out.ok {
+                    self.error = Some((String::new(), out.text));
+                    return Task::none();
+                }
+                let browser = self.snap.status.as_ref().and_then(|s| s.browsers.iter().find(|b| b.profiles.iter().any(|p| p.path == profile)).map(|b| b.name.clone()));
+                let browser = browser.unwrap_or_else(|| String::from("the browser"));
+                return self.watch(Watch::Addon { profile, before }, format!("Waiting for you to confirm in {browser}…"));
+            }
+            Message::Watched(snap, done) => {
+                self.snap = *snap;
+                self.watching = None;
+                if !done {
+                    return self.toast(String::from("Nothing changed yet. Press Check once you have answered in the browser."));
+                }
             }
             Message::ToggleMenu(profile) => self.menu = Some(profile),
             Message::SetDefault(profile) => {
@@ -1368,10 +1466,13 @@ impl Application for App {
         let mut page = widget::column::with_capacity(4).spacing(spacing.space_m).width(Length::Fill);
         if let Some((label, text)) = &self.error {
             let first: String = text.lines().filter(|l| !l.trim().is_empty()).take(3).collect::<Vec<_>>().join("\n");
-            page = page.push(widget::warning(format!("{label}: {first}")).on_close(Message::DismissError));
+            page = page.push(widget::warning(if label.is_empty() { first.to_string() } else { format!("{label}: {first}") }).on_close(Message::DismissError));
         }
         if let Some(b) = &self.busy {
             page = page.push(caption(b.clone()));
+        }
+        if let Some(w) = &self.watching {
+            page = page.push(caption(w.clone()));
         }
         if self.loaded {
             page = page.push(match self.tab() {
@@ -1391,7 +1492,31 @@ impl Application for App {
 
 #[cfg(test)]
 mod tests {
-    use super::differs;
+    use super::{Watch, differs};
+    use crate::host::{Snapshot, Status};
+
+    fn snap(addon: Option<&str>, connected: bool) -> Snapshot {
+        let addon = addon.map_or_else(|| String::from("null"), |v| format!(r#"{{"version":"{v}","active":true,"full":false}}"#));
+        let connected = if connected { r#"[{"id":"firefox","name":"Firefox","packaging":"native","profile":"/p","profileName":"p"}]"# } else { "[]" };
+        let text = format!(
+            r#"{{"mcpCommand":"x","agents":[],"host":{{"wrapper":null,"wrapperRuns":null,"manifests":[],"flatpaks":[]}},
+              "browsers":[{{"name":"Firefox","packaging":"native","spec":"/f","profiles":[{{"name":"p","path":"/p","isDefault":true,"inUse":false,"addon":{addon}}}]}}],
+              "connected":{connected}}}"#
+        );
+        Snapshot { status: Some(serde_json::from_str::<Status>(&text).unwrap()), ..Default::default() }
+    }
+
+    #[test]
+    fn a_watch_ends_when_the_browser_did_what_was_asked() {
+        let installed = Watch::Addon { profile: String::from("/p"), before: None };
+        assert!(!installed.done(&snap(None, false)), "nothing installed yet");
+        assert!(installed.done(&snap(Some("0.3.2"), false)), "the add-on appeared");
+        let updated = Watch::Addon { profile: String::from("/p"), before: Some(String::from("0.3.1")) };
+        assert!(!updated.done(&snap(Some("0.3.1"), false)), "same version: not updated yet");
+        assert!(updated.done(&snap(Some("0.3.2"), false)), "a new version");
+        let open = Watch::Connected { profile: String::from("/p") };
+        assert!(!open.done(&snap(Some("0.3.2"), false)) && open.done(&snap(Some("0.3.2"), true)));
+    }
 
     #[test]
     fn a_checkout_is_one_foxreach_whichever_script_starts_it() {
