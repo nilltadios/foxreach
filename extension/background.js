@@ -1365,11 +1365,17 @@ browser.runtime.onMessage.addListener(async (msg, sender) => {
       else agentTabs.delete(msg.tabId);
       break;
     case "wantSite": {
-      // The popup asks the browser for the site at the same moment; applyWanted runs again once
-      // the user has answered that.
+      // The popup asks the browser for the site at the same moment (from the toolbar panel, through
+      // a tab of its own: popup.js, allowSite); applyWanted runs again once the user has answered.
       const host = msg.host === "*" ? "*" : parseBlocked(msg.host)[0];
       if (host) wantedSites.add(host);
       await applyWanted();
+      break;
+    }
+    case "unwantSite": {
+      // Cancel in the grant tab: the site is no longer wanted (normalized as wantSite stores it).
+      const host = msg.host === "*" ? "*" : parseBlocked(msg.host)[0];
+      if (host) wantedSites.delete(host);
       break;
     }
     case "removeSite":
