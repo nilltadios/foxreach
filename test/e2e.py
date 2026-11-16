@@ -1085,9 +1085,18 @@ def popup_tests(browser, mcp):
     # Only listed sites. In this build the browser grants every site, so the list alone decides.
     text_of = lambda element: run(f"setTimeout(() => arguments[0](document.getElementById('{element}').textContent), 300)")  # noqa: E731
     redrawn = lambda: time.sleep(2.3)  # the popup asks for news every 2 s; its own clicks show at once  # noqa: E731
-    press = lambda element, label: run(  # noqa: E731
-        f"""[...document.querySelectorAll('#{element} button')].find((b) => b.textContent === {label!r}).click();
-        setTimeout(() => arguments[0](1), 300)""")
+    def press(element, label):
+        """Click a button of the popup. A request shows with the popup's next poll, which on a busy
+        machine comes later than redrawn() waits: wait for the button, up to 6 s."""
+        found = run(f"""const done = arguments[0], end = Date.now() + 6000;
+        (function tryIt() {{
+          const b = [...document.querySelectorAll('#{element} button')].find((x) => x.textContent === {label!r});
+          if (b) {{ b.click(); setTimeout(() => done(true), 300); }}
+          else if (Date.now() < end) setTimeout(tryIt, 100);
+          else done(false);
+        }})()""")
+        if not found:
+            raise RuntimeError(f"no {label!r} button in #{element} after 6 s: {text_of(element)!r}")
     run("document.getElementById('access-listed').click(); setTimeout(() => arguments[0](1), 300)")
     check("with an empty list, a site is refused", expect_error(lambda: mcp.call("read_page", tabId=page), "not allowed on 127.0.0.1 yet"))
     listed = mcp.call("tabs_list")
