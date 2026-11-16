@@ -520,6 +520,9 @@ Read this before installing into a profile you browse with.
   button, and the browser enforces it. The toolbar panel opens a foxreach tab that asks the browser
   (Continue, then the browser's own prompt): asked from the panel itself, the browser's prompt
   opened hidden behind the panel, and once Allow in it did nothing after the panel had closed.
+  A site you add while every site is granted is covered by that grant and gets none of its own (the
+  browser stores no grant for a site it already covers), so going back to "Only these sites" opens
+  that tab again for such sites, in one prompt.
   With single sites granted the browser gives no pictures of pages (`screenshot`, `record`): it
   offers those only to an add-on that holds every site. Blocked sites are then enforced by not
   being granted, not per request.

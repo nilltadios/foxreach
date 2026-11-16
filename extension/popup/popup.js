@@ -39,33 +39,52 @@ const browserGrants = (host) => browser.permissions.contains({ origins: [origins
 function allowSite(host) {
   if (!state?.asksBrowser) return send({ popup: "wantSite", host });
   if (inPanel) {
-    return browserGrants(host).then(async (granted) => {
+    return browserGrants(host).then((granted) => {
       // Granted by the browser already: only foxreach's own list changes.
       if (granted) return send({ popup: "wantSite", host });
       // Otherwise the grant tab asks, and records the site only once the browser has granted it,
       // so closing that tab any way (Cancel or its close button) leaves nothing behind.
-      const url = browser.runtime.getURL(`/popup/popup.html?grant=${encodeURIComponent(host)}`);
-      // A grant tab for this site already open: bring it forward rather than open another.
-      const open = (await browser.tabs.query({})).find((t) => t.url === url);
-      const [here] = await browser.tabs.query({ active: true, currentWindow: true });
-      if (open) {
-        // Asked again from another tab: that is now the tab to go back to.
-        const from = here && here.id !== open.id && here.windowId === open.windowId ? { openerTabId: here.id } : {};
-        await browser.tabs.update(open.id, { active: true, ...from });
-        await browser.windows.update(open.windowId, { focused: true });
-      } else {
-        // Next to the tab the user is on; closeTab goes back to it.
-        await browser.tabs.create({ url, openerTabId: here?.id });
-      }
-      // A message still on its way (sharing the ticked tab) gets its answer first: closing under it
-      // makes the browser log an error.
-      await lastSend.catch(() => {});
-      window.close(); // the browser leaves the panel open over the new tab otherwise
+      return openGrantTab([host]);
     });
   }
   const sent = send({ popup: "wantSite", host });
   browser.permissions.request({ origins: originsOf(host) }).then(() => send({ popup: "state" }), () => {});
   return sent;
+}
+
+/** From the toolbar panel: the grant tab for these sites (["*"]: every site), then close the panel. */
+async function openGrantTab(hosts) {
+  const url = browser.runtime.getURL(`/popup/popup.html?grant=${encodeURIComponent(hosts.join(","))}`);
+  // A grant tab for this site already open: bring it forward rather than open another.
+  const open = (await browser.tabs.query({})).find((t) => t.url === url);
+  const [here] = await browser.tabs.query({ active: true, currentWindow: true });
+  if (open) {
+    // Asked again from another tab: that is now the tab to go back to.
+    const from = here && here.id !== open.id && here.windowId === open.windowId ? { openerTabId: here.id } : {};
+    await browser.tabs.update(open.id, { active: true, ...from });
+    await browser.windows.update(open.windowId, { focused: true });
+  } else {
+    // Next to the tab the user is on; closeTab goes back to it.
+    await browser.tabs.create({ url, openerTabId: here?.id });
+  }
+  // A message still on its way (sharing the ticked tab) gets its answer first: closing under it
+  // makes the browser log an error.
+  await lastSend.catch(() => {});
+  window.close(); // the browser leaves the panel open over the new tab otherwise
+}
+
+/**
+ * "Only these sites". A site added while every site was granted is covered by that grant and holds
+ * none of its own: the browser does not store a grant for a site it already covers. Withdrawing
+ * every site would leave it listed but unusable (issue #12). So once every site is withdrawn, the
+ * listed sites it took along are asked for again, in one prompt from the grant tab.
+ */
+async function listedOnly() {
+  const before = new Set((state?.allowedHosts ?? []).filter((s) => s.granted).map((s) => s.host));
+  await send({ popup: "listedOnly" });
+  if (!state?.asksBrowser || !inPanel) return;
+  const lost = state.allowedHosts.filter((s) => !s.granted && before.has(s.host)).map((s) => s.host);
+  if (lost.length) await openGrantTab(lost);
 }
 
 // Opened by the background page as a window of its own, to show a request. It closes once
@@ -77,11 +96,17 @@ if (requestWindow) {
   document.title = "foxreach: a request needs your answer";
 }
 
-// Opened by the toolbar panel as a tab of its own, to ask the browser for one site or every site
-// (?grant=<host>, "*" for every site): see allowSite.
+// Opened by the toolbar panel as a tab of its own, to ask the browser for one site, several
+// (?grant=<host>,<host>: the listed sites "Only these sites" would leave without a grant) or every
+// site ("*"): see allowSite and listedOnly.
 const grantHost = new URLSearchParams(location.search).get("grant");
+const grantHosts = grantHost === null ? [] : grantHost === "*" ? ["*"] : grantHost.split(",");
 // Host names, IP addresses ([::1] too) and names with underscores, as the panel passes them.
-const grantPage = grantHost !== null && (grantHost === "*" || /^(\[[0-9a-f:.]+\]|[a-z0-9._-]+)$/.test(grantHost));
+const grantPage = grantHost !== null && (grantHost === "*" || grantHosts.every((h) => /^(\[[0-9a-f:.]+\]|[a-z0-9._-]+)$/.test(h)));
+const grantOrigins = () => grantHosts.flatMap(originsOf);
+const grantName = grantHosts.join(", ");
+/** Each site of this grant page onto foxreach's list (wantSite), or off the wanted ones (unwantSite). */
+const grantTell = (popup) => Promise.all(grantHosts.map((host) => ask({ popup, host })));
 const inPanel = !requestWindow && grantHost === null;
 const closeTab = async () => {
   const t = await browser.tabs.getCurrent();
@@ -94,7 +119,7 @@ let grantDone = false; // granted here, or seen granted (render), so the tab is 
 if (grantHost !== null) {
   document.documentElement.classList.add("grant-page");
   $("grant-view").hidden = false;
-  document.title = !grantPage ? "foxreach" : grantHost === "*" ? "foxreach: allow every site" : `foxreach: allow ${grantHost}`;
+  document.title = !grantPage ? "foxreach" : grantHost === "*" ? "foxreach: allow every site" : `foxreach: allow ${grantName}`;
   if (grantPage) showGrant();
   else {
     $("grant-card").replaceChildren(card(
@@ -108,17 +133,18 @@ if (grantHost !== null) {
 /** The grant page's card. outcome: null (not asked yet), "granted" or "refused". */
 function showGrant(outcome = null) {
   const every = grantHost === "*";
-  const cancel = () => ask({ popup: "unwantSite", host: grantHost }).then(closeTab, closeTab);
+  const several = grantHosts.length > 1;
+  const cancel = () => grantTell("unwantSite").then(closeTab, closeTab);
   const meta = outcome === "granted" ? "Granted. This tab closes by itself."
     : outcome === "refused" ? "The browser did not grant it. Try again, or cancel."
     : "Next, the browser asks you to confirm.";
   const actions = outcome === "granted" ? [] : [
     actionButton("Cancel", "ghost", cancel),
     actionButton(outcome === "refused" ? "Try again" : "Continue", "primary", () => {
-      browser.permissions.request({ origins: originsOf(grantHost) }).then(async (granted) => {
+      browser.permissions.request({ origins: grantOrigins() }).then(async (granted) => {
         // Onto foxreach's list only once granted: a refusal must leave nothing behind, however the
         // tab is closed afterwards.
-        if (granted) await ask({ popup: "wantSite", host: grantHost });
+        if (granted) await grantTell("wantSite");
         if (granted && grantDone) return; // render saw it first and is closing the tab
         grantDone ||= granted;
         showGrant(granted ? "granted" : "refused");
@@ -127,8 +153,10 @@ function showGrant(outcome = null) {
     }),
   ];
   $("grant-card").replaceChildren(card(
-    "Let agents use", every ? "Every site" : grantHost, meta,
+    "Let agents use", every ? "Every site" : grantName, meta,
     every ? "Agents may then use any site, except the ones you block, in tabs they open or you share."
+      : several ? "These sites are on your list, and the browser had granted them only as part of every site. " +
+        "Agents may then use them and their subdomains, in tabs they open or you share."
       : "Agents may then use this site and its subdomains, in tabs they open or you share.",
     ...actions,
   ));
@@ -196,10 +224,10 @@ function render(next) {
   // A grant tab whose site got granted some other way (another grant tab, the request window)
   // has nothing left to ask: say so and close.
   if (grantPage && !grantDone) {
-    browserGrants(grantHost).then((granted) => {
-      if (!granted || grantDone) return;
+    Promise.all(grantHosts.map(browserGrants)).then((each) => {
+      if (!each.every(Boolean) || grantDone) return;
       grantDone = true;
-      ask({ popup: "wantSite", host: grantHost }).catch(() => {}); // onto foxreach's list, as a grant here would
+      grantTell("wantSite").catch(() => {}); // onto foxreach's list, as a grant here would
       showGrant("granted");
       setTimeout(closeTab, 1500);
     });
@@ -319,7 +347,7 @@ $("paused").addEventListener("change", (e) => send({ popup: "setPaused", value: 
 $("ask").addEventListener("change", (e) => send({ popup: "setAsk", value: e.target.checked }));
 $("save-blocked").addEventListener("click", () => send({ popup: "setBlocked", value: $("blocked").value }));
 $("access-all").addEventListener("click", () => allowSite("*"));
-$("access-listed").addEventListener("click", () => send({ popup: "listedOnly" }));
+$("access-listed").addEventListener("click", listedOnly);
 $("add-site").addEventListener("submit", (e) => {
   e.preventDefault();
   // What the user typed, as a host name, the way the background page will store it.
