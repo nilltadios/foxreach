@@ -484,7 +484,7 @@ Read this before installing into a profile you browse with.
 ## Tests
 
 ```bash
-uv run --python 3.15 test/e2e.py             # expect: 285 passed, 0 failed, exit 0
+uv run --python 3.15 test/e2e.py             # expect: 293 passed, 0 failed, exit 0 (about 90 s)
 ```
 
 The tests use `FOXREACH_BROWSER` (a path or a command), else the only browser installed.

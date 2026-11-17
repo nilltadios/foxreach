@@ -27,6 +27,10 @@ const MODIFIERS = {
 };
 
 const sleep = (win, ms) => new Promise((r) => win.setTimeout(r, ms));
+// A timer that is not the page's. In a background tab, where agents work by default, the page's
+// timers wait at least 1 s, which made each drag step and each wait for a wheel scroll take a second.
+const { setTimeout: timerTimeout } = ChromeUtils.importESModule("resource://gre/modules/Timer.sys.mjs");
+const pause = (ms) => new Promise((r) => timerTimeout(r, ms));
 
 function modifierFlags(win, names = []) {
   const u = win.windowUtils;
@@ -538,7 +542,7 @@ const HANDLERS = {
         const t = i / DRAG_STEPS;
         const point = { x: from.x + (to.x - from.x) * t, y: from.y + (to.y - from.y) * t };
         fire(win, "mousemove", point.x, point.y, { buttons: 1, modifiers: flags });
-        await sleep(win, 16);
+        await pause(16);
         if (dragged) steps.push(point);
       }
     } finally {
@@ -568,7 +572,7 @@ const HANDLERS = {
         over = el;
       }
       accepted = send("dragover", el, point, dragged.data);
-      await sleep(win, 16);
+      await pause(16);
     }
     if (over && accepted) send("drop", over, to, dragged.data);
     send("dragend", dragged.source, to, dragged.data);
@@ -585,7 +589,7 @@ const HANDLERS = {
     const root = win.windowRoot;
     root.addEventListener("wheel", onWheel, { mozSystemGroup: true });
     win.windowUtils.sendWheelEvent(x, y, dx, dy, 0, win.WheelEvent.DOM_DELTA_PIXEL, 0, 0, 0, 0, null);
-    await sleep(win, WHEEL_START_MS);
+    await pause(WHEEL_START_MS);
     root.removeEventListener("wheel", onWheel, { mozSystemGroup: true });
     if (handledByPage) return { method: "page", handledByPage: true, moved: false };
     // Wheel scrolling is animated. Report where it ends, not a position part-way through.
@@ -593,7 +597,7 @@ const HANDLERS = {
       const now = `${scroller.scrollLeft},${scroller.scrollTop}`;
       if (now === last) break;
       last = now;
-      await sleep(win, WHEEL_POLL_MS);
+      await pause(WHEEL_POLL_MS);
     }
     // The wheel does not land exactly on the distance, and does nothing in a background tab.
     scroller?.scrollTo({ left: before.left + dx, top: before.top + dy, behavior: "instant" });

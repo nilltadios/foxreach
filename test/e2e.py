@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# /// script
+# dependencies = ["pillow"]
+# ///
 """End-to-end test: a real MCP client, through the bridge, to a real Firefox-based browser.
 
 Run:      uv run --python 3.15 test/e2e.py [--visible] [--only NAME]
@@ -7,6 +10,7 @@ Expected: every line PASS, exit 0. The browser is a throwaway instance on a temp
           it is restarted without Marionette before the tool tests, as in daily use.
 """
 import http.server
+import io
 import json
 import os
 import re
@@ -558,16 +562,8 @@ def t_scroll_and_shots(mcp):
 
 
 def colour_at(png, x, y):
-    code = (
-        "import io,sys,PIL.Image as I;"
-        "im=I.open(io.BytesIO(sys.stdin.buffer.read())).convert('RGB');"
-        f"print(*im.getpixel(({x},{y})))"
-    )
-    out = subprocess.run(
-        ["uv", "run", "--python", "3.15", "--with", "pillow", "python", "-c", code],
-        input=png, capture_output=True, check=True,
-    )
-    return tuple(int(v) for v in out.stdout.split())
+    from PIL import Image  # here, not at the top: test/ab/serve_pages.py imports this file without it
+    return Image.open(io.BytesIO(png)).convert("RGB").getpixel((x, y))
 
 
 def t_devtools(mcp):
@@ -678,16 +674,40 @@ def t_script(mcp):
 
     check("js timeout cuts a slow script",
           expect_error(lambda: mcp.call("javascript", tabId=tab, code="await new Promise(r => setTimeout(r, 4000)); 1", timeout=1), "Timed out|did not answer"))
-    started = time.monotonic()
-    check("js timeout allows a script longer than the default 30 s",
-          js(mcp, tab, "await new Promise(r => setTimeout(r, 33000)); 'late'", timeout=60) == "late")
-    check("js long script took its time", time.monotonic() - started > 32)
     mcp.call("tabs_close", tabId=tab)
 
     tab = tab_id(mcp.call("tabs_create", url=f"{MAIN}/csp"))
     js(mcp, tab, "cspGlobal = 'yes'; 1")
     check("js page globals under a strict CSP", js(mcp, tab, "window.cspGlobal") == "yes")
     mcp.call("tabs_close", tabId=tab)
+
+
+def start_long_script():
+    """A script that runs past the default 30 s timeout, given timeout=60. It runs from a second
+    agent in its own tab while the other tests go on, instead of holding the suite for 33 s; the
+    returned function waits for it and checks the result."""
+    client = McpClient(mcp_socket, name="long-script")
+    tab = tab_id(client.call("tabs_create", url=f"{MAIN}/main"))
+    result = {}
+
+    def run():
+        started = time.monotonic()
+        try:
+            result["value"] = js(client, tab, "await new Promise(r => setTimeout(r, 33000)); 'late'", timeout=60)
+        except Exception as e:
+            result["value"] = f"{type(e).__name__}: {e}"
+        result["took"] = time.monotonic() - started
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+
+    def finish():
+        thread.join(90)
+        check("js timeout allows a script longer than the default 30 s", result.get("value") == "late", result)
+        check("js long script took its time", result.get("took", 0) > 32, result)
+        client.call("tabs_close", tabId=tab)
+        client.close()
+    return finish
 
 
 def t_navigation(mcp):
@@ -740,8 +760,9 @@ def t_pointer(mcp):
     shot = lambda **kw: mcp.image(tabId=tab, format="png", **kw)[0]
     check("no pointer is drawn before any pointer action", colour_at(shot(), 302, 309) == red)
     mcp.call("hover", tabId=tab, x=300, y=300)
-    check("the pointer is drawn at the last position", colour_at(shot(), 302, 309) != red, colour_at(shot(), 302, 309))
-    check("the pointer is not drawn elsewhere", colour_at(shot(), 340, 340) == red)
+    hovered = shot()
+    check("the pointer is drawn at the last position", colour_at(hovered, 302, 309) != red, colour_at(hovered, 302, 309))
+    check("the pointer is not drawn elsewhere", colour_at(hovered, 340, 340) == red)
     check("show_pointer false leaves it out", colour_at(shot(show_pointer=False), 302, 309) == red)
     cropped = shot(region={"x": 290, "y": 290, "width": 40, "height": 40})
     check("the pointer follows a region", colour_at(cropped, 12, 19) != red, colour_at(cropped, 12, 19))
@@ -822,13 +843,10 @@ def t_agent_speed(mcp):
         mcp.call("click", tabId=tab, x=100, y=60)
         mcp.call("scroll", tabId=tab, dy=50)
         out = mcp.call("record", tabId=tab, action="stop", save_to=str(gif))
-        code = (
-            "import sys,PIL.Image as I;im=I.open(sys.argv[1]);n=im.n_frames;im.seek(1);"
-            "print(n,im.size[0],im.convert('RGB').getpixel((100,60))!=(0,0,0))"
-        )
-        info = subprocess.run(["uv", "run", "--python", "3.15", "--with", "pillow", "python", "-c", code, str(gif)],
-                              capture_output=True, text=True).stdout.split()
-        check("record saves a real animated GIF", info[:1] == ["4"] and int(info[1]) > 100, f"{out} {info}")
+        from PIL import Image
+        with Image.open(gif) as im:
+            info = (im.n_frames, im.size[0])
+        check("record saves a real animated GIF", info[0] == 4 and info[1] > 100, f"{out} {info}")
         check("recording stops", expect_error(lambda: mcp.call("record", tabId=tab, action="stop", save_to=str(gif)), "not recording"))
     mcp.call("tabs_close", tabId=tab)
 
@@ -987,6 +1005,19 @@ def popup_tests(browser, mcp):
     popup = f"moz-extension://{uuid}/popup/popup.html"
     m.command("WebDriver:Navigate", {"url": popup})
     run = lambda code: m.command("WebDriver:ExecuteAsyncScript", {"script": code, "args": [], "scriptTimeout": 8000})["value"]
+    # The popup asks the add-on for news every 2 s. Instead of waiting for that, redraw it now with
+    # the same state message and its own render(), then read: what the user would see next.
+    fresh = "browser.runtime.sendMessage({popup: 'state'}).then((s) => { render(s); arguments[0](%s); })"
+    text_of = lambda element: run(fresh % f"document.getElementById('{element}').textContent")  # noqa: E731
+    as_shown = lambda element: run(f"arguments[0](document.getElementById('{element}').textContent)")  # noqa: E731
+
+    def until(element, ok, timeout=10, read=None):
+        """The element's text once ok(text) holds, or its last text after timeout."""
+        deadline = time.time() + timeout
+        while not ok(text := (read or text_of)(element)) and time.time() < deadline:
+            time.sleep(0.1)
+        return text
+
     time.sleep(0.5)
     status = run("arguments[0](document.getElementById('status').textContent)")
     check("popup shows connected and trusted", "Connected" in status and "trusted input" in status, status)
@@ -1053,24 +1084,23 @@ def popup_tests(browser, mcp):
     tree = mcp.call("read_page", tabId=page)
     check("a blocked site in a frame is not loaded or read", "Frames" in tree and "Inner" not in tree, tree)
     mcp.call("navigate", tabId=page, url=f"{MAIN}/main")
-    log = run("setTimeout(() => arguments[0](document.getElementById('activity').textContent), 2200)")
+    log = until("activity", lambda t: "blocked a page load" in t and "localhost" in t)
     check("the activity log shows the blocked page load", "blocked a page load" in log and "localhost" in log, log[:400])
     set_blocked("127.0.0.1")
     run("document.getElementById('blocked').value = ''; document.getElementById('save-blocked').click(); setTimeout(() => arguments[0](1), 200)")
     check("unblocking restores access", "Press me" in mcp.call("read_page", tabId=page))
 
-    log = run("setTimeout(() => arguments[0](document.getElementById('activity').textContent), 2200)")
+    log = until("activity", lambda t: "foxreach-test: read_page" in t)
     check("activity log names the agent", "foxreach-test: read_page" in log, log[:300])
 
     # This popup's tab is the Marionette tab; a second page shows as an unshared entry.
     m.command("WebDriver:ExecuteScript", {"script": "window.open('" + MAIN + "/second')", "args": []})
-    time.sleep(0.8)
-    share = run("""const done = arguments[0]; setTimeout(async () => {
+    until("tabs", lambda t: "Second page" in t)
+    share = run("""const done = arguments[0];
         const boxes = [...document.querySelectorAll('#tabs input')];
         const row = boxes.find(b => !b.checked && b.parentElement.textContent.includes('Second page'));
         if (!row) return done(null);
-        row.click(); setTimeout(() => done(+row.dataset.tabId), 300);
-      }, 2200)""")
+        row.click(); setTimeout(() => done(+row.dataset.tabId), 300);""")
     check("user can share a tab", share and "Second" in mcp.call("get_page_text", tabId=share), share)
     run(f"""const done = arguments[0];
         const row = document.querySelector('#tabs input[data-tab-id="{share}"]');
@@ -1078,8 +1108,6 @@ def popup_tests(browser, mcp):
     check("user can stop sharing", expect_error(lambda: mcp.call("read_page", tabId=share), "not available to agents"))
 
     # Only listed sites. In this build the browser grants every site, so the list alone decides.
-    text_of = lambda element: run(f"setTimeout(() => arguments[0](document.getElementById('{element}').textContent), 300)")  # noqa: E731
-    redrawn = lambda: time.sleep(2.3)  # the popup asks for news every 2 s; its own clicks show at once  # noqa: E731
     press = lambda element, label: run(  # noqa: E731
         f"""[...document.querySelectorAll('#{element} button')].find((b) => b.textContent === {label!r}).click();
         setTimeout(() => arguments[0](1), 300)""")
@@ -1088,8 +1116,9 @@ def popup_tests(browser, mcp):
     listed = mcp.call("tabs_list")
     check("its title and path are not listed, its host is", "not allowed on yet (127.0.0.1)" in listed and "Main page" not in listed, listed)
     check("...and so is opening it", expect_error(lambda: mcp.call("tabs_create", url=f"{MAIN}/second"), "not allowed on 127.0.0.1 yet"))
-    redrawn()
-    check("the refused site shows as a request", "An agent asks for 127.0.0.1" in text_of("site-requests"), text_of("site-requests"))
+    # Read without redrawing: the popup's own refresh must bring the request in.
+    shown = until("site-requests", lambda t: "An agent asks for 127.0.0.1" in t, read=as_shown)
+    check("the refused site shows as a request, by the popup's own refresh", "An agent asks for 127.0.0.1" in shown, shown)
     press("site-requests", "Allow")
     check("allowing the request lets the agent in", "Press me" in mcp.call("read_page", tabId=page))
     check("the site is on the list", "127.0.0.1" in text_of("sites") and not text_of("site-requests"), text_of("sites"))
@@ -1117,10 +1146,11 @@ def popup_tests(browser, mcp):
             answers[key] = f"ERROR {e}"
 
     def asking(name, key):
+        """A new agent's first call, left waiting; returns once the popup shows its request."""
         client = McpClient(mcp_socket, name=name)
         thread = threading.Thread(target=attempt, args=(key, client))
         thread.start()
-        redrawn()
+        until("agent-requests", lambda t: f"{name} asks" in t)
         return client, thread
 
     one, thread = asking("newcomer", "one")
@@ -1139,6 +1169,9 @@ def popup_tests(browser, mcp):
     prompts = lambda: chrome(f"{prompts_js.replace('return ', 'return (')}).map((n) => n.id + ' ' + n.options.name)")  # noqa: E731
 
     def answer_prompt(action, remember=False):
+        deadline = time.time() + 10
+        while not prompts() and time.time() < deadline:
+            time.sleep(0.1)
         chrome(prompts_js.replace("return ", "const n = (") + f")[0]; "
                + ("n.mainAction.callback({ checkboxChecked: %s, source: 'button' });" % ("true" if remember else "false")
                   if action == "allow" else "n.secondaryActions[0].callback({ source: 'button' });"))
@@ -1148,7 +1181,7 @@ def popup_tests(browser, mcp):
     check("...and opens no window of its own", request_windows() == 0, request_windows())
     quiet = McpClient(mcp_socket, name="quiet-prober")
     probed = json.loads(quiet.call("status", ask=False))
-    redrawn()
+    time.sleep(0.5)  # a request that should never appear: give it the time it would take
     check("status with ask false (foxreach test) only reports, asking no one",
           probed.get("agentAccess") == "unasked" and "quiet-prober" not in text_of("agent-requests"),
           (probed, text_of("agent-requests")))
@@ -1156,13 +1189,13 @@ def popup_tests(browser, mcp):
     looker = McpClient(mcp_socket, name="looker")
     looked = json.loads(looker.call("status"))
     check("status needs no approval", looked["version"], looked)
-    redrawn()
+    shown = until("agent-requests", lambda t: "looker asks to use the browser" in t)
     check("...and asks the user at once for an agent that would have to wait, saying so",
           looked.get("agentAccess") == "waiting" and "tell the user" in looked.get("note", "")
-          and "looker asks to use the browser" in text_of("agent-requests"), (looked, text_of("agent-requests")))
+          and "looker asks to use the browser" in shown, (looked, shown))
     looker.close()
-    time.sleep(0.5)
-    redrawn()
+    # Its request goes when it does, so the Allow pressed next is the newcomer's.
+    until("agent-requests", lambda t: "looker" not in t)
     press("agent-requests", "Allow")
     thread.join(10)
     check("Allow lets the waiting call through", "other tabs" in answers.get("one", ""), answers)
@@ -1176,8 +1209,8 @@ def popup_tests(browser, mcp):
     answer_prompt("allow")
     thread.join(10)
     check("Allow in the browser prompt lets the call through", "other tabs" in answers.get("five", ""), answers)
-    redrawn()
-    check("...and the popup no longer lists the request", "prompted" not in text_of("agent-requests"), text_of("agent-requests"))
+    shown = until("agent-requests", lambda t: "prompted" not in t)
+    check("...and the popup no longer lists the request", "prompted" not in shown, shown)
     viaprompt.close()
     viaprompt, thread = asking("prompted", "six")
     answer_prompt("deny")
@@ -1187,8 +1220,8 @@ def popup_tests(browser, mcp):
     viaprompt, thread = asking("remembered", "seven")
     answer_prompt("allow", remember=True)
     thread.join(10)
-    redrawn()
-    check("the prompt's checkbox means Always", "remembered: always allowed" in text_of("agents"), text_of("agents"))
+    shown = until("agents", lambda t: "remembered: always allowed" in t)
+    check("the prompt's checkbox means Always", "remembered: always allowed" in shown, shown)
     press("agents", "Remove")
     viaprompt.close()
     two, thread = asking("newcomer", "two")
@@ -1209,10 +1242,10 @@ def popup_tests(browser, mcp):
     four, thread = asking("regular", "four")
     check("removing the name makes it ask again", "four" not in answers and "regular asks" in text_of("agent-requests"), answers)
     four.proc.kill()
-    redrawn()
-    check("a request goes away when its agent does", not text_of("agent-requests"), text_of("agent-requests"))
+    shown = until("agent-requests", lambda t: not t)
+    check("a request goes away when its agent does", not shown, shown)
     thread.join(10)
-    log = run("setTimeout(() => arguments[0](document.getElementById('activity').textContent), 2200)")
+    log = until("activity", lambda t: "newcomer: tabs_list" in t)
     check("the activity log shows who was refused", "newcomer: tabs_list" in log, log[:300])
     run("document.getElementById('ask').click(); setTimeout(() => arguments[0](1), 300)")
     check("with asking off, the test's own agent works again", "Press me" in mcp.call("read_page", tabId=page))
@@ -1233,8 +1266,29 @@ profile_dir = None
 BROWSER_NAME = None  # the browser under test, by the name foxreach's host gives it
 
 
+marks = []  # (section, when it started), for the time summary at the end
+
+
+def section(name):
+    marks.append((name, time.monotonic()))
+    print(f"--- {name}", flush=True)
+
+
+def time_summary(started):
+    """Seconds per section, slowest first, so a slow part stands out."""
+    ends = [when for _, when in marks[1:]] + [time.monotonic()]
+    spent = {}
+    for (name, begun), end in zip(marks, ends):
+        spent[name] = spent.get(name, 0) + end - begun
+    if marks:
+        spent["setup"] = marks[0][1] - started
+    parts = ", ".join(f"{name} {secs:.0f}" for name, secs in sorted(spent.items(), key=lambda kv: -kv[1]))
+    print(f"time: {time.monotonic() - started:.0f} s ({parts})")
+
+
 def main():
     global mcp_socket, BROWSER_NAME, profile_dir
+    started = time.monotonic()
     visible = "--visible" in sys.argv
     only = sys.argv[sys.argv.index("--only") + 1].split(",") if "--only" in sys.argv else None
     subprocess.run(["uv", "run", "--python", "3.15", str(ROOT / "scripts/build_install.py")], check=True, capture_output=True)
@@ -1251,7 +1305,9 @@ def main():
         browser.wait_for_socket()
         mcp = McpClient(browser.socket)
         if not only or "popup" in only:
+            section("popup")
             popup_tests(browser, mcp)
+        section("restart")
         # Stopping the browser just after a first install can leave the add-on recorded as active
         # but not running at the next start. Stop only once it has answered and the install settled.
         mcp.call("status")
@@ -1263,14 +1319,26 @@ def main():
         browser.start(marionette=False)
         browser.wait_for_socket()
         mcp = McpClient(browser.socket)
+        # The long script runs beside the tests from after protocol (which stops agents in the
+        # profile for a moment) and must end before policy, which closes every agent tab.
+        long_pending = not only or "script" in only
+        finish_long = None
         for name, test in TESTS.items():
+            if finish_long and name == "policy":
+                section("script (long, waiting for it)")
+                finish_long = finish_long()
             if only and name not in only:
                 continue
-            print(f"--- {name}", flush=True)
+            if long_pending and name != "protocol":
+                long_pending, finish_long = False, start_long_script()
+            section(name)
             try:
                 test(mcp)
             except Exception as e:
                 check(f"{name}: finished without an exception", False, f"{type(e).__name__}: {e}")
+        if finish_long:
+            section("script (long, waiting for it)")
+            finish_long()
         mcp.close()
     finally:
         browser.cleanup()
@@ -1278,6 +1346,7 @@ def main():
 
     failed = [n for n, ok in results if not ok]
     print(f"\n{len(results) - len(failed)} passed, {len(failed)} failed")
+    time_summary(started)
     return 1 if failed else 0
 
 
