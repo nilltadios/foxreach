@@ -319,6 +319,12 @@ own menu does). A ref whose element the page has replaced with an equal one (sam
 same role and name, and only one such element) is used again, and the reply says so; with no single
 match the ref is refused as stale.
 
+Pages that draw on animation frames (virtualized lists in mail apps and feeds) fill slowly in a
+background tab, which gets about one frame a second, and not at all while the browser paints
+nothing (the display is off or asleep). `status` with a `tabId` measures that page over 1.5 s
+(`page.framesPerSecond`, `page.hidden`, and a `note` when it matters), and `wait_for` adds the same
+note when it times out.
+
 `status` names the browser program in `app` (LibreWolf, Zen...), which the host reads from the
 process that started it: forks such as LibreWolf tell add-ons they are Firefox.
 

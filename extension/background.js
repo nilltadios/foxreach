@@ -499,6 +499,38 @@ const SETTLE_TRIES = 8;
 
 const BUTTONS = { left: 0, middle: 1, right: 2 };
 
+// How long to count a page's animation frames: a background tab gets about one a second.
+const PAINT_PROBE_MS = 1500;
+
+/** Animation frames the page drew in PAINT_PROBE_MS, and whether it is hidden; null if unknown. */
+async function paintState(tabId) {
+  try {
+    await contentCall(tabId, 0, "paintStart");
+    await sleep(PAINT_PROBE_MS);
+    const s = await contentCall(tabId, 0, "paintRead");
+    return s && { ...s, framesPerSecond: Math.round((s.frames * 1000) / Math.max(s.ms, 1)) };
+  } catch {
+    return null;
+  }
+}
+
+/** What an agent should know when a page may not be drawing, or "" when it is. */
+function paintNote(state) {
+  if (!state) return "";
+  if (state.frames === 0) {
+    return `The page drew no frames in ${(state.ms / 1000).toFixed(1)} s: the browser is not painting it` +
+      `${state.hidden ? "" : " although it is the visible tab"}, as when the display is off or asleep. ` +
+      "Pages that draw on animation frames (virtualized lists such as mail inboxes, feeds) do not update " +
+      "until it paints again; ask the user to wake the display.";
+  }
+  if (state.hidden) {
+    return `This tab is in the background (document.hidden), where the page gets about ${state.framesPerSecond} frame(s) a second, ` +
+      "so lists that draw on animation frames fill slowly. tabs_select brings it to the front of its window " +
+      "(the user then sees it).";
+  }
+  return "";
+}
+
 /** Remember where the pointer is in viewport coordinates. A frame's own point can't be used directly. */
 function notePointer(tabId, point, result) {
   const place = result?.viewportPoint ?? (point.frameId ? null : point);
@@ -680,6 +712,15 @@ async function capture(tabId, options) {
 
 const TOOLS = {
   async status(args, client, { access } = {}) {
+    // With a tab: whether that page is being painted (takes PAINT_PROBE_MS).
+    let page;
+    if (args?.tabId !== undefined) {
+      await accessibleTab(args.tabId);
+      const state = await paintState(args.tabId);
+      const note = paintNote(state);
+      page = state ? { tabId: args.tabId, hidden: state.hidden, framesPerSecond: state.framesPerSecond, ...(note ? { note } : {}) }
+        : { tabId: args.tabId, note: "Could not measure painting on this page." };
+    }
     return {
       text: JSON.stringify({
         version: VERSION,
@@ -691,6 +732,7 @@ const TOOLS = {
         siteAccess: settings.siteAccess,
         agentTabs: agentTabs.size,
         agentAccess: access,
+        ...(page ? { page } : {}),
         ...(access === "waiting" ? {
           note: `This agent needs the user's permission before any other tool works. The user is being asked ${askedWhere()}: ` +
             "tell the user now to answer it there (Always keeps the answer for this agent).",
@@ -1020,7 +1062,8 @@ const TOOLS = {
       if (r.found) return { text: `Found ${selector ?? JSON.stringify(text)}.` };
       await sleep(200);
     }
-    throw new Error(`Not found within ${timeout} s: ${selector ?? JSON.stringify(text)}.`);
+    const note = paintNote(await paintState(tabId));
+    throw new Error(`Not found within ${timeout} s: ${selector ?? JSON.stringify(text)}.${note ? ` ${note}` : ""}`);
   },
 
   async javascript({ tabId, code, frame_id = 0, timeout = JS_TIMEOUT_S, full = false }) {

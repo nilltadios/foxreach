@@ -411,7 +411,8 @@ async function callTool(name, args = {}) {
     let status;
     try {
       // ask false (`foxreach test`) reports this agent's access without prompting the user.
-      status = JSON.parse((await callBrowser("status", args.ask === false ? { ask: false } : {})).text);
+      const forward = { ...(args.ask === false ? { ask: false } : {}), ...(args.tabId !== undefined ? { tabId: args.tabId } : {}) };
+      status = JSON.parse((await callBrowser("status", forward)).text);
     } catch (e) {
       // Several browsers and none chosen yet: say so, with the list, instead of failing.
       if (!e.several) throw e;

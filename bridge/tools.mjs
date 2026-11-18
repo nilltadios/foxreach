@@ -18,6 +18,7 @@ const tool = (name, description, properties = {}, required = []) => ({
 export const TOOLS = [
   tool("status", "Report whether the browser is connected, the add-on and bridge versions (with a warning if they differ), whether input is trusted (isTrusted=true), and whether the user allows agents on every site (siteAccess \"all\") or only on listed ones. Works before the user has allowed this agent, and asks the user at once for one that would have to wait (agentAccess \"waiting\"); other tools then wait for the user's answer.", {
     ask: { type: "boolean", description: "Ask the user now if this agent is not yet allowed. Default true; false only reports it (agentAccess \"unasked\")." },
+    tabId: { type: "integer", description: "Also report whether this tab's page is being painted (page.framesPerSecond, page.note), measured over 1.5 s: a background tab gets about one frame a second, and none means the display may be off." },
   }),
   tool("browsers_list", "List the browsers connected to foxreach (the user may run several: Firefox, LibreWolf, Flatpak and AppImage builds, profiles), with the id to pass to browser_select, which one this session uses, and the user's default."),
   tool("browser_select", "Work in this browser for the rest of the session. Needed only when several browsers are connected and the user set no default: tools then say so and list them. Tabs belong to one browser.", {

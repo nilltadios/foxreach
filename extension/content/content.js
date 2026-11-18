@@ -441,6 +441,32 @@
     return { hit };
   }
 
+  /*
+   * Whether the page is being painted: animation frames counted between paintStart and paintRead
+   * (the background keeps the time; this page's timers are slowed down in a background tab).
+   * A background tab gets about one frame a second; none at all means the browser is not painting,
+   * as when the display is off.
+   */
+  let paintProbe = null;
+  function paintStart() {
+    const probe = { frames: 0, since: performance.now(), done: false };
+    paintProbe = probe;
+    const tick = () => {
+      if (probe.done) return;
+      probe.frames++;
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+    return { ok: true };
+  }
+  function paintRead() {
+    const probe = paintProbe;
+    paintProbe = null;
+    if (!probe) return null;
+    probe.done = true;
+    return { frames: probe.frames, ms: Math.round(performance.now() - probe.since), hidden: document.hidden };
+  }
+
   function formInput({ ref, value }) {
     const el = getRef(ref);
     userFilled.delete(el); // the agent's own value
@@ -621,7 +647,7 @@
   }
 
   const OPS = {
-    readPage, evaluate, find, pageText, point, watchPress, pressResult, formInput, setFiles, viewport, waitCheck, focusInfo, filledSecret, secretRects, agentInput,
+    readPage, evaluate, find, pageText, point, watchPress, pressResult, paintStart, paintRead, formInput, setFiles, viewport, waitCheck, focusInfo, filledSecret, secretRects, agentInput,
     untrustedMouse, untrustedType, untrustedKeys, untrustedScroll,
     ping: () => ({ ok: true }),
     scrollTo: ({ ref }) => {

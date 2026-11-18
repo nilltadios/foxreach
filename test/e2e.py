@@ -308,6 +308,22 @@ def t_refs(mcp):
     mcp.call("tabs_close", tabId=tab)
 
 
+def t_painting(mcp):
+    """status with a tab, and wait_for on timeout, say when a page is drawn slowly or not at all."""
+    tab = tab_id(mcp.call("tabs_create", url=f"{MAIN}/second"))  # in the background, as by default
+    page = json.loads(mcp.call("status", tabId=tab))["page"]
+    check("status: a background tab is hidden and gets few frames",
+          page["hidden"] is True and page["framesPerSecond"] <= 5 and "background" in page.get("note", ""), page)
+    err = mcp.call_raw("wait_for", tabId=tab, selector="#never", timeout=1)
+    text = err["content"][0]["text"]
+    check("wait_for timeout in a background tab explains the frame rate", err.get("isError") and "Not found" in text and "background" in text, text)
+    mcp.call("tabs_select", tabId=tab)
+    page = json.loads(mcp.call("status", tabId=tab))["page"]
+    check("status: the selected tab paints with no note", page["hidden"] is False and page["framesPerSecond"] >= 20 and "note" not in page, page)
+    check("status without tabId does not measure", "page" not in json.loads(mcp.call("status")))
+    mcp.call("tabs_close", tabId=tab)
+
+
 def t_keyboard(mcp):
     tab = tab_id(mcp.call("tabs_create", url=f"{MAIN}/main"))
     tree = mcp.call("read_page", tabId=tab)
@@ -1313,7 +1329,7 @@ def popup_tests(browser, mcp):
 
 
 TESTS = {
-    "protocol": t_protocol, "click": t_click_trusted, "refs": t_refs, "keyboard": t_keyboard, "focus": t_focus_switch, "read": t_read,
+    "protocol": t_protocol, "click": t_click_trusted, "refs": t_refs, "painting": t_painting, "keyboard": t_keyboard, "focus": t_focus_switch, "read": t_read,
     "forms": t_forms, "frames": t_frames, "scroll": t_scroll_and_shots, "devtools": t_devtools, "script": t_script,
     "navigation": t_navigation, "dialogs": t_dialogs, "drag": t_drag, "background": t_background_tab,
     "policy": t_policy, "multi": t_multi_agent, "speed": t_agent_speed, "pointer": t_pointer,
