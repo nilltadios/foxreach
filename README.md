@@ -311,6 +311,14 @@ address whole; `find` still matches addresses.
 `find` lists elements that match most of the query's words. When none does, it lists up to five
 that match some of them, under "Nothing matches most of ...", instead of nothing.
 
+A click or hover by ref scrolls the element into view only when it is not already in view, and
+after a scroll measures it again until it stops moving: virtualized lists (mail inboxes, feeds)
+redraw a frame or more after scrolling. A click by ref then says when the press landed outside the
+element, and a right-click says whether the page took it (handled `contextmenu`, as a page with its
+own menu does). A ref whose element the page has replaced with an equal one (same id and role, or
+same role and name, and only one such element) is used again, and the reply says so; with no single
+match the ref is refused as stale.
+
 `status` names the browser program in `app` (LibreWolf, Zen...), which the host reads from the
 process that started it: forks such as LibreWolf tell add-ons they are Firefox.
 

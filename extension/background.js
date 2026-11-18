@@ -476,12 +476,26 @@ const NOT_TEXT_HINT = "Click the field (or pass ref), check with read_page that 
 async function targetPoint(tabId, args) {
   if (args.ref) {
     const { frameId, ref } = parseRef(args.ref);
-    const p = await contentCall(tabId, frameId, "point", { ref });
-    return { x: p.x, y: p.y, frameId, coveredBy: p.coveredBy };
+    let p = await contentCall(tabId, frameId, "point", { ref });
+    const refound = p.refound;
+    // After a scroll, a virtualized list redraws a frame or more later and can move or replace the
+    // element. Measure again (timers here are not slowed down like a background tab's) until the
+    // box stays put, then hit-test there; a ref replaced meanwhile is found again or refused.
+    for (let i = 0; p.scrolled && i < SETTLE_TRIES; i++) {
+      await sleep(SETTLE_MS);
+      const again = await contentCall(tabId, frameId, "point", { ref, scroll: false });
+      const still = again.box === p.box;
+      p = { ...again, scrolled: !still };
+    }
+    return { x: p.x, y: p.y, frameId, coveredBy: p.coveredBy, refound: refound ?? p.refound, ref: args.ref };
   }
   if (typeof args.x !== "number" || typeof args.y !== "number") throw new Error("Give either ref, or x and y.");
   return { x: args.x, y: args.y, frameId: 0, coveredBy: null };
 }
+
+// Measuring a ref again after scrolling it into view: every SETTLE_MS, up to SETTLE_TRIES times.
+const SETTLE_MS = 60;
+const SETTLE_TRIES = 8;
 
 const BUTTONS = { left: 0, middle: 1, right: 2 };
 
@@ -524,6 +538,7 @@ async function dispatchMouse(tabId, point, { action, button = 0, count = 1, modi
 
 const inputNote = (point, res) =>
   (trusted ? "" : " (untrusted event: sites can ignore it)") +
+  (point.refound ? ` Ref ${point.ref} was stale; the page had replaced it with the same ${point.refound}, which was used.` : "") +
   (point.coveredBy ? ` Warning: the element is covered by ${point.coveredBy}, which took the input.` : "") +
   (res?.attempts > 1 ? ` Delivered on attempt ${res.attempts}.` : "");
 
@@ -815,13 +830,20 @@ const TOOLS = {
     await assertNoDialog(tabId);
     if (!(button in BUTTONS)) throw new Error(`button must be left, middle or right.`);
     const point = await targetPoint(tabId, args);
+    const watched = point.ref ? await contentCall(tabId, point.frameId, "watchPress", { ref: parseRef(point.ref).ref }).then(() => true, () => false) : false;
     const res = await dispatchMouse(tabId, point, { action: "click", button: BUTTONS[button], count, modifiers });
     recordPoint(tabId, point);
+    const press = watched ? (await contentCall(tabId, point.frameId, "pressResult").catch(() => null))?.hit : null;
+    const missed = press && !press.inside
+      ? ` Warning: the press landed on ${press.target}, outside ${point.ref}: the page moved or redrew it after it was measured. Check the result before going on.`
+      : "";
+    const menu = res.pageMenu === true ? " The page took the right-click (it handles contextmenu itself)."
+      : res.pageMenu === false ? " The page did not take the right-click (no handler prevented contextmenu), so it opened no menu of its own." : "";
     let dialog = trusted ? await privileged(tabId, "dialogState") : {};
     const moved = dialog.open ? "" : await afterInput(tabId, before);
     if (!dialog.open && trusted) dialog = await privileged(tabId, "dialogState").catch(() => ({}));
     return {
-      text: `Clicked ${res.target ?? "the element"} at (${Math.round(point.x)}, ${Math.round(point.y)}).${inputNote(point, res)}${moved}` +
+      text: `Clicked ${res.target ?? "the element"} at (${Math.round(point.x)}, ${Math.round(point.y)}).${inputNote(point, res)}${missed}${menu}${moved}` +
         (dialog.open ? ` A ${dialog.type} dialog opened: ${JSON.stringify(dialog.message)}. Use handle_dialog.` : ""),
     };
   },

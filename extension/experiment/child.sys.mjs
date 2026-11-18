@@ -522,14 +522,23 @@ const HANDLERS = {
     }
     const mask = BUTTON_MASK[button];
     let attempts = 0;
-    for (let n = 1; n <= count; n++) {
-      const opts = { button, buttons: mask, clickCount: n, modifiers: flags };
-      attempts = Math.max(attempts, await pressConfirmed(win, x, y, opts));
-      if (button === 2) fire(win, "contextmenu", x, y, opts);
-      fire(win, "mouseup", x, y, { ...opts, buttons: 0 });
+    // A right-click: whether the page took the contextmenu event (called preventDefault, as a page
+    // with its own menu does). Read in the system group, after every handler of the page's.
+    let pageMenu = null;
+    const onMenu = (e) => (pageMenu = pageMenu || e.defaultPrevented);
+    if (button === 2) win.windowRoot.addEventListener("contextmenu", onMenu, { mozSystemGroup: true });
+    try {
+      for (let n = 1; n <= count; n++) {
+        const opts = { button, buttons: mask, clickCount: n, modifiers: flags };
+        attempts = Math.max(attempts, await pressConfirmed(win, x, y, opts));
+        if (button === 2) fire(win, "contextmenu", x, y, opts);
+        fire(win, "mouseup", x, y, { ...opts, buttons: 0 });
+      }
+    } finally {
+      if (button === 2) win.windowRoot.removeEventListener("contextmenu", onMenu, { mozSystemGroup: true });
     }
     syncFocus(win);
-    return { target, attempts };
+    return { target, attempts, ...(button === 2 ? { pageMenu } : {}) };
   },
 
   async drag(win, { from, to, modifiers }) {

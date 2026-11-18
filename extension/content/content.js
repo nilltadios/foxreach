@@ -78,20 +78,58 @@
       el.hasAttribute("onclick") || (el.hasAttribute("tabindex") && el.tabIndex >= 0);
   }
 
-  function refFor(el) {
+  /*
+   * A ref keeps its element's role, name and id from when it was handed out. Pages that redraw
+   * (virtualized lists, React re-renders) replace elements with equal ones; a stale ref is then
+   * found again, but only when exactly one element in the page has the same id and role, or the
+   * same role and name. Anything less certain stays an error.
+   */
+  function refFor(el, role = roleOf(el), name) {
     let id = refOf.get(el);
     if (!id) {
       id = `r${nextRef++}`;
       refOf.set(el, id);
-      refs.set(id, new WeakRef(el));
+      refs.set(id, { el: new WeakRef(el), role, name: name ?? nameOf(el), id: el.id || null, tag: el.localName });
     }
     return id;
   }
 
+  function allElements(root = document, out = []) {
+    for (const el of root.querySelectorAll("*")) {
+      out.push(el);
+      const inner = shadow(el);
+      if (inner) allElements(inner, out);
+    }
+    return out;
+  }
+
+  function refind(entry) {
+    const same = (el) => el.localName === entry.tag && roleOf(el) === entry.role;
+    if (entry.id) {
+      const byId = allElements().filter((el) => el.id === entry.id && same(el));
+      if (byId.length === 1) return byId[0];
+    }
+    if (!entry.name) return null;
+    const byName = allElements().filter((el) => same(el) && nameOf(el) === entry.name && isVisible(el));
+    return byName.length === 1 ? byName[0] : null;
+  }
+
+  // Refs found again since the last call that reported them.
+  const refound = new Set();
+
   function getRef(id) {
-    const el = refs.get(id)?.deref();
-    if (!el || !el.isConnected) throw new Error(`Ref ${id} is stale: the element is gone. Call read_page or find again.`);
-    return el;
+    const entry = refs.get(id);
+    const el = entry?.el.deref();
+    if (el?.isConnected) return el;
+    const again = entry && refind(entry);
+    if (again) {
+      entry.el = new WeakRef(again);
+      refOf.set(again, id);
+      refound.add(id);
+      return again;
+    }
+    const what = entry ? `${entry.role ?? entry.tag}${entry.name ? ` "${entry.name}"` : ""}` : "";
+    throw new Error(`Ref ${id} is stale: the element is gone${what ? ` and no single ${what} took its place` : ""}. Call read_page or find again.`);
   }
 
   /*
@@ -219,7 +257,7 @@
     const layoutOnly = opts.lean && !name && !isInteractive(el, role);
     const id = el.id && !layoutOnly ? ` #${clean(el.id, 40)}` : "";
     return `${"  ".repeat(depth)}- ${role ?? el.localName}${name ? ` "${name.replace(/"/g, "'")}"` : ""}${id}` +
-      ` [${refFor(el)}]${state.length ? ` (${state.join(", ")})` : ""}`;
+      ` [${refFor(el, role, name)}]${state.length ? ` (${state.join(", ")})` : ""}`;
   }
 
   // For comparing a container's name with its children's: letters and digits only.
@@ -344,17 +382,63 @@
     return { text: text.slice(0, maxChars), truncated: text.length > maxChars, url: location.href, title: document.title };
   }
 
-  function point({ ref }) {
+  /*
+   * The centre of a ref's element, scrolled into view first unless it already is: scrolling makes
+   * virtualized lists redraw (on the scroll event, a frame or more later), which can move or
+   * replace the element after it was measured. The background measures again after a scroll
+   * (scroll: false) until the box stops moving. `hit` says what is on top at that point: the
+   * element itself, something inside it, or something else covering it.
+   */
+  function point({ ref, scroll = true }) {
     const el = getRef(ref);
-    el.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
-    const r = el.getBoundingClientRect();
+    let r = el.getBoundingClientRect();
+    const inView = r.width > 0 && r.height > 0 && r.top >= 0 && r.left >= 0 &&
+      r.bottom <= innerHeight && r.right <= innerWidth;
+    let scrolled = false;
+    if (scroll && !inView) {
+      el.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
+      r = el.getBoundingClientRect();
+      scrolled = true;
+    }
     if (r.width === 0 && r.height === 0) throw new Error(`Ref ${ref} has no size on screen.`);
     const x = r.left + r.width / 2;
     const y = r.top + r.height / 2;
     let top = document.elementFromPoint(x, y);
     while (top && shadow(top)?.elementFromPoint(x, y) && shadow(top).elementFromPoint(x, y) !== top) top = shadow(top).elementFromPoint(x, y);
     const covered = top && top !== el && !el.contains(top) && !top.contains(el);
-    return { x, y, coveredBy: covered ? `${top.localName}${top.id ? `#${top.id}` : ""}` : null };
+    const wasStale = refound.delete(ref);
+    return {
+      x, y, scrolled, box: [r.left, r.top, r.width, r.height].map(Math.round).join(","),
+      coveredBy: covered ? `${top.localName}${top.id ? `#${top.id}` : ""}` : null,
+      refound: wasStale ? `${roleOf(el) ?? el.localName}${nameOf(el) ? ` "${clean(nameOf(el), 60)}"` : ""}` : null,
+    };
+  }
+
+  /*
+   * Where a click's press really landed. Set just before the press, read just after: a page that
+   * redraws between measuring and pressing can put something else under the point.
+   */
+  let pressWatch = null;
+  function watchPress({ ref }) {
+    const el = getRef(ref);
+    const w = { el, hit: null };
+    pressWatch = w;
+    addEventListener("mousedown", (e) => {
+      if (pressWatch !== w) return;
+      const path = e.composedPath();
+      const host = el.getRootNode() instanceof ShadowRoot ? el.getRootNode().host : null;
+      // On the element, inside it, on an ancestor (the element lets presses through), or on the
+      // host of the closed shadow root it sits in.
+      const inside = path.includes(el) || (path[0]?.contains?.(el) ?? false) || (host !== null && path.includes(host));
+      const t = path[0];
+      w.hit = { inside, target: t?.localName ? `${t.localName}${t.id ? `#${t.id}` : ""}` : String(t) };
+    }, { capture: true, once: true });
+    return { ok: true };
+  }
+  function pressResult() {
+    const hit = pressWatch?.hit ?? null;
+    pressWatch = null;
+    return { hit };
   }
 
   function formInput({ ref, value }) {
@@ -537,10 +621,14 @@
   }
 
   const OPS = {
-    readPage, evaluate, find, pageText, point, formInput, setFiles, viewport, waitCheck, focusInfo, filledSecret, secretRects, agentInput,
+    readPage, evaluate, find, pageText, point, watchPress, pressResult, formInput, setFiles, viewport, waitCheck, focusInfo, filledSecret, secretRects, agentInput,
     untrustedMouse, untrustedType, untrustedKeys, untrustedScroll,
     ping: () => ({ ok: true }),
-    scrollTo: ({ ref }) => ({ ...point({ ref }), ...viewport() }),
+    scrollTo: ({ ref }) => {
+      // Always scrolls, even an element already in view: scroll_to means "put it in the middle".
+      getRef(ref).scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
+      return { ...point({ ref, scroll: false }), ...viewport() };
+    },
   };
 
   browser.runtime.onMessage.addListener((msg) => {

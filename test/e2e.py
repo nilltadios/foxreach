@@ -109,6 +109,18 @@ addEventListener('mousemove',e=>{{if(on){{handle.style.left=(e.clientX-25)+'px';
 addEventListener('mouseup',()=>on=false);</script>""",
     "/csp": """<!doctype html><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'none'">
 <title>CSP</title><p>locked</p>""",
+    "/refs": f"""<!doctype html><meta charset=utf-8><title>Refs</title>{RECORDER}<body style="margin:0;height:4000px">
+<div id=slot><button id=redrawn onclick="window.hits=(window.hits||0)+1">Redrawn button</button></div>
+<div id=twin><button onclick="window.twinHits=(window.twinHits||0)+1">Twin button</button></div>
+<button id=dodge style="position:absolute;left:20px;top:120px;width:120px;height:30px">Dodging button</button>
+<button id=under2 style="position:absolute;left:20px;top:200px;width:120px;height:30px">Left behind</button>
+<div id=menu oncontextmenu="event.preventDefault();window.menus=(window.menus||0)+1"
+  style="position:absolute;left:20px;top:260px;width:120px;height:30px" role=button>Has a menu</div>
+<div style="position:absolute;top:2500px"><button id=lower onclick="window.lowerHits=(window.lowerHits||0)+1">Lower button</button></div>
+<script>
+// Jumps away when the pointer arrives, so the press lands on what was under it.
+dodge.addEventListener('mousemove', () => {{ dodge.style.top = '600px'; under2.style.top = '120px'; }});
+</script>""",
     "/filedrop": """<!doctype html><title>File</title><input id=f type=file>
 <script nonce=x></script>""",
 }
@@ -255,6 +267,44 @@ def t_click_trusted(mcp):
     under = mcp.call("find", tabId=tab, query="Hidden under")
     out = mcp.call("click", tabId=tab, ref=ref_of(under, "Hidden under"))
     check("covered element gives a warning", "covered by div#cover" in out, out)
+    mcp.call("tabs_close", tabId=tab)
+
+
+def t_refs(mcp):
+    """Ref clicks: a redrawn element is found again or refused, an element in view is not
+    scrolled, a press that lands elsewhere is reported, right-clicks say whether the page took them."""
+    tab = tab_id(mcp.call("tabs_create", url=f"{MAIN}/refs"))
+    tree = mcp.call("read_page", tabId=tab)
+    redrawn, twin = ref_of(tree, "Redrawn button"), ref_of(tree, "Twin button")
+    dodge, menu, lower = ref_of(tree, "Dodging button"), ref_of(tree, "Has a menu"), ref_of(tree, "Lower button")
+
+    # The page replaces the element with an equal one, as React or a virtualized list does.
+    js(mcp, tab, "const b = document.getElementById('redrawn'); b.replaceWith(b.cloneNode(true)); 1")
+    out = mcp.call("click", tabId=tab, ref=redrawn)
+    check("stale ref: the same element (id and role) is found again", js(mcp, tab, "window.hits") == 1 and "was stale" in out, out)
+    # Two equal buttons with no id take its place: which one is meant is unknown, so refuse.
+    js(mcp, tab, "const t = document.querySelector('#twin button'); t.replaceWith(t.cloneNode(true), t.cloneNode(true)); 1")
+    check("stale ref with two equal replacements is refused",
+          expect_error(lambda: mcp.call("click", tabId=tab, ref=twin), "stale.*no single button"))
+    check("...and nothing was clicked", js(mcp, tab, "window.twinHits ?? 0") == 0)
+
+    js(mcp, tab, "scrollTo(0, 40); 1")
+    mcp.call("click", tabId=tab, ref=menu)  # at 220 px in a page scrolled by 40 px
+    check("a ref already in view is clicked without scrolling", js(mcp, tab, "scrollY") == 40)
+    mcp.call("click", tabId=tab, ref=lower)
+    check("a ref out of view is scrolled to and clicked",
+          js(mcp, tab, "window.lowerHits") == 1 and js(mcp, tab, "scrollY") > 1500)
+    js(mcp, tab, "scrollTo(0, 0); 1")
+
+    out = mcp.call("click", tabId=tab, ref=dodge)
+    check("a press that lands on another element is reported", "landed on button#under2" in out, out)
+
+    out = mcp.call("click", tabId=tab, ref=menu, button="right")
+    check("right-click on an element with its own menu says the page took it",
+          "page took the right-click" in out and js(mcp, tab, "window.menus") == 1, out)
+    out = mcp.call("click", tabId=tab, ref=lower, button="right")
+    check("right-click where the page has no menu says so", "did not take the right-click" in out, out)
+    mcp.call("press_key", tabId=tab, keys="Escape")
     mcp.call("tabs_close", tabId=tab)
 
 
@@ -1263,7 +1313,7 @@ def popup_tests(browser, mcp):
 
 
 TESTS = {
-    "protocol": t_protocol, "click": t_click_trusted, "keyboard": t_keyboard, "focus": t_focus_switch, "read": t_read,
+    "protocol": t_protocol, "click": t_click_trusted, "refs": t_refs, "keyboard": t_keyboard, "focus": t_focus_switch, "read": t_read,
     "forms": t_forms, "frames": t_frames, "scroll": t_scroll_and_shots, "devtools": t_devtools, "script": t_script,
     "navigation": t_navigation, "dialogs": t_dialogs, "drag": t_drag, "background": t_background_tab,
     "policy": t_policy, "multi": t_multi_agent, "speed": t_agent_speed, "pointer": t_pointer,
