@@ -643,6 +643,16 @@ def t_script(mcp):
           js(mcp, tab, "let v = await 1; if (v) { v++ } else { v-- } try { v *= 10 } catch (e) {} v") == 20)
     check("js an object literal's } does not end a statement",
           js(mcp, tab, "const o = await { k: 3 }; ({ k: o.k })") == {"k": 3})
+    # A function declared first and awaited on the next line inside "[...]": tried as one expression
+    # this compiled as a function expression indexed by [...], so "fix is not defined" (2026-11-18).
+    check("js a declared async function awaited inside [...] on the next line",
+          js(mcp, tab, "async function fix(id) {\n  return id * 2;\n}\n[await fix(21)]") == [42])
+    check("js ...a declared function called inside (...) on the next line",
+          js(mcp, tab, "function twice(x) { return x * 2 }\n(twice(4))") == 8)
+    check("js ...a class declared first, used on the next line",
+          js(mcp, tab, "// helper\nclass Pt { constructor(x) { this.x = x } }\n[new Pt(3).x]") == [3])
+    check("js a function expression on its own is still a value",
+          mcp.call("javascript", tabId=tab, code="(function named() { return 1 })").startswith("function named"))
     check("js a plain script's const stays local", js(mcp, tab, "const localOnly = 1; localOnly") == 1
           and js(mcp, tab, "typeof window.localOnly") == "undefined")
 

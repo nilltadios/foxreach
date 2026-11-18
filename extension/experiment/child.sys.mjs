@@ -392,6 +392,12 @@ function pageGlobal(win) {
   };
 }
 
+/** Whether code, read as a script, opens with a function or class declaration (after comments). */
+function startsWithDeclaration(code) {
+  const start = code.replace(/^(\s|\/\/[^\n]*|\/\*[\s\S]*?\*\/)*/, "");
+  return /^(async[ \t]+function\b|function\b|class\b)/.test(start);
+}
+
 function runInPage(win, code) {
   const run = pageGlobal(win);
   // Serialized in the page's realm, with the page's JSON: a page that replaces JSON can only
@@ -419,8 +425,13 @@ function runInPage(win, code) {
     if (r.error) return r.syntax ? undefined : r.error;
     return r.value;
   };
-  const asExpression = compileOnly(inAsync(`(${body})`));
-  if (asExpression !== undefined) return asExpression;
+  // Code that starts with a function or class declaration is never tried as one expression: there
+  // "async function f() {}\n[await f()]" compiles as a function expression indexed by [...], whose
+  // name exists only inside its own body ("f is not defined").
+  if (!startsWithDeclaration(body)) {
+    const asExpression = compileOnly(inAsync(`(${body})`));
+    if (asExpression !== undefined) return asExpression;
+  }
   if (!/\bawait\b/.test(code)) {
     // A plain script: the language's own completion value is its last expression. In a block, so
     // its let/const end with this call (a second call may declare the same names again).
