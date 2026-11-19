@@ -52,7 +52,10 @@ the host.
 
 `.github/workflows/manager.yml` builds all four files on GitHub's native runners (`ubuntu-24.04`
 and `ubuntu-24.04-arm`) when `manager/` (or the workflow, `scripts/build_binary.py`,
-`.bun-version`) changes on a branch or in a pull request, or by hand (*Run workflow*):
+`.bun-version`, or `bridge/agents.mjs`, `addon.mjs`, `browsers.mjs`, which the tests read) changes
+on a branch or in a pull request, or by hand (*Run workflow*). Its `test` job runs `cargo test
+--locked` first (among the tests: every agent, linked app and browser foxreach knows has a bundled
+icon); the package jobs wait for it, so a failing test builds and attaches nothing:
 
 | File | Built by | Checked by |
 |---|---|---|

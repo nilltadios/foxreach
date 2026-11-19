@@ -1,7 +1,8 @@
 # Builds the foxreach manager (manager/) as an AppImage and a Flatpak bundle, each for x86_64 and
 # aarch64, on native runners (no emulation), checks each one without a display, and keeps the four
 # files and their .sha256 as this run's artifacts (manager-appimage-ARCH, manager-flatpak-ARCH).
-# release.yml calls it on a tag and attaches the files to the release.
+# release.yml calls it on a tag and attaches the files to the release. The packages are built only
+# when the manager's unit tests pass (the `test` job), so a failing test attaches nothing.
 #
 # The aarch64 jobs also fail if any shipped ELF file has a LOAD segment aligned below 16 KiB:
 # such a file does not load on a 16 KiB-page kernel (Asahi Linux on Apple Silicon). GitHub's arm
@@ -20,17 +21,45 @@ on:
       - .github/workflows/manager.yml
       - scripts/build_binary.py
       - .bun-version
+      # Read by the manager's tests (src/icons.rs): an agent or browser added there without a logo
+      # fails the test job.
+      - bridge/agents.mjs
+      - bridge/addon.mjs
+      - bridge/browsers.mjs
   pull_request:
     paths:
       - manager/**
       - .github/workflows/manager.yml
       - scripts/build_binary.py
       - .bun-version
+      # Read by the manager's tests (src/icons.rs): an agent or browser added there without a logo
+      # fails the test job.
+      - bridge/agents.mjs
+      - bridge/addon.mjs
+      - bridge/browsers.mjs
 
 permissions:
   contents: read
 
 jobs:
+  # The manager's unit tests, among them the ones that fail when an agent, linked app or browser
+  # foxreach knows has no bundled icon. They read bridge/*.mjs, so they need the whole checkout.
+  # libxkbcommon is the only system library the build links (wayland-sys is built with dlopen);
+  # pkg-config is how smithay-client-toolkit finds it.
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build dependencies
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends pkg-config libxkbcommon-dev
+      - name: cargo test
+        working-directory: manager
+        run: |
+          rustup toolchain install   # the one in rust-toolchain.toml
+          cargo test --locked
+
   # What both packages need and is the same for both architectures: the foxreach program for each
   # (Bun builds both from here, the same bytes as the release's files) and the vendored crates the
   # offline Flatpak build uses.
@@ -60,7 +89,7 @@ jobs:
           retention-days: 1
 
   appimage:
-    needs: prepare
+    needs: [test, prepare]
     strategy:
       fail-fast: false
       matrix:
@@ -94,7 +123,7 @@ jobs:
           if-no-files-found: error
 
   flatpak:
-    needs: prepare
+    needs: [test, prepare]
     strategy:
       fail-fast: false
       matrix:
