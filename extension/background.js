@@ -25,6 +25,10 @@ const trusted = typeof browser.foxreachInput !== "undefined";
 const recordings = new Map();
 const consoleCleared = new Map();
 const openedBy = new Map();
+// Which connection (one agent session, numbered by the host) opened each agent tab, for
+// tabs_close's mine and the hint about tabs left open. Tabs the user shared have none.
+const createdBy = new Map();
+const OPEN_TABS_HINT = 5;
 const pointers = new Map();
 const POINTER_SHAPE = [[0, 0], [0, 17], [4, 13], [7, 20], [10, 19], [7, 12], [12, 12]];
 const agentTabs = new Set();
@@ -742,16 +746,16 @@ const TOOLS = {
     };
   },
 
-  async tabs_list() {
+  async tabs_list(args, client, context) {
     const all = await browser.tabs.query({});
     const mine = all.filter((t) => agentTabs.has(t.id));
-    const lines = mine.map((t) => `${t.id}${t.active ? " (active)" : ""}: ${tabLine(t)}`);
+    const lines = mine.map((t) => `${t.id}${t.active ? " (active)" : ""}${context?.conn && createdBy.get(t.id) === context.conn ? " (opened by you)" : ""}: ${tabLine(t)}`);
     return { text: `${lines.join("\n") || "No tabs yet. Use tabs_create."}\n(${all.length - mine.length} other tabs are not available to agents.)` };
   },
 
   // In the background by default: the user may be reading another tab, and an agent's tab taking
   // over the window is unpleasant. Tools work on background tabs; tabs_select brings one forward.
-  async tabs_create({ url = "about:blank", active = false }) {
+  async tabs_create({ url = "about:blank", active = false }, client, context) {
     const target = await checkUrl(url);
     // In an ordinary browser window: the window in front may be foxreach's own request window,
     // and a tab put there would close with it.
@@ -760,14 +764,26 @@ const TOOLS = {
     const tab = await browser.tabs.create({ url: "about:blank", active, ...(home ? { windowId: home.id } : {}) });
     // Adopt before loading, so network capture sees the first request.
     await adoptTab(tab);
+    if (context?.conn) createdBy.set(tab.id, context.conn);
     await untilIdle(tab.id);
-    if (target === "about:blank") return { text: `Tab ${tab.id}: about:blank.` };
+    const open = context?.conn ? [...createdBy.values()].filter((c) => c === context.conn).length : 0;
+    const hint = open >= OPEN_TABS_HINT
+      ? ` You have ${open} tabs open in the user's browser; close the ones you are done with (tabs_close, or tabs_close with mine: true for all of yours).`
+      : "";
+    if (target === "about:blank") return { text: `Tab ${tab.id}: about:blank.${hint}` };
     const done = settle(tab.id, { leavingBlank: true });
     await browser.tabs.update(tab.id, { url: target });
-    return { text: await done };
+    return { text: `${await done}${hint}` };
   },
 
-  async tabs_close({ tabId }) {
+  async tabs_close({ tabId, mine = false }, client, context) {
+    if (mine) {
+      // Only tabs this session opened: never one the user shared, nor another agent's.
+      const ids = [...createdBy].filter(([, c]) => context?.conn && c === context.conn).map(([id]) => id);
+      if (ids.length) await browser.tabs.remove(ids);
+      return { text: ids.length ? `Closed your ${ids.length} tab(s): ${ids.join(", ")}.` : "You have no tabs open." };
+    }
+    if (tabId === undefined) throw new Error("Give tabId, or mine: true to close every tab you opened.");
     await accessibleTab(tabId);
     await browser.tabs.remove(tabId);
     return { text: `Closed tab ${tabId}.` };
@@ -785,10 +801,10 @@ const TOOLS = {
     return { text: `Selected tab ${tabId}.` };
   },
 
-  async navigate({ tabId, url }) {
+  async navigate({ tabId, url }, client, context) {
     if (tabId === undefined) {
       if (["back", "forward", "reload"].includes(url)) throw new Error("tabId is required for back, forward and reload.");
-      return TOOLS.tabs_create({ url });
+      return TOOLS.tabs_create({ url }, client, context);
     }
     await accessibleTab(tabId);
     if (url === "back" || url === "forward" || url === "reload") {
@@ -1139,14 +1155,14 @@ const TOOLS = {
     return { gif: bytesToBase64(encodeGif(rec.frames)), frames: rec.frames.length, text: `Recorded ${rec.frames.length} frames.` };
   },
 
-  async batch({ actions, stop_on_error = true }, client) {
+  async batch({ actions, stop_on_error = true }, client, context) {
     if (!Array.isArray(actions) || !actions.length) throw new Error("actions must be a non-empty list.");
     const parts = [];
     for (const [index, action] of actions.entries()) {
       if (action.tool === "batch") throw new Error("batch cannot be nested.");
       try {
         // batch itself passed the approval check, so a status inside it is for an allowed agent.
-        const result = await runTool(action.tool, action.args ?? {}, client, action.tool === "status" ? { access: "allowed" } : undefined);
+        const result = await runTool(action.tool, action.args ?? {}, client, { conn: context?.conn, ...(action.tool === "status" ? { access: "allowed" } : {}) });
         parts.push({ index, tool: action.tool, ...result });
       } catch (e) {
         parts.push({ index, tool: action.tool, error: e.message });
@@ -1207,7 +1223,7 @@ async function handleRequest({ id, client, tool, args }) {
   try {
     // The part of the id before the colon is the connection, numbered by the host, not by the agent.
     const conn = String(id).split(":")[0];
-    const context = {};
+    const context = { conn };
     if (tool === "status") context.access = agentAccess(conn, client, args?.ask !== false);
     else {
       await assertAgentAllowed(conn, client).catch((e) => {
@@ -1338,6 +1354,7 @@ function connectHost() {
     port = null;
     // A new host numbers its connections from 1 again.
     for (const conn of [...agentRequests.keys(), ...allowedConns, ...deniedConns]) forgetConnection(conn);
+    createdBy.clear();
     setTimeout(() => {
       hostError = null;
       connectHost();
@@ -1484,11 +1501,13 @@ browser.tabs.onCreated.addListener((tab) => {
   // A page's popup or target=_blank stays with the agent that caused it.
   if (tab.openerTabId !== undefined && agentTabs.has(tab.openerTabId)) {
     adoptTab(tab);
+    if (createdBy.has(tab.openerTabId)) createdBy.set(tab.id, createdBy.get(tab.openerTabId));
     openedBy.set(tab.openerTabId, [...(openedBy.get(tab.openerTabId) ?? []), tab.id]);
   }
 });
 browser.tabs.onRemoved.addListener((tabId) => {
   agentTabs.delete(tabId);
+  createdBy.delete(tabId);
   network.delete(tabId);
   openedBy.delete(tabId);
   recordings.delete(tabId);

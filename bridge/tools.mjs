@@ -32,7 +32,10 @@ export const TOOLS = [
     url: { type: "string", description: "http(s) URL. Default about:blank." },
     active: { type: "boolean", description: "Bring the tab to the front, in place of the tab the user is looking at. Default false: it opens in the background, where every tool works. Use true, or tabs_select later, only when the user should see it." },
   }),
-  tool("tabs_close", "Close a tab.", { tabId }, ["tabId"]),
+  tool("tabs_close", "Close a tab, or with mine: true every tab this session opened (never the user's shared tabs or another agent's). Close tabs when done: they stay open in the user's browser.", {
+    tabId,
+    mine: { type: "boolean", description: "Close every tab this session opened instead of one." },
+  }),
   tool("tabs_select", "Bring a tab to the front.", { tabId }, ["tabId"]),
   tool("navigate", "Load a URL and wait for it, or go back, forward or reload. With no tabId, opens a new tab in the background.", {
     tabId,

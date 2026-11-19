@@ -325,6 +325,25 @@ def t_painting(mcp):
     mcp.call("tabs_close", tabId=tab)
 
 
+def t_tabs_mine(mcp):
+    """Agents are told about tabs they leave open, and close their own tabs only."""
+    other = McpClient(mcp_socket, name="other-agent")
+    theirs = tab_id(other.call("tabs_create", url=f"{MAIN}/second"))
+    replies = [mcp.call("tabs_create", url=f"{MAIN}/second") for _ in range(5)]
+    check("the fifth open tab brings a hint to close tabs", "tabs_close" in replies[-1] and "tabs_close" not in replies[0], replies[-1])
+    listing = mcp.call("tabs_list")
+    mine = [tab_id(r) for r in replies]
+    check("tabs_list marks the tabs this session opened",
+          all(f"{t} (opened by you)" in listing or f"{t} (active) (opened by you)" in listing for t in mine)
+          and f"{theirs} (opened by you)" not in listing, listing)
+    out = mcp.call("tabs_close", mine=True)
+    left = [int(line.split(":")[0].split()[0]) for line in mcp.call("tabs_list").splitlines() if line[:1].isdigit()]
+    check("tabs_close mine closes this session's tabs only", all(t not in left for t in mine) and theirs in left, f"{out} / {left}")
+    check("tabs_close with neither tabId nor mine is refused", expect_error(lambda: mcp.call("tabs_close"), "mine"))
+    other.call("tabs_close", tabId=theirs)
+    other.close()
+
+
 def t_keyboard(mcp):
     tab = tab_id(mcp.call("tabs_create", url=f"{MAIN}/main"))
     tree = mcp.call("read_page", tabId=tab)
@@ -1331,7 +1350,7 @@ def popup_tests(browser, mcp):
 
 
 TESTS = {
-    "protocol": t_protocol, "click": t_click_trusted, "refs": t_refs, "painting": t_painting, "keyboard": t_keyboard, "focus": t_focus_switch, "read": t_read,
+    "protocol": t_protocol, "click": t_click_trusted, "refs": t_refs, "painting": t_painting, "tabs": t_tabs_mine, "keyboard": t_keyboard, "focus": t_focus_switch, "read": t_read,
     "forms": t_forms, "frames": t_frames, "scroll": t_scroll_and_shots, "devtools": t_devtools, "script": t_script,
     "navigation": t_navigation, "dialogs": t_dialogs, "drag": t_drag, "background": t_background_tab,
     "policy": t_policy, "multi": t_multi_agent, "speed": t_agent_speed, "pointer": t_pointer,

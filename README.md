@@ -340,6 +340,11 @@ that is not recorded; a profile that a running browser already holds is refused,
 is never started on it. With several recorded profiles it takes `profile`, else the user's default
 (`foxreach browsers default`).
 
+Tabs an agent opens stay in the user's browser until closed. `tabs_list` marks the ones this
+session opened, `tabs_create` reminds the agent once it has five or more open, and
+`tabs_close` with `mine: true` closes every tab this session opened (and the popups its pages
+opened), never a tab the user shared or another agent's.
+
 `status` names the browser program in `app` (LibreWolf, Zen...), which the host reads from the
 process that started it: forks such as LibreWolf tell add-ons they are Firefox.
 
