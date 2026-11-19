@@ -40,7 +40,9 @@ jobs:
           gh release upload "$GITHUB_REF_NAME" dist/release/* --clobber
 
   # The manager's AppImage and Flatpak bundle for x86_64 and aarch64 (manager.yml), attached to the
-  # same release once it exists. A failure here leaves the release above as it is.
+  # same release once it exists, with each AppImage's .zsync: the AppImages' update information
+  # (manager/packaging/update-info.sh) looks for it in the latest release. A failure here leaves the
+  # release above as it is, and AppImage updaters then find no .zsync in it until this is rerun.
   manager:
     uses: ./.github/workflows/manager.yml
     permissions:

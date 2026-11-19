@@ -1,6 +1,7 @@
 # Builds the foxreach manager (manager/) as an AppImage and a Flatpak bundle, each for x86_64 and
 # aarch64, on native runners (no emulation), checks each one without a display, and keeps the four
-# files and their .sha256 as this run's artifacts (manager-appimage-ARCH, manager-flatpak-ARCH).
+# files, their .sha256 and each AppImage's .zsync (what AppImage updaters download) as this run's
+# artifacts (manager-appimage-ARCH, manager-flatpak-ARCH).
 # release.yml calls it on a tag and attaches the files to the release. The packages are built only
 # when the manager's unit tests pass (the `test` job), so a failing test attaches nothing.
 #
@@ -114,12 +115,15 @@ jobs:
         run: |
           echo "This runner's page size: $(getconf PAGESIZE)"
           manager/packaging/check-elf-alignment.sh manager/dist/foxreach-manager-*-aarch64.AppImage "$RUNNER_TEMP/smoke/AppDir"
+      - name: Update information embedded, and the .zsync matches the final AppImage
+        run: manager/packaging/check-update-info.sh manager/dist/foxreach-manager-*-${{ matrix.arch }}.AppImage
       - uses: actions/upload-artifact@v4
         with:
           name: manager-appimage-${{ matrix.arch }}
           path: |
             manager/dist/foxreach-manager-*-${{ matrix.arch }}.AppImage
             manager/dist/foxreach-manager-*-${{ matrix.arch }}.AppImage.sha256
+            manager/dist/foxreach-manager-*-${{ matrix.arch }}.AppImage.zsync
           if-no-files-found: error
 
   flatpak:
