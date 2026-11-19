@@ -59,16 +59,37 @@ icon); the package jobs wait for it, so a failing test builds and attaches nothi
 
 | File | Built by | Checked by |
 |---|---|---|
-| `foxreach-manager-VERSION-x86_64.AppImage`, `-aarch64.AppImage` | `packaging/container-build.sh` (docker) | `packaging/smoke-appimage.sh`: extracts it (no FUSE needed), runs `AppRun --version`, checks the packaged foxreach is the same file and runs |
+| `foxreach-manager-VERSION-x86_64.AppImage`, `-aarch64.AppImage`, each with its `.zsync` | `packaging/container-build.sh` (docker) | `packaging/smoke-appimage.sh`: extracts it (no FUSE needed), runs `AppRun --version`, checks the packaged foxreach is the same file and runs; `packaging/check-update-info.sh`: the update information below is embedded, and the `.zsync` is that file's (name, length, SHA-1) |
 | `foxreach-manager-VERSION-x86_64.flatpak`, `-aarch64.flatpak` | `flatpak/build.sh` in the `ghcr.io/flathub-infra/flatpak-github-actions:freedesktop-26.08` container, with crates vendored by an earlier job (`VENDOR=0 BUILD_SCOPE=0`) | `flatpak/build.sh`'s own check (packaged foxreach is the same file and runs), then `flatpak/smoke.sh`: `flatpak install --user`, `flatpak run ... --version`, the bundled foxreach run in the sandbox |
 
-Each comes with a `.sha256`; they are the run's artifacts `manager-appimage-ARCH` and
+Each package comes with a `.sha256`; they are the run's artifacts `manager-appimage-ARCH` and
 `manager-flatpak-ARCH`. On a `v*` tag, `release.yml` runs this workflow too and attaches the files
 to the release with build attestations (`gh attestation verify FILE --repo nilltadios/foxreach`),
 after the release's own files; a failure there leaves the rest of the release as it was. The files
 carry the version from `Cargo.toml`, which is foxreach's own (from 0.4.0): `scripts/release.py` and
 the release workflow refuse when `Cargo.toml` and `extension/manifest.json` differ. Run
 (44439124322, main f44430b, 2026-11-18) passed all five jobs.
+
+### AppImage updates
+
+From the release after 0.4.0, each AppImage carries update information, so AppImage updaters (Gear
+Lever, `appimageupdatetool`, AppImageUpdate) find and download a newer one, as a delta:
+`gh-releases-zsync|nilltadios|foxreach|latest|foxreach-manager-*-ARCH.AppImage.zsync`, defined once
+in `packaging/update-info.sh`. `./foxreach-manager-*.AppImage --appimage-updateinfo` prints it.
+quick-sharun's appimagetool (pinned by SHA-256 in the pinned quick-sharun) writes it into the
+runtime's `.upd_info` section before packing and makes the `.zsync` from the finished file; its
+`URL` is the AppImage's bare file name, so it resolves next to the `.zsync` in the same release.
+The `.zsync` is attested with the other files but has no `.sha256` of its own: a
+`….AppImage.zsync.sha256` would also start with the pattern. It records the AppImage's SHA-1,
+which updaters check after downloading.
+
+- "latest" is the newest release that is not a prerelease. It also carries the add-on and the
+  foxreach program; the pattern matches one file per architecture there (checked against v0.4.0's
+  asset names). The release exists before the `manager-files` job attaches the `.zsync`, so for
+  those minutes, or for good if that job fails, updaters find no update until it is rerun.
+- **The 0.4.0 AppImage has no update information** (its `.upd_info` is empty) and the 0.4.0
+  release has no `.zsync`: replace that AppImage by hand once with a newer one; updates work from
+  then on.
 
 ### Running each package
 

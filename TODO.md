@@ -77,6 +77,9 @@ Open items, newest first. Remove an item when it is done.
    the same run but were not launched by hand. The manager takes foxreach's version (0.4.0, so the
    files are `foxreach-manager-0.4.0-ARCH.*`); `release.py` and the release workflow refuse when the
    two differ. Left:
+   - AppImage updates: done for the release after 0.4.0 (update information and a `.zsync` per
+     architecture, `manager/README.md`, "AppImage updates"); a 0.4.0 AppImage has none and has to
+     be replaced by hand once. Not yet seen working against a real release.
    - a signed Flatpak repository on GitHub Pages with a `.flatpakref` (needs a GPG key kept as a
      repository secret), instead of or next to the bundles;
    - `scripts/verify_release.py` and `test/release.py` checking the new files the way they check the
