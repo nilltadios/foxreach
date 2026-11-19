@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 //! Icons for agents and browsers: the app's own icon installed on this system when there is one
 //! (full colour), else a bundled brand logo (src/bundled_icons.rs). Every agent, app and browser
-//! foxreach knows has a bundled logo (the test below); only a name it does not know gets a coloured
-//! initial.
+//! foxreach knows has a bundled logo (the tests below), except Pale Moon, whose branding licence
+//! forbids it; that and names foxreach does not know get a coloured initial.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -65,6 +65,10 @@ pub fn browser(name: &str, spec: &str) -> Look {
         ("Zen", _) => (&["app.zen_browser.zen", "zen-browser", "zen"], Some("zenbrowser")),
         // torbrowser-launcher installs this icon; Tor Browser itself installs none.
         ("Tor Browser", _) => (&["org.torproject.torbrowser-launcher", "torbrowser", "tor-browser"], Some("torbrowser")),
+        ("Mullvad Browser", _) => (&["mullvad-browser", "mullvadbrowser"], Some("mullvadbrowser")),
+        ("IceCat", _) => (&["icecat", "gnuicecat"], Some("gnuicecat")),
+        // No bundled logo: Pale Moon's branding licence forbids use in other products.
+        ("Pale Moon", _) => (&["palemoon"], None),
         _ => (&[], None),
     };
     Look { host, bundled }
@@ -205,10 +209,16 @@ mod tests {
     #[test]
     fn every_browser_foxreach_knows_has_a_bundled_icon() {
         // The browsers whose profiles `foxreach status` lists (bridge/addon.mjs), Tor Browser, and
-        // the names a connected browser is shown by (bridge/browsers.mjs) that are those browsers.
+        // the names a connected browser is shown by (the GECKO list in bridge/browsers.mjs).
         let mut names = values(include_str!("../../bridge/addon.mjs"), "{ name: \"");
         assert!(names.len() >= 5, "read only {} browsers from bridge/addon.mjs", names.len());
-        names.extend(["Tor Browser", "Firefox ESR"]);
+        let gecko = include_str!("../../bridge/browsers.mjs").split("const GECKO").nth(1).and_then(|s| s.split("]);").next()).unwrap();
+        let shown: Vec<&str> = gecko.split('[').skip(1).filter_map(|pair| pair.split('"').nth(3)).collect();
+        assert!(shown.contains(&"Firefox ESR") && shown.len() >= 12, "read {shown:?} from bridge/browsers.mjs");
+        names.extend(shown);
+        names.push("Tor Browser");
+        // Pale Moon's branding may not be used in other products (manager/scripts/fetch_icons.py).
+        names.retain(|n| *n != "Pale Moon");
         for name in names {
             assert_bundled(name, browser(name, "").bundled);
             assert_bundled(name, browser(name, "flatpak:x").bundled);

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["pillow>=11"]
+# dependencies = ["pillow==13.0.0"]
 # ///
 """Fetch the brand icons the app bundles and generate src/bundled_icons.rs.
 
@@ -13,7 +13,8 @@ Sources:  two npm packages, each version pinned below and checked by SHA-256:
             brand's colour;
           - @lobehub/icons-static-svg (https://github.com/lobehub/lobe-icons, MIT), for AI brands
             Simple Icons lacks (Grok, OpenAI, OpenClaw, Hermes Agent, Muse);
-          and logos taken from a project's own site or repository (DIRECT: Pi, T3 Code, Waterfox),
+          and logos taken from a project's own site or repository (DIRECT: Pi, T3 Code, Waterfox,
+          Mullvad Browser),
           each pinned by SHA-256 (a PNG app icon is scaled to 128x128 with Pillow).
           The logos are their owners' trademarks; see SOURCES.md for each one.
 Writes:   manager/resources/icons/<name>.svg (or .png), SOURCES.md beside them, and manager/src/bundled_icons.rs,
@@ -52,6 +53,7 @@ SIMPLE = {
     "floorp": "Floorp",
     "zenbrowser": "Zen",
     "torbrowser": "Tor Browser",
+    "gnuicecat": "IceCat",
 }
 
 LOBE_VERSION = "1.102.0"
@@ -89,7 +91,14 @@ DIRECT = {
     "waterfox": ("https://raw.githubusercontent.com/BrowserWorks/Waterfox/9230b1e71d7856ab94c7c619832be653bf7f1d4f/waterfox/browser/branding/content/about-logo.svg",
                  "31635db0eccc79f4009dddf88c1b3b452f83ae64ebd672f6baec6c734bd0ea7f", "Waterfox",
                  "MPL-2.0 (its branding LICENSE; no trademark rights granted)"),
+    # Mullvad Browser's logo from its release branding at a pinned commit
+    # (https://gitlab.torproject.org/tpo/applications/mullvad-browser, a Firefox source tree, MPL 2.0).
+    "mullvadbrowser": ("https://gitlab.torproject.org/tpo/applications/mullvad-browser/-/raw/4085b2fb4bcaf4478ba85c921574ed11c34e50d9/browser/branding/mb-release/content/about-logo.svg",
+                       "3159b3ab1d3c9393d60f9589a75ec10bf9a3e23f4665be2bf63fa64d916ebc8b", "Mullvad Browser",
+                       "the project's own logo; its source tree is MPL-2.0"),
 }
+# Pale Moon has none: its branding LICENSE forbids use in any third-party product without
+# written permission, so the app shows an initial for it.
 PNG_SIZE = 128
 
 MANAGER = pathlib.Path(__file__).resolve().parent.parent

@@ -19,6 +19,7 @@ pub fn get(name: &str) -> Option<(&'static [u8], bool)> {
         "floorp" => (include_bytes!("../resources/icons/floorp.svg"), true),
         "zenbrowser" => (include_bytes!("../resources/icons/zenbrowser.svg"), false),
         "torbrowser" => (include_bytes!("../resources/icons/torbrowser.svg"), false),
+        "gnuicecat" => (include_bytes!("../resources/icons/gnuicecat.svg"), true),
         "grok" => (include_bytes!("../resources/icons/grok.svg"), true),
         "openai" => (include_bytes!("../resources/icons/openai.svg"), true),
         "openclaw-color" => (include_bytes!("../resources/icons/openclaw-color.svg"), false),
@@ -32,6 +33,7 @@ pub fn get(name: &str) -> Option<(&'static [u8], bool)> {
         "pi" => (include_bytes!("../resources/icons/pi.svg"), false),
         "t3code" => (include_bytes!("../resources/icons/t3code.png"), false),
         "waterfox" => (include_bytes!("../resources/icons/waterfox.svg"), false),
+        "mullvadbrowser" => (include_bytes!("../resources/icons/mullvadbrowser.svg"), false),
         _ => return None,
     })
 }
