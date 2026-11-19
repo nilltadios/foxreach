@@ -44,9 +44,30 @@ try:
     held_now = lambda: mar.command("WebDriver:ExecuteAsyncScript", {  # noqa: E731
         "script": "browser.permissions.getAll().then((p) => arguments[0](p.origins))", "args": [], "scriptTimeout": 8000})["value"]
     handles = lambda: mar.command("WebDriver:GetWindowHandles", {})  # noqa: E731  (a bare list, not {"value": ...})
-    def grant_in_tab(host, label):
+    def chrome(script):
+        mar.command("Marionette:SetContext", {"value": "chrome"})
+        try:
+            return mar.command("WebDriver:ExecuteScript", {"script": script, "args": []})["value"]
+        finally:
+            mar.command("Marionette:SetContext", {"value": "content"})
+    def real_prompts(on):
+        """The browser's own permission prompt, which the profile turns off (harness.py). With it off
+        the browser stores every grant asked for; with it on, not one it already covers (issue #12)."""
+        chrome(f'Services.prefs.setBoolPref("extensions.webextOptionalPermissionPrompts", {str(on).lower()}); return 1;')
+    def allow_browser_prompt(label):
+        """Press Allow in the browser's permission prompt, as the user would."""
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            done = chrome('const n = document.getElementById("addon-webext-permissions-notification");'
+                          'if (!n || n.hidden || !n.button) return false; n.button.click(); return true;')
+            if done:
+                break
+            time.sleep(0.3)
+        check(f"{label}: the browser asks, and Allow is pressed", done)
+    def grant_in_tab(host, label, cancel=False, prompt=False):
         """The toolbar panel does not ask the browser itself: it opens a tab that does (popup.js,
-        allowSite). Find that tab, press Continue with a real click, and come back to the panel."""
+        allowSite, listedOnly). Find that tab, press Continue (or Cancel) with a real click, and come
+        back to the panel. host: one site, several joined by commas, or "*"."""
         import urllib.parse
         panel = mar.command("WebDriver:GetWindowHandle", {})["value"]
         want = f"popup.html?grant={urllib.parse.quote(host, safe="!'()*")}"  # as encodeURIComponent"
@@ -64,12 +85,16 @@ try:
             return
         time.sleep(0.5)  # the tab draws its card after it loads
         before = held_now()
-        check(f"{label}: nothing is granted before Continue", "<all_urls>" not in before if host == "*" else not any(host in o for o in before), before)
-        b.click("#grant-card .action.primary")  # Continue, with a real click: the browser takes the request only from one
+        check(f"{label}: nothing is granted before Continue", "<all_urls>" not in before if host == "*"
+              else not any(f"//{h}/" in o for h in host.split(",") for o in before), before)
+        # Continue, with a real click: the browser takes the request only from one.
+        b.click("#grant-card .action.ghost" if cancel else "#grant-card .action.primary")
+        if prompt:
+            allow_browser_prompt(label)
         deadline = time.time() + 10
         while found in handles() and time.time() < deadline:
             time.sleep(0.3)
-        check(f"{label}: the tab closes itself once granted", found not in handles())
+        check(f"{label}: the tab closes itself once {'cancelled' if cancel else 'granted'}", found not in handles())
         mar.command("WebDriver:SwitchToWindow", {"handle": panel, "focus": True})
     with zipfile.ZipFile(ROOT / "dist/foxreach-untrusted.xpi") as z:
         manifest = json.loads(z.read("manifest.json"))
@@ -89,22 +114,38 @@ try:
     b.click("#access-all"); grant_in_tab("*", "choosing every site")
     check("choosing every site grants every site", "<all_urls>" in run("browser.permissions.getAll().then((p) => arguments[0](p.origins))"))
     b.click("#add-site button"); time.sleep(1)  # every site is granted: no tab, only the list changes
-    b.click("#access-listed"); time.sleep(1)
-    held = run("browser.permissions.getAll().then((p) => arguments[0](p.origins))")
+    held_all = lambda: run("browser.permissions.getAll().then((p) => arguments[0](p.origins))")  # noqa: E731
+    listed = lambda: run("browser.runtime.sendMessage({popup: 'state'}).then((s) => arguments[0](s.allowedHosts))")  # noqa: E731
+    # A site added while every site was granted is covered by that grant and holds none of its own,
+    # so "Only these sites" asks the browser for it once every site is withdrawn (issue #12).
+    # Cancel first: the site stays listed, waiting for the browser, with a Grant button.
+    b.click("#access-listed"); grant_in_tab("example.org", "back to the list", cancel=True)
+    held = held_all()
     check("back to the list, every site is withdrawn and a site granted on its own keeps its grant",
           "<all_urls>" not in held and "*://127.0.0.1/*" in held, held)
-    # A site added while every site was granted was covered by that grant, not granted on its own
-    # (with the browser's real prompts on, main's panel does not get it either): it stays on the
-    # list, and the user grants it from there.
-    listed = run("browser.runtime.sendMessage({popup: 'state'}).then((s) => arguments[0](s.allowedHosts))")
-    check("a site added under every site stays listed, waiting for the browser's grant",
-          {"host": "example.org", "granted": False} in listed, listed)
+    check("a site cancelled there stays listed, waiting for the browser's grant", {"host": "example.org", "granted": False} in listed(), listed())
     check("...with a Grant button for it", run(
         "const g = [...document.querySelectorAll('#sites button')].filter((x) => x.textContent === 'Grant');"
         "if (g.length === 1) g[0].id = 'grant-listed'; arguments[0](g.length)") == 1)
     b.click("#grant-listed"); grant_in_tab("example.org", "granting a listed site")
-    held = run("browser.permissions.getAll().then((p) => arguments[0](p.origins))")
+    held = held_all()
     check("granting a listed site grants it, and only it", "*://example.org/*" in held and "<all_urls>" not in held, held)
+    # Two sites added under every site, this time with the browser's real prompts, which is how the
+    # grant got lost: the browser stores no grant for a site it already covers. One tab asks for
+    # both; example.org has its own grant now and is not asked again.
+    b.click("#access-all"); grant_in_tab("*", "every site, a second time")
+    real_prompts(True)
+    for site in ("example.net", "example.com"):
+        run(f"document.getElementById('site').value = '{site}'; arguments[0](1)")
+        b.click("#add-site button"); time.sleep(1)
+    held = held_all()
+    check("with real prompts, a site added under every site gets no grant of its own", not any("example.net" in o for o in held), held)
+    b.click("#access-listed"); grant_in_tab("example.net,example.com", "back to the list with two such sites", prompt=True)
+    real_prompts(False)
+    held = held_all()
+    check("both are granted, every site is withdrawn, and the others keep their grant",
+          all(f"*://{h}/*" in held for h in ("example.net", "example.com", "example.org", "127.0.0.1")) and "<all_urls>" not in held, held)
+    check("every listed site is usable", all(s["granted"] for s in listed()), listed())
     b.click("#access-all"); grant_in_tab("*", "every site again")  # the rest of this test is about input, with every site
     m.call("javascript", tabId=tab, code="window.events.length = 0")
     check("read_page works", "Go" in m.call("read_page", tabId=tab))
