@@ -64,7 +64,7 @@ Each comes with a `.sha256`; they are the run's artifacts `manager-appimage-ARCH
 to the release with build attestations (`gh attestation verify FILE --repo nilltadios/foxreach`),
 after the release's own files; a failure there leaves the rest of the release as it was. The files
 carry the version from `Cargo.toml`, which is foxreach's own (from 0.4.0): `scripts/release.py` and
-the release workflow refuse when `Cargo.toml` and `extension/manifest.json` differ. The first run
+the release workflow refuse when `Cargo.toml` and `extension/manifest.json` differ. Run
 (44439124322, main f44430b, 2026-11-18) passed all five jobs.
 
 ### Running each package
