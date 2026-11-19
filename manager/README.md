@@ -30,17 +30,68 @@ disagree.
 | Package | Command | Output |
 |---|---|---|
 | Plain build, for development | `cargo build --release` in `manager/` | `manager/target/release/foxreach-manager` |
-| AppImage (any distribution) | `manager/packaging/container-build.sh` | `manager/dist/foxreach-manager-VERSION-x86_64.AppImage` |
-| Flatpak | `manager/flatpak/build.sh` | `manager/flatpak/repo`, `manager/flatpak/dev.nilltadios.FoxreachManager.flatpak` |
+| AppImage (any distribution) | `manager/packaging/container-build.sh` | `manager/dist/foxreach-manager-VERSION-ARCH.AppImage` |
+| Flatpak | `manager/flatpak/build.sh` | `manager/flatpak/repo`, `manager/flatpak/foxreach-manager-VERSION-ARCH.flatpak` |
 
-Both packages carry the foxreach program built from the same checkout: run
-`uv run --python 3.15 scripts/build_binary.py` first (it writes `dist/foxreach`). Rust is 1.100.0,
-pinned in `rust-toolchain.toml`, the AppImage's `packaging/Containerfile` and the Flatpak manifest;
-libcosmic's commit is pinned in `Cargo.lock`.
+ARCH is the building machine's, `x86_64` or `aarch64`: each package is built natively, never
+cross-built. Both packages carry the foxreach program built from the same checkout for that
+architecture, as `dist/foxreach`: `uv run --python 3.15 scripts/build_binary.py` builds it for this
+machine, `--target foxreach-linux-x64` or `--target foxreach-linux-arm64` the release's file
+(`dist/release/`, copy it to `dist/foxreach`). The AppImage build refuses a program or app built
+for another architecture. Rust is 1.100.0, pinned in `rust-toolchain.toml`, the AppImage's
+`packaging/Containerfile` and the Flatpak manifest (one archive per architecture); libcosmic's commit
+is pinned in `Cargo.lock`. The AppImage's quick-sharun and uruntime (per architecture) are pinned by
+commit or release and SHA-256 in `packaging/build-appimage.sh`.
 
 The AppImage is built the Anylinux way (quick-sharun bundles every library, glibc included, and
 uruntime packs it with DwarFS), so it runs without FUSE 2 on any distribution. The build runs in an
-Ubuntu 26.04 container (podman or docker); nothing is installed on the host.
+Ubuntu 26.04 container (podman or docker; `ENGINE=docker` picks docker); nothing is installed on
+the host.
+
+### In CI
+
+`.github/workflows/manager.yml` builds all four files on GitHub's native runners (`ubuntu-24.04`
+and `ubuntu-24.04-arm`) when `manager/` (or the workflow, `scripts/build_binary.py`,
+`.bun-version`) changes on a branch or in a pull request, or by hand (*Run workflow*):
+
+| File | Built by | Checked by |
+|---|---|---|
+| `foxreach-manager-VERSION-x86_64.AppImage`, `-aarch64.AppImage` | `packaging/container-build.sh` (docker) | `packaging/smoke-appimage.sh`: extracts it (no FUSE needed), runs `AppRun --version`, checks the packaged foxreach is the same file and runs |
+| `foxreach-manager-VERSION-x86_64.flatpak`, `-aarch64.flatpak` | `flatpak/build.sh` in the `ghcr.io/flathub-infra/flatpak-github-actions:freedesktop-26.08` container, with crates vendored by an earlier job (`VENDOR=0 BUILD_SCOPE=0`) | `flatpak/build.sh`'s own check (packaged foxreach is the same file and runs), then `flatpak/smoke.sh`: `flatpak install --user`, `flatpak run ... --version`, the bundled foxreach run in the sandbox |
+
+Each comes with a `.sha256`; they are the run's artifacts `manager-appimage-ARCH` and
+`manager-flatpak-ARCH`. On a `v*` tag, `release.yml` runs this workflow too and attaches the files
+to the release with build attestations (`gh attestation verify FILE --repo nilltadios/foxreach`),
+after the release's own files; a failure there leaves the rest of the release as it was. The files
+carry the manager's own version from `Cargo.toml`, which does not follow foxreach's yet.
+
+### Running each package
+
+- AppImage: `chmod +x foxreach-manager-*.AppImage && ./foxreach-manager-*.AppImage`. Without FUSE:
+  `./foxreach-manager-*.AppImage --appimage-extract-and-run`.
+- Flatpak: `flatpak install --user foxreach-manager-*-ARCH.flatpak` (fetches
+  `org.freedesktop.Platform//26.08` from Flathub if it is not installed), then
+  `flatpak run dev.nilltadios.FoxreachManager`.
+
+### aarch64 with 16 KiB pages (Asahi Linux on Apple Silicon)
+
+A 16 KiB-page kernel cannot load an ELF file whose LOAD segments are aligned to less than 16 KiB.
+The aarch64 CI jobs fail if any ELF file shipped in either package (the AppImage runtime, sharun,
+every bundled library, the app, the foxreach program) is aligned below 0x4000
+(`packaging/check-elf-alignment.sh`). As found on 2026-11-18: the uruntime (v0.8.1), and
+quick-sharun's sharun, helper libraries and appimagetool for aarch64 are aligned to 64 KiB, and the DwarFS inside the uruntime is jemalloc built
+for pages up to 64 KiB (`--with-lg-page=16` in DwarFS's static build script for non-x86 targets),
+so it should run with 4, 16 and 64 KiB pages; the app itself uses the system allocator (no jemalloc
+or mimalloc in `Cargo.lock`). **Not known to work yet: the foxreach program.** Bun's tracking issue
+for non-4 KiB pages on aarch64 Linux (oven-sh/bun#17627) is still open, with "check it works on
+16k" unticked; Bun's automated triage of a crash report (oven-sh/bun#32418, Bun 1.3.14) says
+`bun build --compile` programs do not run with non-4 KiB pages yet, while a maintainer wrote earlier
+(oven-sh/bun#6241) that JavaScriptCore expects 16 KiB pages on this target. Bun's release notes from
+1.3.12 to 1.4.4 say nothing about page sizes, and nobody has reported Bun 1.4.4 on 16 KiB pages
+either way. If the program fails there, the manager still opens, but the program it installs does
+not run. GitHub's arm runners are expected to use 4 KiB pages (the jobs print `getconf PAGESIZE`),
+so only a run on an Asahi machine can tell: `getconf PAGESIZE` (16384), then `foxreach version`
+with the release's `foxreach-linux-arm64`, and the packages' `--version` and `--check`.
 
 ## Check a build
 

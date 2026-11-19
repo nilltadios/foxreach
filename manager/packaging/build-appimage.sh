@@ -7,29 +7,43 @@
 #           BIN_DIR: folder with the release foxreach-manager (default target/release)
 #           OUT_DIR: output folder (default dist)
 #           Normally run by packaging/container-build.sh inside the build container.
-# Output:   OUT_DIR/foxreach-manager-VERSION-x86_64.AppImage and .sha256
+# Output:   OUT_DIR/foxreach-manager-VERSION-ARCH.AppImage and .sha256, ARCH from uname -m
+#           (x86_64 or aarch64: build on the architecture the AppImage is for, no cross builds)
 # Carries:  the foxreach program from ../dist/foxreach (FOXREACH_PROGRAM overrides) in
 #           share/foxreach-manager/, which the app installs to ~/.local/bin/foxreach on request.
 # Expected: the AppImage path on the last line, exit 0.
 #
 # quick-sharun is pinned to a commit and checked by SHA-256; it pins and checks the sharun and
-# appimagetool it downloads. The uruntime is pinned the same way.
+# appimagetool it downloads, for each architecture. The uruntime is pinned the same way, one file per
+# architecture; the SHA-256s are the ones GitHub lists for the v0.8.1 release assets.
 set -euo pipefail
 cd -- "$(dirname -- "$0")/.."
 QS_COMMIT=1a5594c7f47ec5cb46ce70f6e11b5c5781f17f5f
 QS_SHA=35ba7b95f91f4665707c4cab5ed99407ceea636c15675990bb42816d6d84cc33
-RT_URL=https://github.com/VHSgunzo/uruntime/releases/download/v0.8.1/uruntime-appimage-dwarfs-lite-x86_64
-RT_SHA=b3c2916153e089d703cee5a7ebc540941d2f1d71baa90eb3092b15eef48345a8
+RT_VERSION=v0.8.1
+arch=$(uname -m)
+case $arch in
+  x86_64)  RT_SHA=b3c2916153e089d703cee5a7ebc540941d2f1d71baa90eb3092b15eef48345a8 ;;
+  aarch64) RT_SHA=c1641dfe465f4cb70ae545fbfb9de7a221aa6e9a0b1d7ea600b213a1f10738a0 ;;
+  *) echo "No pinned uruntime for $arch (x86_64 and aarch64 are)" >&2; exit 1 ;;
+esac
+RT_URL=https://github.com/VHSgunzo/uruntime/releases/download/$RT_VERSION/uruntime-appimage-dwarfs-lite-$arch
 app=dev.nilltadios.FoxreachManager
 bin="$(realpath "${1:-target/release}")"
 out="$(realpath -m "${2:-dist}")"
 program="$(realpath "${FOXREACH_PROGRAM:-../dist/foxreach}")"
 
-for t in awk cp curl find grep install ldd mktemp patchelf sha256sum strings tar; do
+for t in awk cp curl find grep install ldd mktemp patchelf readelf sha256sum strings tar; do
   command -v "$t" >/dev/null || { echo "Missing tool: $t (or build in the container: packaging/container-build.sh)" >&2; exit 1; }
 done
 [[ -x $bin/foxreach-manager ]] || { echo "$bin/foxreach-manager is missing: cargo build --locked --release" >&2; exit 1; }
 [[ -x $program ]] || { echo "$program is missing: uv run --python 3.15 scripts/build_binary.py" >&2; exit 1; }
+# The program must be built for the AppImage's architecture (a release build is foxreach-linux-x64 or
+# foxreach-linux-arm64), and so must the app.
+want=$(case $arch in x86_64) echo X86-64 ;; aarch64) echo AArch64 ;; esac)
+for f in "$bin/foxreach-manager" "$program"; do
+  [[ $(readelf -h "$f") == *Machine:*"$want"* ]] || { echo "$f is not built for $arch" >&2; exit 1; }
+done
 
 # quick-sharun looks for libc in Debian and Arch layouts; elsewhere use the folder the binary loads it from.
 if [[ -z ${LIB_DIR:-} ]]; then
@@ -51,7 +65,7 @@ if [[ ! -f $qs ]] || ! echo "$QS_SHA  $qs" | sha256sum -c --status; then
   mv "$qs.part" "$qs"
 fi
 chmod +x "$qs"
-rt_cache="$cache/uruntime-appimage-dwarfs-lite-v0.8.1-x86_64"
+rt_cache="$cache/uruntime-appimage-dwarfs-lite-$RT_VERSION-$arch"
 if [[ ! -f $rt_cache ]] || ! echo "$RT_SHA  $rt_cache" | sha256sum -c --status; then
   curl -fsSL -o "$rt_cache.part" "$RT_URL"
   echo "$RT_SHA  $rt_cache.part" | sha256sum -c --status || { echo "uruntime checksum mismatch" >&2; rm -f "$rt_cache.part"; exit 1; }
@@ -65,7 +79,7 @@ export APPDIR="$work/AppDir"
 export DESKTOP="$work/$app.desktop"
 export ICON="$PWD/resources/$app.svg"
 export OUTPATH="$out"
-export OUTNAME="foxreach-manager-$version-x86_64.AppImage"
+export OUTNAME="foxreach-manager-$version-$arch.AppImage"
 export MAIN_BIN=foxreach-manager
 export VERSION="$version"
 # Rendering is wgpu with a software fallback; the host's GPU drivers are used, not bundled ones.

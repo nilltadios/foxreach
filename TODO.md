@@ -68,20 +68,26 @@ Open items, newest first. Remove an item when it is done.
      once the install finishes, or install without leaving a visible page.
 
 0. **Manager AppImage and Flatpak in the release.** v0.3.4 (2026-11-14) shipped only the foxreach
-   program and the add-on: `.github/workflows/release.yml` builds `scripts/build_binary.py` targets and
-   the `.xpi`s, nothing from `manager/`. The packaging works by hand here
-   (`manager/packaging/container-build.sh` for the AppImage, `manager/flatpak/build.sh` for the
-   Flatpak) but was never wired into CI. To do:
-   - a release job that builds the AppImage in the same container (`manager/packaging/Containerfile`,
-     pinned quick-sharun and uruntime) and attaches `foxreach-manager-<version>-x86_64.AppImage` and
-     its `.sha256` to the release; aarch64 too if the runner allows;
-   - a Flatpak job (flatpak-builder with the vendored cargo sources, offline) that exports a signed
-     repository to GitHub Pages and publishes a `.flatpakref` (needs a GPG key kept as a repository
-     secret), or a bundle `.flatpak` attached to the release as a first step;
+   program and the add-on. Done on branch `manager-ci` (2026-11-18), not yet run in CI:
+   `.github/workflows/manager.yml` builds the AppImage (same container, pinned quick-sharun and
+   uruntime) and a Flatpak bundle (offline, vendored crates), each for x86_64 and aarch64 on native
+   runners, smoke-checks each without a display, and fails the aarch64 jobs on any shipped ELF file
+   aligned below 16 KiB; `release.yml` calls it on a tag and attaches and attests the four files and
+   their `.sha256` (see "In CI" in `manager/README.md`). Left:
+   - run it (push the branch, *Run workflow*) and fix what the first CI run finds; nothing of the
+     aarch64 builds or the Flatpak CI job has run yet;
+   - **16 KiB pages (Asahi):** the foxreach program is not known to run there (Bun's compiled
+     executables and non-4 KiB pages, oven-sh/bun#17627, still open; Bun 1.4.4 untested). Try on an
+     Asahi machine: `getconf PAGESIZE`, the release's `foxreach-linux-arm64 version`, the aarch64
+     AppImage and Flatpak with `--version` and `--check`. If the program fails, follow #17627 for a
+     Bun that works and bump `.bun-version` then;
+   - a signed Flatpak repository on GitHub Pages with a `.flatpakref` (needs a GPG key kept as a
+     repository secret), instead of or next to the bundles;
    - one version for the manager and the release (the manager's `Cargo.toml` says 0.1.0 while
-     foxreach is 0.3.4): decide whether it follows foxreach's number;
+     foxreach is 0.3.4, so the release files are named `foxreach-manager-0.1.0-*`): decide whether it
+     follows foxreach's number;
    - `scripts/verify_release.py` and `test/release.py` checking the new files the way they check the
-     programs (reproducible builds, hashes in `SHA256SUMS`).
+     programs (reproducible builds, hashes in `SHA256SUMS`; the manager files are not in it).
 
 0. **macOS: still to check.** The signed build in release Firefox on a Mac (only LibreWolf's full build
    was tested, 2026-11-13); the Intel build on a real Intel Mac (it ran under Rosetta, after the ad hoc

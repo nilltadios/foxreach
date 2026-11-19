@@ -1,0 +1,136 @@
+# Builds the foxreach manager (manager/) as an AppImage and a Flatpak bundle, each for x86_64 and
+# aarch64, on native runners (no emulation), checks each one without a display, and keeps the four
+# files and their .sha256 as this run's artifacts (manager-appimage-ARCH, manager-flatpak-ARCH).
+# release.yml calls it on a tag and attaches the files to the release.
+#
+# The aarch64 jobs also fail if any shipped ELF file has a LOAD segment aligned below 16 KiB:
+# such a file does not load on a 16 KiB-page kernel (Asahi Linux on Apple Silicon). GitHub's arm
+# runners are expected to use 4 KiB pages (the jobs print it), so these jobs do not run the packages
+# with 16 KiB pages themselves.
+name: manager
+
+on:
+  workflow_dispatch:
+  workflow_call:
+  push:
+    # Branches only: a tag push builds these through release.yml.
+    branches: ["**"]
+    paths:
+      - manager/**
+      - .github/workflows/manager.yml
+      - scripts/build_binary.py
+      - .bun-version
+  pull_request:
+    paths:
+      - manager/**
+      - .github/workflows/manager.yml
+      - scripts/build_binary.py
+      - .bun-version
+
+permissions:
+  contents: read
+
+jobs:
+  # What both packages need and is the same for both architectures: the foxreach program for each
+  # (Bun builds both from here, the same bytes as the release's files) and the vendored crates the
+  # offline Flatpak build uses.
+  prepare:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+      - uses: astral-sh/setup-uv@v6
+      - name: The foxreach program for Linux x64 and arm64
+        run: uv run --python 3.15 scripts/build_binary.py --target foxreach-linux-x64 --target foxreach-linux-arm64
+      - name: Vendor the crates (pinned by Cargo.lock)
+        working-directory: manager
+        run: |
+          rustup toolchain install   # the one in rust-toolchain.toml
+          cargo vendor --locked flatpak/vendor | sed "s|$PWD/flatpak/vendor|flatpak/vendor|" > flatpak/cargo-config.toml
+          tar -cf ../vendor.tar flatpak/vendor flatpak/cargo-config.toml
+      - uses: actions/upload-artifact@v4
+        with:
+          name: manager-inputs
+          path: |
+            dist/release/foxreach-linux-x64
+            dist/release/foxreach-linux-arm64
+            vendor.tar
+          retention-days: 1
+
+  appimage:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: x86_64, program: foxreach-linux-x64, runner: ubuntu-24.04 }
+          - { arch: aarch64, program: foxreach-linux-arm64, runner: ubuntu-24.04-arm }
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: manager-inputs
+          path: inputs
+      - name: The program for this architecture as dist/foxreach
+        run: install -Dm755 "inputs/dist/release/${{ matrix.program }}" dist/foxreach
+      - name: Build in the Ubuntu 26.04 container
+        run: ENGINE=docker BUILD_JOBS=4 manager/packaging/container-build.sh
+      - name: Smoke check (extract, AppRun --version, packaged foxreach is the same file and runs)
+        run: manager/packaging/smoke-appimage.sh manager/dist/foxreach-manager-*-${{ matrix.arch }}.AppImage dist/foxreach "$RUNNER_TEMP/smoke"
+      - name: Every shipped ELF file loads with 16 KiB pages
+        if: matrix.arch == 'aarch64'
+        run: |
+          echo "This runner's page size: $(getconf PAGESIZE)"
+          manager/packaging/check-elf-alignment.sh manager/dist/foxreach-manager-*-aarch64.AppImage "$RUNNER_TEMP/smoke/AppDir"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: manager-appimage-${{ matrix.arch }}
+          path: |
+            manager/dist/foxreach-manager-*-${{ matrix.arch }}.AppImage
+            manager/dist/foxreach-manager-*-${{ matrix.arch }}.AppImage.sha256
+          if-no-files-found: error
+
+  flatpak:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: x86_64, program: foxreach-linux-x64, runner: ubuntu-24.04 }
+          - { arch: aarch64, program: foxreach-linux-arm64, runner: ubuntu-24.04-arm }
+    runs-on: ${{ matrix.runner }}
+    # flatpak-builder, org.freedesktop.Sdk//26.08 and the Platform, for amd64 and arm64.
+    # --privileged: flatpak-builder and flatpak run need namespaces for bubblewrap.
+    container:
+      image: ghcr.io/flathub-infra/flatpak-github-actions:freedesktop-26.08
+      options: --privileged
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: manager-inputs
+          path: inputs
+      - name: The program for this architecture as dist/foxreach, the vendored crates
+        run: |
+          install -Dm755 "inputs/dist/release/${{ matrix.program }}" dist/foxreach
+          tar -xf inputs/vendor.tar -C manager
+      - name: Build
+        # No cargo here (crates vendored above) and no user systemd (the job is the limit).
+        run: VENDOR=0 BUILD_SCOPE=0 BUILD_JOBS=4 manager/flatpak/build.sh
+      - name: Every shipped ELF file loads with 16 KiB pages
+        if: matrix.arch == 'aarch64'
+        run: |
+          echo "This runner's page size: $(getconf PAGESIZE)"
+          manager/packaging/check-elf-alignment.sh manager/flatpak/build-dir/files
+      - name: Smoke check (install --user, --version and the bundled foxreach in the sandbox)
+        run: manager/flatpak/smoke.sh manager/flatpak/foxreach-manager-*-${{ matrix.arch }}.flatpak dist/foxreach
+      - uses: actions/upload-artifact@v4
+        with:
+          name: manager-flatpak-${{ matrix.arch }}
+          path: |
+            manager/flatpak/foxreach-manager-*-${{ matrix.arch }}.flatpak
+            manager/flatpak/foxreach-manager-*-${{ matrix.arch }}.flatpak.sha256
+          if-no-files-found: error

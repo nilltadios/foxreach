@@ -25,23 +25,31 @@ cleanup:
   - /lib/rust
 
 modules:
-  # The official Rust release pinned in rust-toolchain.toml (the SDK's rust-stable extension lags).
-  # To update: change the version here and in rust-toolchain.toml, and take the sha256 from the
-  # .sha256 file next to the archive on static.rust-lang.org.
+  # The official Rust release pinned in rust-toolchain.toml (the SDK's rust-stable extension lags),
+  # one archive per architecture; flatpak-builder takes the one for the architecture it builds.
+  # To update: change the version here (both URLs) and in rust-toolchain.toml, and take each sha256
+  # from the .sha256 file next to the archive on static.rust-lang.org.
   - name: rust-toolchain
     buildsystem: simple
     build-options:
       no-debuginfo: true
       strip: false
     build-commands:
-      - ./install.sh --prefix=/app/lib/rust --components=rustc,cargo,rust-std-x86_64-unknown-linux-gnu --disable-ldconfig
+      - ./install.sh --prefix=/app/lib/rust --components="rustc,cargo,rust-std-${FLATPAK_ARCH}-unknown-linux-gnu" --disable-ldconfig
     sources:
       - type: archive
+        only-arches: [x86_64]
         url: https://static.rust-lang.org/dist/rust-1.100.0-x86_64-unknown-linux-gnu.tar.xz
         sha256: 98ee6bec240e1cfe944f17e7092412dc5ef6e008484bb668c6936d35a7d15acd
+      - type: archive
+        only-arches: [aarch64]
+        url: https://static.rust-lang.org/dist/rust-1.100.0-aarch64-unknown-linux-gnu.tar.xz
+        sha256: a21f6a21818df07c1e2e7addb570af5444b3fa9dd61e3a207f4fb1c5a5e665c9
 
   # The foxreach program the app installs to ~/.local/bin/foxreach on request. A Bun single-file
-  # build: its code is appended to the runtime, so it must not be stripped.
+  # build: its code is appended to the runtime, so it must not be stripped. dist/foxreach must be
+  # built for the architecture of this build (foxreach-linux-x64 or foxreach-linux-arm64); the
+  # `foxreach version` below fails otherwise.
   - name: foxreach-program
     buildsystem: simple
     build-options:
