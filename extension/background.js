@@ -1379,7 +1379,9 @@ function connectHost() {
       connectHost();
     }, busy ? RECONNECT_BUSY_MS : RECONNECT_MS);
   });
-  send({ hello: { version: VERSION, trustedInput: trusted, wantsHostInfo: true } });
+  // reportsQuit: this add-on says "bye" when the browser quits (watchQuit), so a host that hears
+  // none can call the end a crash. An older add-on never says it.
+  send({ hello: { version: VERSION, trustedInput: trusted, wantsHostInfo: true, reportsQuit: trusted } });
 }
 
 // Tell the native host when the browser quits normally, so its history can tell a quit from a

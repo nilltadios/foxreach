@@ -29,7 +29,7 @@ const HOW = {
   quit: "the browser quit normally",
   addon: "the add-on's connection ended while the browser kept running (add-on reloaded, updated or disabled, or the browser was still shutting down)",
   lost: "the browser exited without quitting normally (crashed, was killed, or the session ended); sign-ins kept only for the session are gone",
-  closed: "the browser closed (this build of the add-on cannot tell a normal quit from a crash)",
+  closed: "the browser closed (this add-on, an older one or the build without privileged code, cannot tell a normal quit from a crash)",
   host: "foxreach's native host was stopped",
   unknown: "no end was recorded (the host was killed together with the browser, or the computer stopped)",
 };

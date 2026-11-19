@@ -129,7 +129,7 @@ async function howItEnded(signal) {
   if (signal) return "host";
   for (let waited = 0; waited < END_WAIT_MS && parentAlive(); waited += 100) await new Promise((r) => setTimeout(r, 100));
   if (parentAlive()) return "addon";
-  return hello?.trustedInput ? "lost" : "closed";
+  return hello?.reportsQuit ? "lost" : "closed";
 }
 const END_WAIT_MS = 1500;
 
