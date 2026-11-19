@@ -1,6 +1,7 @@
 // MCP server over stdio, with no dependencies. Each agent starts its own copy; every copy
 // connects to the one native host the browser runs.
 import { spawnSync } from "node:child_process";
+import crypto from "node:crypto";
 import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import net from "node:net";
@@ -10,8 +11,9 @@ import readline from "node:readline";
 import { notConnectedMessage } from "./browsers.mjs";
 import { lastEndNote, recentSessions } from "./history.mjs";
 import { chooseProfile, launch, profileInUse } from "./open.mjs";
-import { connectedBrowsers, describe, fixedSocket, readDefault } from "./connected.mjs";
+import { connectedBrowsers, describe, fixedSocket, folder, isDefault, proofMatches, readDefault } from "./connected.mjs";
 import { assertPrivate, socketPath } from "./socket.mjs";
+import { WIN } from "./win.mjs";
 import { TOOLS } from "./tools.mjs";
 import { updateAdvice } from "./update.mjs";
 import { VERSION } from "./version.mjs";
@@ -49,7 +51,11 @@ async function target() {
   if (fixedSocket()) return SOCKET;
   const list = await connectedBrowsers();
   if (chosen) {
-    if (list.some((b) => b.socket === chosen.socket)) return chosen.socket;
+    const still = list.find((b) => b.socket === chosen.socket);
+    if (still) {
+      chosen.token = still.token;
+      return chosen.socket;
+    }
     const gone = chosen;
     chosen = null;
     if (gone.by === "agent") {
@@ -57,15 +63,17 @@ async function target() {
         (list.length ? ` Connected now:\n${describe(list)}\nChoose one with browser_select.` : ""));
     }
   }
+  // Windows has no fixed pipe to fall back on (bridge/socket.mjs): explain what to open instead.
+  if (!list.length && !SOCKET) throw new Error(notConnectedMessage("ENOENT", `no browser listed in ${folder()}`));
   if (!list.length) return SOCKET;
   if (list.length === 1) {
-    chosen = { socket: list[0].socket, label: label(list[0]), by: "auto" };
+    chosen = { socket: list[0].socket, token: list[0].token, label: label(list[0]), by: "auto" };
     return chosen.socket;
   }
   const preferred = readDefault();
-  const d = preferred && list.find((b) => b.profile && path.resolve(b.profile) === preferred);
+  const d = preferred && list.find((b) => isDefault(b.profile, preferred));
   if (d) {
-    chosen = { socket: d.socket, label: label(d), by: "default" };
+    chosen = { socket: d.socket, token: d.token, label: label(d), by: "default" };
     return chosen.socket;
   }
   const e = new Error(`Several browsers are connected to foxreach:\n${describe(list)}\n` +
@@ -76,7 +84,7 @@ async function target() {
 }
 
 function useBrowser(b, by) {
-  chosen = { socket: b.socket, label: label(b), by };
+  chosen = { socket: b.socket, token: b.token, label: label(b), by };
   conn?.destroy(); // the next call connects to the new one
   conn = null;
 }
@@ -86,33 +94,68 @@ const waiting = new Map();
 async function connect() {
   if (conn) return conn;
   const SOCKET = await target();
+  // Windows: the pipe must prove it knows the token in its host's private info file before it is
+  // trusted with anything: any local user could have taken a pipe name that came free.
+  const token = !fixedSocket() && WIN ? chosen?.token : null;
+  if (WIN && !fixedSocket() && !token) throw new Error(`No token for ${SOCKET}: the browser's info file is incomplete.`);
   return new Promise((resolve, reject) => {
-    try {
-      // Before trusting whatever listens there with the agent's requests and uploaded files.
-      assertPrivate(path.dirname(SOCKET));
-      if (fsSync.lstatSync(SOCKET).uid !== process.getuid()) throw new Error(`Unsafe socket: ${SOCKET} belongs to someone else.`);
-    } catch (e) {
-      if (e.code !== "ENOENT") return reject(e);
+    if (!WIN) {
+      try {
+        // Before trusting whatever listens there with the agent's requests and uploaded files.
+        assertPrivate(path.dirname(SOCKET));
+        if (fsSync.lstatSync(SOCKET).uid !== process.getuid()) throw new Error(`Unsafe socket: ${SOCKET} belongs to someone else.`);
+      } catch (e) {
+        if (e.code !== "ENOENT") return reject(e);
+      }
     }
     const c = net.connect(SOCKET);
     c.setEncoding("utf8");
     let buffer = "";
+    const challenge = token ? crypto.randomBytes(32).toString("hex") : null;
+    let proven = !token;
+    const proofTimer = token ? setTimeout(() => {
+      c.destroy();
+      reject(new Error(`${SOCKET} did not prove it is the browser's foxreach host.`));
+    }, 5000) : null;
     c.on("connect", () => {
-      conn = c;
-      resolve(c);
+      if (!token) {
+        conn = c;
+        resolve(c);
+        return;
+      }
+      c.write(`${JSON.stringify({ challenge })}\n`);
     });
     c.on("data", (data) => {
       buffer += data;
       let end;
       while ((end = buffer.indexOf("\n")) !== -1) {
-        const reply = JSON.parse(buffer.slice(0, end));
+        let reply;
+        try {
+          reply = JSON.parse(buffer.slice(0, end));
+        } catch {
+          reply = null;
+        }
         buffer = buffer.slice(end + 1);
+        if (!proven) {
+          clearTimeout(proofTimer);
+          if (!proofMatches(token, challenge, reply?.proof)) {
+            c.destroy();
+            reject(new Error(`${SOCKET} is not the browser's foxreach host (wrong proof); nothing was sent to it.`));
+            return;
+          }
+          proven = true;
+          conn = c;
+          resolve(c);
+          continue;
+        }
+        if (!reply) continue;
         waiting.get(reply.id)?.(reply);
         waiting.delete(reply.id);
       }
     });
     c.on("error", (e) => {
       if (!conn) {
+        clearTimeout(proofTimer);
         reject(new Error(notConnectedMessage(e.code, SOCKET) + lastEndNote()));
       }
     });
@@ -166,6 +209,11 @@ async function readable(file, what) {
   if (!ALLOW_HIDDEN_UPLOADS && inMacLibrary(real)) {
     throw new Error(`${what} refuses files in ~/Library (${real}): it holds keychains, cookies and settings. ${allow}`);
   }
+  if (!ALLOW_HIDDEN_UPLOADS && inWindowsGuarded(real)) {
+    throw new Error(real.startsWith("\\\\")
+      ? `${what} refuses network and device paths (${real}). ${allow}`
+      : `${what} refuses ${real}: AppData holds every browser's cookies and passwords and the apps' settings. ${allow}`);
+  }
   const stat = await fs.stat(real);
   if (!stat.isFile()) throw new Error(`Not a regular file: ${real}`);
   return { real, size: stat.size };
@@ -216,6 +264,28 @@ function inMacLibrary(real) {
   return false;
 }
 
+/**
+ * Windows: what hidden folders hold on Linux is in AppData (every browser's cookies, saved passwords,
+ * app settings and keys), which is not hidden by a dot. Refused, as ~/Library is on macOS, compared
+ * without regard to case; so are device and UNC paths (\\.\, \\?\, \\server\share).
+ */
+function inWindowsGuarded(real) {
+  if (!WIN) return false;
+  const p = path.resolve(real).toLowerCase();
+  if (p.startsWith("\\\\")) return true;
+  const homes = new Set([os.homedir(), process.env.USERPROFILE].filter(Boolean));
+  const guarded = new Set([process.env.APPDATA, process.env.LOCALAPPDATA].filter(Boolean));
+  for (const h of homes) {
+    guarded.add(path.join(h, "AppData"));
+    try {
+      guarded.add(path.join(fsSync.realpathSync(h), "AppData"));
+    } catch {
+      // a home that does not exist
+    }
+  }
+  return [...guarded].map((g) => path.resolve(g).toLowerCase()).some((g) => p === g || p.startsWith(`${g}\\`));
+}
+
 /** The real path a file would be written at: links in it, and in the folders above it, resolved as
  * far as they exist. A link whose target does not exist yet is followed too, since writing through
  * it creates that target. */
@@ -224,7 +294,8 @@ function realTarget(file, depth = 0) {
   const rest = [];
   for (let dir = path.resolve(file); ; dir = path.dirname(dir)) {
     try {
-      return path.join(fsSync.realpathSync(dir), ...rest);
+      // Windows: .native expands 8.3 short names (HIDDEN~1 for .hidden), which the checks would miss.
+      return path.join(WIN ? fsSync.realpathSync.native(dir) : fsSync.realpathSync(dir), ...rest);
     } catch {
       // not there, or a link to something that is not there yet
     }
@@ -314,6 +385,10 @@ function checkSavePath(file, tool) {
   // Where the file would really land: a link must not lead a write into a guarded folder.
   const real = realTarget(file);
   if (inMacLibrary(real)) throw new Error(`save_to refuses ~/Library, which holds settings, keychains and cookies: ${file}`);
+  if (inWindowsGuarded(real)) {
+    throw new Error(real.startsWith("\\\\") ? `save_to refuses network and device paths: ${file}`
+      : `save_to refuses AppData, which holds settings, cookies and passwords: ${file}`);
+  }
   if (tool === "javascript") {
     if (!TEXT_SAVE_EXTENSIONS.includes(ext)) {
       throw new Error(`javascript's save_to must name a data or text file (${TEXT_SAVE_EXTENSIONS.join(", ")}): ${file}`);
@@ -392,7 +467,7 @@ async function browserTool(name, args) {
     const preferred = readDefault();
     return text(JSON.stringify({
       browsers: list.map(({ socket, legacy, ...b }) => ({
-        ...b, chosen: chosen?.socket === socket, default: !!preferred && !!b.profile && path.resolve(b.profile) === preferred,
+        ...b, chosen: chosen?.socket === socket, default: isDefault(b.profile, preferred),
       })),
       note: list.length > 1 ? "Choose with browser_select; the choice lasts for this session." : undefined,
     }));

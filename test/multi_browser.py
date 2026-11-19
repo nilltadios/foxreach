@@ -8,6 +8,11 @@ How:      two real native hosts (bridge/host.mjs) in a private XDG_RUNTIME_DIR, 
           servers (bridge/mcp.mjs) as agents. No browser is started and no real setting is touched
           (XDG_CONFIG_HOME is a throwaway folder too).
 """
+import os
+if os.name == "nt":
+    raise SystemExit("This test runs on Linux and macOS only: Windows ignores its throwaway HOME, so it "
+                     "would act on the real foxreach setup. The Windows test is test/windows_hosts.py.")
+
 import json
 import os
 import pathlib

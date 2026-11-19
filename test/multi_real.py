@@ -7,6 +7,11 @@ How:      a throwaway headless browser and profile (test/harness.py), started wi
           and with a private XDG_RUNTIME_DIR, so its native host takes its own socket and info file
           as in daily use. Needs the host registered (scripts/build_install.py) for the HOME in use.
 """
+import os
+if os.name == "nt":
+    raise SystemExit("This test runs on Linux and macOS only: Windows ignores its throwaway HOME, so it "
+                     "would act on the real foxreach setup. The Windows test is test/windows_hosts.py.")
+
 import json
 import os
 import pathlib

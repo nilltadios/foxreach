@@ -8,6 +8,11 @@ A page can tell the agent reading it what to do, so the bridge itself refuses th
 requests that would do the most harm, and never talks through a socket someone else could swap.
 The blocked-sites checks need a browser and are in test/e2e.py (popup).
 """
+import os
+if os.name == "nt":
+    raise SystemExit("This test runs on Linux and macOS only: Windows ignores its throwaway HOME, so it "
+                     "would act on the real foxreach setup. The Windows test is test/windows_hosts.py.")
+
 import json
 import os
 import pathlib

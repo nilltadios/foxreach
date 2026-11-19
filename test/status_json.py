@@ -6,6 +6,11 @@ Expected: every line PASS, exit 0.
 How:      the real program (bun bridge/cli.mjs) with HOME pointed at a throwaway folder; agent
           programs are not run (FOXREACH_AGENT_CLI=0). No real settings file is read or written.
 """
+import os
+if os.name == "nt":
+    raise SystemExit("This test runs on Linux and macOS only: Windows ignores its throwaway HOME, so it "
+                     "would act on the real foxreach setup. The Windows test is test/windows_hosts.py.")
+
 import json
 import os
 import pathlib

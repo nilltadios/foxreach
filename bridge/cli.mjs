@@ -187,7 +187,7 @@ if (command === "host" || startedByBrowser) {
     } else {
       const list = await c.connectedBrowsers();
       const preferred = c.readDefault();
-      const rows = list.map(({ socket, legacy, ...b }) => ({ ...b, default: !!b.profile && path.resolve(b.profile) === preferred }));
+      const rows = list.map(({ socket, legacy, ...b }) => ({ ...b, default: c.isDefault(b.profile, preferred) }));
       if (rest.includes("--json")) console.log(JSON.stringify(rows));
       else if (!rows.length) console.log("No browser is connected to foxreach.");
       else for (const b of rows) console.log(`${b.id.padEnd(22)} ${b.name} (${b.packaging}) ${b.profile ?? ""}${b.default ? "  [default]" : ""}`);

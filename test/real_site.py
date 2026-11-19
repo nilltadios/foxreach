@@ -5,6 +5,11 @@ Types into Wikipedia's search box with real input, submits, and checks the artic
 Run:      uv run --python 3.15 test/real_site.py [--visible] [--hold SECONDS] [--out DIR]
 Expected: all PASS, exit 0. Needs internet. Read-only: no account, no posting.
 """
+import os
+if os.name == "nt":
+    raise SystemExit("This test runs on Linux and macOS only: Windows ignores its throwaway HOME, so it "
+                     "would act on the real foxreach setup. The Windows test is test/windows_hosts.py.")
+
 import pathlib
 import re
 import subprocess

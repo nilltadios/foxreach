@@ -2,7 +2,8 @@
 """Build foxreach as one program that needs neither Bun nor Node.js on the user's machine.
 
 Run:      uv run --python 3.15 scripts/build_binary.py            dist/foxreach, for this machine
-          uv run --python 3.15 scripts/build_binary.py --release  dist/release/foxreach-{linux,darwin}-{x64,arm64}
+          uv run --python 3.15 scripts/build_binary.py --release  dist/release/foxreach-{linux,darwin}-{x64,arm64},
+                                                                   foxreach-windows-{x64,arm64}.exe
 Needs:    Bun (the build machine only). --release downloads Bun's runtime for the other targets once.
 Expected: the paths written, each with its SHA-256, exit 0.
 
@@ -12,6 +13,7 @@ the same bytes (test/binary.py checks it), so a published file can be rebuilt an
 """
 import argparse
 import hashlib
+import os
 import pathlib
 import shutil
 import subprocess
@@ -28,11 +30,16 @@ TARGETS = {
     "foxreach-linux-arm64": "bun-linux-arm64",
     "foxreach-darwin-x64": "bun-darwin-x64-baseline",
     "foxreach-darwin-arm64": "bun-darwin-arm64",
+    # Windows: both are built but neither has run as a release yet. The x64 build was built on Windows
+    # 11, where Smart App Control blocked it (unsigned); the same code ran there from a checkout.
+    "foxreach-windows-x64.exe": "bun-windows-x64-baseline",
+    "foxreach-windows-arm64.exe": "bun-windows-arm64",
 }
 
 
 def bun():
-    found = shutil.which("bun", path=f"{pathlib.Path.home()}/.bun/bin:/usr/bin:/usr/local/bin")
+    found = shutil.which("bun") if os.name == "nt" else None
+    found = found or shutil.which("bun", path=os.pathsep.join([str(pathlib.Path.home() / ".bun/bin"), "/usr/bin", "/usr/local/bin"]))
     if not found:
         raise SystemExit("Bun was not found; it is needed to build the program (not to run it).")
     return found
@@ -67,7 +74,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
     built = (
         [build(DIST / "release" / name, target) for name, target in TARGETS.items()]
-        if args.release else [build(DIST / "foxreach")]
+        if args.release else [build(DIST / ("foxreach.exe" if os.name == "nt" else "foxreach"))]
     )
     for path in built:
         print(f"{sha256(path)}  {path.relative_to(ROOT)}")

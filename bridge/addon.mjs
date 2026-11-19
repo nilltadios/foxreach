@@ -13,6 +13,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { TOR_WARNING, torData, torHostDir, torInstalls } from "./tor.mjs";
+import { WIN, appData, localAppData, profileLocked, regDefault, regSubkeys, samePath } from "./win.mjs";
 
 export const ADDON_ID = "foxreach@foxreach.local";
 // In a profile folder: agents may not use this profile (bridge/host.mjs refuses them); the add-on stays.
@@ -29,18 +30,23 @@ const FULL_PREFS = ["extensions.experiments.enabled", "xpinstall.signatures.requ
 // scripts/browsers.py.
 const KINDS = [
   { name: "Firefox", commands: ["firefox", "firefox-developer-edition", "firefox-devedition", "firefox-nightly", "firefox-beta", "firefox-esr", "firefox-bin"],
-    flatpaks: ["org.mozilla.firefox"], roots: [".mozilla/firefox", ".config/mozilla/firefox"], macRoots: ["Firefox"] },
-  { name: "LibreWolf", commands: ["librewolf", "librewolf-bin"], flatpaks: ["io.gitlab.librewolf-community"], roots: [".librewolf", ".config/librewolf/librewolf"], macRoots: ["librewolf"] },
-  { name: "Floorp", commands: ["floorp"], flatpaks: ["one.ablaze.floorp"], roots: [".floorp"], macRoots: ["Floorp"] },
-  { name: "Waterfox", commands: ["waterfox"], flatpaks: ["net.waterfox.waterfox"], roots: [".waterfox"], macRoots: ["Waterfox"] },
-  { name: "Zen", commands: ["zen", "zen-browser", "zen-bin"], flatpaks: ["app.zen_browser.zen"], roots: [".zen"], macRoots: ["zen"] },
+    flatpaks: ["org.mozilla.firefox"], roots: [".mozilla/firefox", ".config/mozilla/firefox"], macRoots: ["Firefox"], winRoots: ["Mozilla/Firefox"] },
+  { name: "LibreWolf", commands: ["librewolf", "librewolf-bin"], flatpaks: ["io.gitlab.librewolf-community"], roots: [".librewolf", ".config/librewolf/librewolf"], macRoots: ["librewolf"], winRoots: ["librewolf"] },
+  { name: "Floorp", commands: ["floorp"], flatpaks: ["one.ablaze.floorp"], roots: [".floorp"], macRoots: ["Floorp"], winRoots: ["Floorp"] },
+  { name: "Waterfox", commands: ["waterfox"], flatpaks: ["net.waterfox.waterfox"], roots: [".waterfox"], macRoots: ["Waterfox"], winRoots: ["Waterfox"] },
+  { name: "Zen", commands: ["zen", "zen-browser", "zen-bin"], flatpaks: ["app.zen_browser.zen"], roots: [".zen"], macRoots: ["zen"], winRoots: ["zen"] },
 ];
 const APPIMAGE_DIRS = ["AppImages", "Applications", ".local/bin"];
 // macOS: browsers are apps in /Applications or ~/Applications, profiles in Application Support.
 // FOXREACH_PLATFORM=darwin lets the tests take this path on Linux, as for scripts/browsers.py.
 const MAC = (process.env.FOXREACH_PLATFORM || process.platform) === "darwin";
 const SUPPORT = "Library/Application Support";
-const rootsOf = (kind, h) => (MAC ? kind.macRoots.map((r) => path.join(h, SUPPORT, r)) : kind.roots.map((r) => path.join(h, r)));
+const rootsOf = (kind, h) => (MAC ? kind.macRoots.map((r) => path.join(h, SUPPORT, r))
+  : WIN ? kind.winRoots.map((r) => path.join(appData(h), r)) : kind.roots.map((r) => path.join(h, r)));
+// Windows: install folders (under Program Files, or %LOCALAPPDATA% for a per-user install) that hold
+// a Firefox-based browser's program. Only LibreWolf has been tried; the rest follow their installers.
+const WIN_DIRS = ["Mozilla Firefox", "Firefox Developer Edition", "Firefox Nightly", "Firefox Beta", "LibreWolf",
+  "Ablaze Floorp", "Floorp", "Waterfox", "Zen Browser", "Zen"];
 // What an AppImage (this manager, or a browser) exports for itself; none of it may reach a browser.
 const SCRUB = ["LD_LIBRARY_PATH", "LD_PRELOAD", "APPDIR", "APPIMAGE", "ARGV0", "OWD"];
 
@@ -61,7 +67,7 @@ function onPath(cmd) {
 }
 
 function kindOf(fileName) {
-  const n = fileName.toLowerCase();
+  const n = fileName.toLowerCase().replace(/\.exe$/, "");
   const pairs = KINDS.flatMap((k) => k.commands.map((c) => [c, k])).sort((a, b) => b[0].length - a[0].length);
   return pairs.find(([c]) => n === c || [".", "-", "_"].some((s) => n.startsWith(c + s)))?.[1] ?? null;
 }
@@ -151,6 +157,10 @@ export function findBrowsers({ h = home() } = {}) {
     const appId = packaging === "flatpak" ? spec.slice(8) : null;
     found.push({ name: kind.name, packaging, spec, appId, home: appId ? path.join(h, ".var/app", appId) : h, kind });
   };
+  if (WIN) {
+    for (const exe of windowsPrograms()) add(winKind(exe), "native", exe);
+    return found;
+  }
   for (const kind of KINDS) {
     for (const c of kind.commands) {
       const p = onPath(c);
@@ -204,6 +214,60 @@ export function findBrowsers({ h = home() } = {}) {
   return found;
 }
 
+/**
+ * Windows: programs of Firefox-based browsers, from the browsers registered with Windows (Start menu
+ * internet clients, for all users and for this one) and the usual install folders.
+ */
+// The program's own name only: an install folder also holds helpers (LibreWolf-WinUpdater.exe).
+const winKind = (exe) => KINDS.find((k) => k.commands.includes(path.basename(exe).toLowerCase().replace(/\.exe$/, ""))) ?? null;
+
+function windowsPrograms() {
+  const out = [];
+  const keys = [String.raw`HKLM\SOFTWARE\Clients\StartMenuInternet`, String.raw`HKCU\SOFTWARE\Clients\StartMenuInternet`,
+    String.raw`HKLM\SOFTWARE\WOW6432Node\Clients\StartMenuInternet`];
+  for (const key of keys) {
+    for (const sub of regSubkeys(key)) {
+      const command = regDefault(String.raw`${sub}\shell\open\command`) ?? "";
+      // Quoted, or not ("C:\Program Files\LibreWolf\librewolf.exe", spaces and all): up to ".exe".
+      const exe = /^\s*"([^"]+)"/.exec(command)?.[1] ?? /^\s*(.+?\.exe)(?=\s|$)/i.exec(command)?.[1];
+      if (exe && winKind(exe) && exists(exe)) out.push(exe);
+    }
+  }
+  const bases = [process.env.ProgramFiles, process.env["ProgramFiles(x86)"], process.env.ProgramW6432,
+    localAppData(), path.join(localAppData(), "Programs")].filter(Boolean);
+  for (const base of bases) {
+    for (const dir of WIN_DIRS) {
+      let names = [];
+      try {
+        names = fs.readdirSync(path.join(base, dir)).filter((n) => n.toLowerCase().endsWith(".exe")).sort();
+      } catch {
+        continue;
+      }
+      for (const n of names) if (winKind(n)) out.push(path.join(base, dir, n));
+    }
+  }
+  return out;
+}
+
+/** Windows: the open profiles of every Firefox-based browser foxreach knows. */
+export const allOpenProfiles = (h = home()) => [...new Set(KINDS.flatMap((k) => openProfiles(k.name, h)))];
+
+/** Windows: the profiles of the browser named (Firefox, LibreWolf...) that are open now. */
+export function openProfiles(name, h = home()) {
+  const kind = KINDS.find((k) => k.name === name);
+  if (!kind) return [];
+  return rootsOf(kind, h).flatMap((r) => iniProfiles(r)).map((p) => p.path).filter((p) => inUse(p));
+}
+
+/** Windows: the folder of the profile of the browser named that is called profileName in its
+ * profiles.ini (what -P <name> starts), or null. */
+export function namedProfile(name, profileName, h = home()) {
+  const kind = KINDS.find((k) => k.name === name);
+  if (!kind || !profileName) return null;
+  const want = profileName.toLowerCase();
+  return rootsOf(kind, h).flatMap((r) => iniProfiles(r)).find((p) => p.name.toLowerCase() === want)?.path ?? null;
+}
+
 /** Profiles listed in a profiles.ini: [{name, path, isDefault}]. */
 function iniProfiles(root) {
   let text;
@@ -215,7 +279,7 @@ function iniProfiles(root) {
   const out = [];
   let cur = null;
   let defaults = new Set();
-  for (const raw of text.split("\n")) {
+  for (const raw of text.split(/\r?\n/)) {
     const line = raw.trim();
     const sec = /^\[(.+)\]$/.exec(line);
     if (sec) {
@@ -279,6 +343,7 @@ export function inUse(profile, appId = null) {
     const r = spawnSync("flatpak", ["ps", "--columns=application"], { encoding: "utf8" });
     return !r.error && r.status === 0 && r.stdout.split(/\s+/).includes(appId);
   }
+  if (WIN) return profileLocked(profile);
   if (MAC) {
     // macOS builds keep .parentlock open (and locked) while the profile is open; there is no lock
     // link. lsof finds a browser started any way, from the Dock too.
@@ -317,7 +382,7 @@ export function browserStatus({ h = home() } = {}) {
     // the folders that are ~/.config/... outside it (Firefox keeps its profiles in config/mozilla/firefox).
     const roots = b.appId ? b.kind.roots.flatMap((r) => (r.startsWith(".config/") ? [r, r.slice(1)] : [r])) : b.kind.roots;
     const profiles = b.roots ? b.roots.flatMap((r) => iniProfiles(r))
-      : MAC ? rootsOf(b.kind, b.home).flatMap((r) => iniProfiles(r))
+      : MAC || WIN ? rootsOf(b.kind, b.home).flatMap((r) => iniProfiles(r))
       : roots.flatMap((r) => iniProfiles(path.join(b.home, r)));
     for (const [p, spec] of Object.entries(recorded)) {
       if (spec === b.spec && !profiles.some((x) => x.path === p)) profiles.push({ name: path.basename(p), path: p, isDefault: false });
@@ -365,14 +430,14 @@ export async function latestAddon({ full = false } = {}) {
 }
 
 function browserFor(spec) {
-  const b = findBrowsers().find((x) => x.spec === spec);
+  const b = findBrowsers().find((x) => (WIN ? samePath(x.spec, spec) : x.spec === spec));
   if (!b) throw new Error(`No browser ${spec} was found. Browsers: ${findBrowsers().map((x) => x.spec).join(", ") || "none"}`);
   return b;
 }
 
 function profileOf(b, profile) {
   const real = path.resolve(profile);
-  const known = browserStatus().find((x) => x.spec === b.spec)?.profiles.find((p) => p.path === real);
+  const known = browserStatus().find((x) => x.spec === b.spec)?.profiles.find((p) => (WIN ? samePath(p.path, real) : p.path === real));
   if (!known) throw new Error(`${real} is not a profile of ${b.spec}.`);
   return known;
 }

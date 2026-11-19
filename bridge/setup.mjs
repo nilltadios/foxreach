@@ -52,6 +52,11 @@ export function manifestRuns(manifest) {
   } catch {
     return null;
   }
+  // Windows: a checkout's .bat wrapper (bridge/install.mjs), whose one command line ends in "host".
+  if (/\.(bat|cmd)$/i.test(target)) {
+    const line = head.split(/\r?\n/).map((l) => l.trim().replace(/^@/, "")).find((l) => /\shost$/.test(l));
+    return line ? words(line.replace(/%%/g, "%")) : null;
+  }
   if (!head.startsWith("#!")) return [target];
   const line = head.split("\n").map((l) => l.trim()).find((l) => l.startsWith("exec "));
   return line ? words(line.slice(5)) : null;
@@ -63,7 +68,7 @@ export function manifestRuns(manifest) {
  */
 export function classify(argv) {
   if (!argv?.length) return null;
-  const script = argv.find((w) => /\/bridge\/(cli|mcp|host)\.mjs$/.test(w));
+  const script = argv.find((w) => /[\\/]bridge[\\/](cli|mcp|host)\.mjs$/.test(w));
   if (script) {
     const root = path.dirname(path.dirname(script));
     const runtime = argv[0] !== script ? argv[0] : null;

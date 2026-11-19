@@ -8,6 +8,11 @@ install, so a too-early quit can be told apart from a daily restart failing.
 Run:      uv run --python 3.15 test/restart_loop.py [--visible] [--runs N] [--settle SECONDS]
 Expected: every restart OK, exit 0.
 """
+import os
+if os.name == "nt":
+    raise SystemExit("This test runs on Linux and macOS only: Windows ignores its throwaway HOME, so it "
+                     "would act on the real foxreach setup. The Windows test is test/windows_hosts.py.")
+
 import json
 import pathlib
 import subprocess

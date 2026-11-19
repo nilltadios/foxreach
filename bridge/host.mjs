@@ -3,10 +3,12 @@
 import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
-import { parentApp } from "./browsers.mjs";
-import { describeParent, fixedSocket, register } from "./connected.mjs";
+import { allOpenProfiles, namedProfile, openProfiles } from "./addon.mjs";
+import { parentApp, windowsBrowser } from "./browsers.mjs";
+import { describeParent, fixedSocket, folder, proofOf, register } from "./connected.mjs";
 import { appendHistory } from "./history.mjs";
-import { assertPrivate, socketPath } from "./socket.mjs";
+import { assertPrivate, isPipe, socketPath } from "./socket.mjs";
+import { WIN, processesError, profileArg, profileNameArg } from "./win.mjs";
 
 // The browser accepts at most 1 MB per message; 300k UTF-16 units cannot exceed that once encoded.
 const CHUNK_CHARS = 300_000;
@@ -26,8 +28,11 @@ let nextClient = 1;
 // add-on still installed, with a marker file there (`foxreach addon stop`); the host then refuses
 // every agent call. Checked on each call, so it takes effect at once. FOXREACH_HOST_PROFILE: tests.
 const STOP_MARK = "foxreach-agents-stopped";
+// Windows: the profiles this host may serve, when it cannot tell which one (two open at once).
+let candidates = [];
 function findProfile() {
   if (process.env.FOXREACH_HOST_PROFILE) return process.env.FOXREACH_HOST_PROFILE;
+  if (WIN) return windowsProfile();
   try {
     for (const fd of fs.readdirSync(`/proc/${process.ppid}/fd`)) {
       let target;
@@ -43,8 +48,37 @@ function findProfile() {
   }
   return null;
 }
+/**
+ * Windows has no /proc: the profile named on the browser's command line (-profile <folder> or
+ * -P <name>), else the one profile of that browser that is open (its parent.lock held). With
+ * several open and none named, it cannot tell; agents are then refused if any of them is stopped.
+ */
+let toldNoTable = false;
+function windowsProfile() {
+  const b = windowsBrowser();
+  if (processesError && !toldNoTable) {
+    toldNoTable = true;
+    debug(`no process table, so neither the browser nor its profile is known: ${processesError}`);
+  }
+  // Browser unknown (no process table, or a program foxreach does not know): every open profile of
+  // every browser may be this one, so a stop in any of them stops agents here. That errs safe. Only
+  // with no process table is a single open profile taken as this one's: a program foxreach does not
+  // know is most likely not the browser that has it open.
+  if (!b) {
+    candidates = allOpenProfiles();
+    return processesError && candidates.length === 1 ? candidates[0] : null;
+  }
+  const named = profileArg(b.cmd);
+  if (named) return path.resolve(named);
+  // -P <name>: the profile of that name in the browser's profiles.ini.
+  const byName = namedProfile(b.name, profileNameArg(b.cmd));
+  if (byName) return byName;
+  const open = openProfiles(b.name);
+  candidates = open;
+  return open.length === 1 ? open[0] : null;
+}
 let profile = findProfile();
-debug(`profile ${profile}`);
+debug(`profile ${profile}${candidates.length > 1 ? ` (one of ${candidates.join(", ")})` : ""}`);
 
 // Recorded in history.jsonl (bridge/history.mjs): this connection's start, and how it ended.
 const browserPid = process.ppid;
@@ -58,16 +92,24 @@ let quitSaid = 0;
 const QUIT_COUNTS_MS = 30_000;
 function agentsStopped() {
   profile ??= findProfile();
-  return profile !== null && fs.existsSync(path.join(profile, STOP_MARK));
+  if (profile === null) return candidates.some((c) => fs.existsSync(path.join(c, STOP_MARK)));
+  return fs.existsSync(path.join(profile, STOP_MARK));
 }
 const STOPPED = "The user stopped agents in this browser profile (foxreach is still installed there). " +
   "Ask the user to let agents use it again, from the foxreach manager or with: foxreach addon start --profile <folder>.";
 
-function toBrowser(message) {
+function toBrowser(message, done) {
   const body = Buffer.from(JSON.stringify(message));
   const header = Buffer.alloc(4);
   header.writeUInt32LE(body.length);
-  process.stdout.write(Buffer.concat([header, body]));
+  process.stdout.write(Buffer.concat([header, body]), done);
+}
+
+/** Tell the add-on why this host stops, then stop once the message is out (pipe writes are
+ * asynchronous on Windows, and exiting at once could lose it). */
+function fail(message, code) {
+  toBrowser({ hostError: message }, () => process.exit(code));
+  setTimeout(() => process.exit(code), 2000).unref();
 }
 
 function sendRequest(message) {
@@ -143,7 +185,8 @@ async function shutdown(signal) {
   debug(`shutdown${signal ? ` on ${signal}` : ""}`);
   registration?.remove();
   // Only the host that created the socket may remove it: it may be another browser's.
-  if (ownsSocket) {
+  // A named pipe is no file (FOXREACH_SOCKET may name one on Windows, or a socket file).
+  if (ownsSocket && !isPipe(sock)) {
     try {
       fs.unlinkSync(sock);
     } catch {}
@@ -176,6 +219,12 @@ function serveClient(conn) {
       }
       // Only a tool call goes on to the add-on. Its other messages (hello, chunk, hostError) are
       // the host's own and must not be forgeable from the socket.
+      // Windows: an agent asks the host to prove it is the one its info file names (bridge/mcp.mjs).
+      if (request && typeof request.challenge === "string") {
+        const token = registration?.info.token;
+        if (token) conn.write(`${JSON.stringify({ proof: proofOf(token, request.challenge.slice(0, 200)) })}\n`);
+        continue;
+      }
       const { id, client, tool, args } = request ?? {};
       if (agentsStopped()) {
         conn.write(`${JSON.stringify({ id, error: STOPPED })}\n`);
@@ -203,20 +252,20 @@ function isAlive(file) {
 }
 
 (async () => {
-  fs.mkdirSync(path.dirname(sock), { recursive: true, mode: 0o700 });
+  fs.mkdirSync(folder(), { recursive: true, mode: 0o700 });
   try {
-    assertPrivate(path.dirname(sock));
+    assertPrivate(folder());
   } catch (e) {
     debug(e.message);
-    toBrowser({ hostError: e.message });
-    process.exit(4);
+    return fail(e.message, 4);
   }
   const serve = (file) =>
     new Promise((resolve) => {
       const server = net.createServer(serveClient);
-      const oldMask = process.umask(0o177);
+      // Windows: a pipe is not a file, and umask means nothing to it.
+      const oldMask = WIN ? null : process.umask(0o177);
       server.listen(file, () => {
-        process.umask(oldMask);
+        if (oldMask !== null) process.umask(oldMask);
         debug(`listening on ${file}`);
         resolve();
       });
@@ -225,10 +274,9 @@ function isAlive(file) {
     // One fixed socket (FOXREACH_SOCKET): the first browser serves it, others leave it alone.
     if (await isAlive(sock)) {
       debug("socket busy");
-      toBrowser({ hostError: `Another browser already serves ${sock}.` });
-      process.exit(3);
+      return fail(`Another browser already serves ${sock}.`, 3);
     }
-    fs.rmSync(sock, { force: true });
+    if (!isPipe(sock)) fs.rmSync(sock, { force: true });
     ownsSocket = true;
     await serve(sock);
     return;
@@ -238,9 +286,9 @@ function isAlive(file) {
   registration = register({ profile });
   await serve(registration.socket);
   // Agents from before several browsers could connect use browser.sock: serve it too while no
-  // other browser does.
+  // other browser does. (Not on Windows, which has no such agents and no fixed pipe.)
   let legacy = false;
-  if (!(await isAlive(sock))) {
+  if (sock && !(await isAlive(sock))) {
     fs.rmSync(sock, { force: true });
     ownsSocket = true;
     legacy = true;
