@@ -88,8 +88,8 @@ the host.
 
 ### In CI
 
-`.github/workflows/manager.yml` builds all four files on GitHub's native runners (`ubuntu-24.04`
-and `ubuntu-24.04-arm`) when `manager/` (or the workflow, `scripts/build_binary.py`,
+`.github/workflows/manager.yml` builds all four files on GitHub's native runners (`ubuntu-26.04`
+and `ubuntu-26.04-arm`) when `manager/` (or the workflow, `scripts/build_binary.py`,
 `.bun-version`, or `bridge/agents.mjs`, `addon.mjs`, `browsers.mjs`, which the tests read) changes
 on a branch or in a pull request, or by hand (*Run workflow*). Its `test` job runs `cargo test
 --locked` first (among the tests: every agent, linked app and browser foxreach knows has a bundled

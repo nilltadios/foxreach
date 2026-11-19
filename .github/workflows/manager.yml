@@ -48,7 +48,7 @@ jobs:
   # libxkbcommon is the only system library the build links (wayland-sys is built with dlopen);
   # pkg-config is how smithay-client-toolkit finds it.
   test:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v4
       - name: Build dependencies
@@ -65,7 +65,7 @@ jobs:
   # (Bun builds both from here, the same bytes as the release's files) and the vendored crates the
   # offline Flatpak build uses.
   prepare:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -95,8 +95,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { arch: x86_64, program: foxreach-linux-x64, runner: ubuntu-24.04 }
-          - { arch: aarch64, program: foxreach-linux-arm64, runner: ubuntu-24.04-arm }
+          - { arch: x86_64, program: foxreach-linux-x64, runner: ubuntu-26.04 }
+          - { arch: aarch64, program: foxreach-linux-arm64, runner: ubuntu-26.04-arm }
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
@@ -132,8 +132,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { arch: x86_64, program: foxreach-linux-x64, runner: ubuntu-24.04 }
-          - { arch: aarch64, program: foxreach-linux-arm64, runner: ubuntu-24.04-arm }
+          - { arch: x86_64, program: foxreach-linux-x64, runner: ubuntu-26.04 }
+          - { arch: aarch64, program: foxreach-linux-arm64, runner: ubuntu-26.04-arm }
     runs-on: ${{ matrix.runner }}
     # flatpak-builder, org.freedesktop.Sdk//26.08 and the Platform, for amd64 and arm64.
     # --privileged: flatpak-builder and flatpak run need namespaces for bubblewrap.
