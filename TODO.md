@@ -80,8 +80,10 @@ Open items, newest first. Remove an item when it is done.
    - AppImage updates: done for the release after 0.4.0 (update information and a `.zsync` per
      architecture, `manager/README.md`, "AppImage updates"); a 0.4.0 AppImage has none and has to
      be replaced by hand once. Not yet seen working against a real release.
-   - a signed Flatpak repository on GitHub Pages with a `.flatpakref` (needs a GPG key kept as a
-     repository secret), instead of or next to the bundles;
+   - a signed Flatpak repository on GitHub Pages with a `.flatpakref`, next to the bundles: built
+     (`.github/workflows/pages.yml`, `manager/flatpak/build-site.sh`, key in
+     `manager/flatpak/signing-key.asc`) and tested locally from an x86_64 bundle; live once the
+     `GPG_PRIVATE_KEY` secret is set and Pages is switched to deploy from GitHub Actions.
    - `scripts/verify_release.py` and `test/release.py` checking the new files the way they check the
      programs (reproducible builds, hashes in `SHA256SUMS`; the manager files are not in it).
 

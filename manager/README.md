@@ -25,6 +25,44 @@ Every change is made by running `foxreach` itself, the same commands the termina
 (`foxreach status --json` is what the window shows), so the app and the command line cannot
 disagree.
 
+## Install
+
+**Flatpak, one click:** open [the install
+file](https://nilltadios.github.io/foxreach/dev.nilltadios.FoxreachManager.flatpakref) in
+Discover, GNOME Software or COSMIC Store.
+
+**Flatpak, terminal:**
+
+```sh
+flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+flatpak remote-add --user --if-not-exists foxreach https://nilltadios.github.io/foxreach/foxreach.flatpakrepo
+flatpak install --user foxreach dev.nilltadios.FoxreachManager
+```
+
+Updates then come through `flatpak update` or the software store, like any other app. The
+repository is signed (branch `stable`, x86_64 and aarch64) and holds the bundles of the newest
+GitHub release, rebuilt by `.github/workflows/pages.yml` (see "Flatpak repository" below).
+
+**Installed from a downloaded `.flatpak` file?** That copy never updates (the 0.4.0 bundle among
+them). Add the remote (second command above), install from it, then remove the bundle's copy;
+settings and data are kept, they belong to the app ID, not the copy:
+
+```sh
+flatpak install --user foxreach dev.nilltadios.FoxreachManager
+flatpak uninstall --user dev.nilltadios.FoxreachManager//master
+```
+
+**Signing key fingerprint:** `E1A0 35A9 FEE5 859F C171  64C6 EDFF 56DE 84A4 9D3D`
+(`manager/flatpak/signing-key.asc`). To compare it with the key the site serves:
+
+```sh
+curl -s https://nilltadios.github.io/foxreach/foxreach.flatpakrepo | sed -n 's/^GPGKey=//p' | base64 -d | gpg --show-keys
+```
+
+**Offline, or without the remote:** the release's `foxreach-manager-VERSION-ARCH.flatpak`
+(`flatpak install --user FILE`) and `foxreach-manager-VERSION-ARCH.AppImage` (see "Running each
+package"). The AppImage updates itself from the release after 0.4.0 ("AppImage updates").
+
 ## Build
 
 | Package | Command | Output |
@@ -69,6 +107,26 @@ after the release's own files; a failure there leaves the rest of the release as
 carry the version from `Cargo.toml`, which is foxreach's own (from 0.4.0): `scripts/release.py` and
 the release workflow refuse when `Cargo.toml` and `extension/manifest.json` differ. Run
 (44439124322, main f44430b, 2026-11-18) passed all five jobs.
+
+### Flatpak repository
+
+`.github/workflows/pages.yml` publishes the GitHub Pages site: `docs/` unchanged (the add-on's
+update lists and `.xpi` files) plus a signed OSTree repository (`repo/`, branch `stable`, both
+architectures), `dev.nilltadios.FoxreachManager.flatpakref` and `foxreach.flatpakrepo`, laid out by
+`flatpak/build-site.sh`. Nothing of it is committed: each run takes the bundles of the newest
+release that has both, checks their `.sha256` and build attestation, and signs with the
+`GPG_PRIVATE_KEY` secret, which must be the key in `flatpak/signing-key.asc` (refused otherwise).
+It runs on a push to main that changes `docs/`, after `release.yml` attaches the manager files, and
+by hand. Unchanged bundles give the same commits (each bundle's commit is recommitted to `stable`
+with its own timestamp; the appstream commits take the newest app commit's time), so a redeploy is
+not an update for clients. The bundles themselves stay on branch `master`, as before.
+
+If the Flatpak part fails, `docs/` is deployed alone, so the add-on update lists always go out, and
+the run fails; the repository is then missing until the next good run. Until Pages is set to deploy
+from GitHub Actions the workflow does nothing, and Pages keeps serving `main:/docs`.
+
+Locally (needs the signing key in `GNUPGHOME`):
+`manager/flatpak/build-site.sh SITE http://127.0.0.1:PORT/ manager/flatpak/foxreach-manager-*.flatpak`.
 
 ### AppImage updates
 
