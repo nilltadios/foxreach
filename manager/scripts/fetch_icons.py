@@ -2,15 +2,19 @@
 """Fetch the brand icons the app bundles and generate src/bundled_icons.rs.
 
 Run:      uv run --python 3.15 manager/scripts/fetch_icons.py
+          uv run --python 3.15 manager/scripts/fetch_icons.py --check   offline: every bundled name
+            src/icons.rs asks for has an arm in src/bundled_icons.rs and a file in resources/icons
 Sources:  two npm packages, each version pinned below and checked by SHA-256:
           - simple-icons (https://github.com/simple-icons/simple-icons, CC0 1.0), filled with each
             brand's colour;
           - @lobehub/icons-static-svg (https://github.com/lobehub/lobe-icons, MIT), for AI brands
-            Simple Icons lacks (Grok, OpenAI, OpenClaw, Hermes Agent, Muse).
+            Simple Icons lacks (Grok, OpenAI, OpenClaw, Hermes Agent, Muse);
+          and logos taken from a project's own site or repository (DIRECT: Pi, T3 Code), each pinned
+          by SHA-256.
           The logos are their owners' trademarks; see SOURCES.md for each one.
 Writes:   manager/resources/icons/<name>.svg, SOURCES.md beside them, and manager/src/bundled_icons.rs,
           which compiles them into the app.
-Expected: one line per icon written, exit 0. The app prefers an icon installed on the system and
+Expected: one line per icon written, exit 0 (--check: "N bundled names resolve", exit 0). The app prefers an icon installed on the system and
           falls back to these; brands not listed here get a coloured initial.
 """
 import hashlib
@@ -62,10 +66,17 @@ LOBE = {
     "zai": "ZCode (Z.ai)",
 }
 
-# Logos taken from a project's own site, pinned by SHA-256: name -> (url, sha256, shown for).
+# Logos taken from a project's own site or repository, pinned by SHA-256:
+# name -> (url, sha256, shown for, licence).
 DIRECT = {
     # The Pi coding agent's logo, as its README shows it (https://github.com/badlogic/pi-mono, MIT).
-    "pi": ("https://pi.dev/logo.svg", "abd66e7868b2d24f0f0895f9237ee8a6dcb22337583b0dc54aeb595acecb4d6b", "Pi"),
+    "pi": ("https://pi.dev/logo.svg", "abd66e7868b2d24f0f0895f9237ee8a6dcb22337583b0dc54aeb595acecb4d6b", "Pi",
+           "the project's own logo"),
+    # T3 Code's production logo from its repository, pinned to a commit
+    # (https://github.com/pingdotgg/t3code, assets/prod/logo.svg; MIT, T3 Tools Inc.).
+    "t3code": ("https://raw.githubusercontent.com/pingdotgg/t3code/0226239a41e1fd0649fdd2562421d8950db7f39c/assets/prod/logo.svg",
+               "fbceddbceeb75136fb8e2c702cf0fe459d153b629abbda6262a63d7c4c65e673", "T3 Code",
+               "the project's own logo; its repository is MIT (T3 Tools Inc.)"),
 }
 
 MANAGER = pathlib.Path(__file__).resolve().parent.parent
@@ -90,7 +101,22 @@ def plain(name, svg):
     return svg
 
 
+def check():
+    """Every Some("name") in src/icons.rs resolves to a bundled file, so no item falls back to an initial."""
+    wanted = sorted(set(re.findall(r'Some\("([^"]+)"\)', (MANAGER / "src/icons.rs").read_text())))
+    arms = dict(re.findall(r'"([^"]+)" => \(include_bytes!\("\.\./resources/icons/([^"]+)"\)', (MANAGER / "src/bundled_icons.rs").read_text()))
+    bad = [n for n in wanted if n not in arms or not (OUT / arms[n]).is_file()]
+    for n in wanted:
+        print(f"{n}: {'resources/icons/' + arms[n] if n not in bad else 'MISSING'}")
+    if bad:
+        raise SystemExit(f"not bundled: {', '.join(bad)}")
+    print(f"{len(wanted)} bundled names resolve")
+    return 0
+
+
 def main():
+    if sys.argv[1:] == ["--check"]:
+        return check()
     OUT.mkdir(parents=True, exist_ok=True)
     rows, themed, names = [], set(), []
 
@@ -122,18 +148,19 @@ def main():
         names.append(name)
         print(OUT / f"{name}.svg")
 
-    for name, (url, sha256, use) in DIRECT.items():
+    for name, (url, sha256, use, lic) in DIRECT.items():
         data = urllib.request.urlopen(url, timeout=60).read()
         got = hashlib.sha256(data).hexdigest()
         if got != sha256:
             raise SystemExit(f"{url}: SHA-256 {got}, expected {sha256}. Nothing written.")
         (OUT / f"{name}.svg").write_text(plain(name, data.decode()))
-        rows.append(f"| `{name}.svg` | {use} | {use} | {url} (SHA-256 `{sha256[:16]}…`) | the project's own logo |")
+        rows.append(f"| `{name}.svg` | {use} | {use} | {url} (SHA-256 `{sha256[:16]}…`) | {lic} |")
         names.append(name)
         print(OUT / f"{name}.svg")
 
     (OUT / "SOURCES.md").write_text(
-        "# Bundled icons\n\nWritten by `manager/scripts/fetch_icons.py` from two pinned npm packages:\n\n"
+        "# Bundled icons\n\nWritten by `manager/scripts/fetch_icons.py` from two pinned npm packages and from logos "
+        "taken from projects' own sites, pinned by SHA-256 (the rows with a URL):\n\n"
         f"- [Simple Icons](https://github.com/simple-icons/simple-icons) {SIMPLE_VERSION} (`{SIMPLE_URL}`, "
         f"SHA-256 `{SIMPLE_SHA256}`), CC0 1.0, filled with each brand's colour;\n"
         f"- [LobeHub icons](https://github.com/lobehub/lobe-icons) {LOBE_VERSION} (`{LOBE_URL}`, "

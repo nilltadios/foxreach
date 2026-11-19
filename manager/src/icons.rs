@@ -43,7 +43,7 @@ pub fn agent(id: &str) -> Look {
         // The logo the user picked, always (no system icon lookup).
         "grok" => (&[], Some("grok")),
         "muse" => (&["muse", "muse-code", "ai.meta.muse"], Some("muse-color")),
-        "t3code" => (&["com.t3tools.T3Code", "com.t3tools.t3code", "t3code"], None),
+        "t3code" => (&["com.t3tools.T3Code", "com.t3tools.t3code", "t3code"], Some("t3code")),
         "chatgpt" => (&["chatgpt", "codex-desktop", "com.openai.Codex"], Some("openai")),
         _ => (&[], None),
     };

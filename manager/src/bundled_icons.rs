@@ -29,6 +29,7 @@ pub fn get(name: &str) -> Option<(&'static [u8], bool)> {
         "xiaomimimo" => (include_bytes!("../resources/icons/xiaomimimo.svg"), true),
         "zai" => (include_bytes!("../resources/icons/zai.svg"), true),
         "pi" => (include_bytes!("../resources/icons/pi.svg"), false),
+        "t3code" => (include_bytes!("../resources/icons/t3code.svg"), false),
         _ => return None,
     })
 }
