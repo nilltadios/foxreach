@@ -487,7 +487,8 @@ The toolbar button shows the bridge's status and recent agent activity, and it h
   that lies about its name. You can switch asking off.
 - **Sites agents may use:** every site, or only the ones you list (with their subdomains). On any
   other site an agent can neither open a page nor read or act on one, and a frame from such a site
-  is skipped. A refused site shows as a request you can allow with one click. Sharing a tab allows
+  is skipped (and blacked out whole in screenshots), as are blank frames inside it. A refused site
+  shows as a request you can allow with one click. Sharing a tab allows
   its site. The list limits what agents read and operate; it does not stop a listed page from
   loading its own images or scripts from elsewhere.
 - **Tabs:** agents only see tabs they opened, tabs those tabs opened, and tabs you tick. Other tabs
@@ -541,18 +542,26 @@ Read this before installing into a profile you browse with.
   by the browser or a password manager is hidden, whatever the field is called (what an agent
   typed stays visible to it); it is off by default because it also stops `javascript` in any tab
   where you filled a field. For these, `read_page` and `find` say
-  only that the field is filled, screenshots and recordings black them out, and `javascript` does
+  only that the field is filled, screenshots and recordings black them out (in frames too: a frame
+  foxreach cannot look into, such as another add-on's, one on a site agents may not use, or one
+  nothing can run in, is blacked out whole; a field in a frame drawn scaled, rotated, mirrored or
+  through a filter cannot be placed, and that picture is refused), and `javascript` does
   not run in a tab while one holds a value (agent code runs in the page's own world, where nothing
   could stop it reading one). Clicking and typing still work. Fields are recognised by their
   autofill hint (`autocomplete="cc-number"`, `"postal-code"`...) or by words in their label, name or
   id (except with that last option), so a field labelled only "Field 7", or an "Answer" box under a list of security questions,
   is missed. Not covered either: code an agent started earlier that is still running (a listener
-  added before you typed sees your keys), and frames on sites agents are not allowed on, which
-  agent code cannot reach. For a page you would rather keep from agents altogether, block its site.
-- How password-manager add-ons behave in agent tabs has not been tested.
+  added before you typed sees your keys), frames on sites agents are not allowed on, which agent
+  code cannot reach (nor the blank frames inside them), a page that keeps moving a frame holding
+  such a field (a picture can now and then catch the field before its cover is in place), and a
+  page that paints a second copy of a frame elsewhere (CSS `-moz-element()`): only the frame
+  itself is covered.
+  For a page you would rather keep from agents altogether, block its site.
+- How password-manager add-ons behave in agent tabs has not been tested, beyond this: frames they
+  put into a page (Proton Pass's, say) are blacked out in screenshots.
 - A tab you share stays shared when it moves to another site, until you untick it or close it.
 - Blocking covers what a tab loads from the moment a site is on the list. A blocked site already
-  open in a frame of a tab is no longer read, but it still shows in screenshots until the tab reloads.
+  open in a frame of a tab is no longer read, and screenshots black it out.
 - In the build without privileged code, `javascript` runs in the page's own world. A page whose
   security policy forbids `eval` refuses it.
 - **That build asks for no site at install.** You grant single sites, or all, from the toolbar

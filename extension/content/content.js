@@ -513,6 +513,86 @@
     };
   }
 
+  /*
+   * Where this document's frames are, for background.js (frameOffset). The browser matches each
+   * frame element to its frame id (runtime.getFrameId), so nothing goes through the page: it can
+   * neither answer for a frame nor see that a picture is coming, and the frame itself need not run
+   * this script (a data: frame, another add-on's, one that failed to load).
+   */
+  function framesIn(root, out = []) {
+    for (const el of root.querySelectorAll("*")) {
+      if (["iframe", "frame", "object", "embed"].includes(el.localName)) out.push(el);
+      const inner = shadow(el);
+      if (inner) framesIn(inner, out);
+    }
+    return out;
+  }
+
+  /** The viewport of a frame element (its content box) in this frame's viewport. */
+  function frameBox(el) {
+    const r = el.getBoundingClientRect();
+    const cs = getComputedStyle(el);
+    const px = (v) => parseFloat(v) || 0;
+    const left = px(cs.borderLeftWidth) + px(cs.paddingLeft);
+    const top = px(cs.borderTopWidth) + px(cs.paddingTop);
+    const width = r.width - left - px(cs.borderRightWidth) - px(cs.paddingRight);
+    const height = r.height - top - px(cs.borderBottomWidth) - px(cs.paddingBottom);
+    return { x: r.left + left, y: r.top + top, width, height };
+  }
+
+  const SVG = "http://www.w3.org/2000/svg";
+  /** The element that draws n: the slot it is assigned to (in a closed shadow root too), else its
+   * parent, else the host of the shadow root it is in. */
+  function drawnIn(n) {
+    let slot = n.assignedSlot ?? null;
+    const root = !slot && n.parentElement ? shadow(n.parentElement) : null;
+    if (root) slot = [...root.querySelectorAll("slot")].find((s) => s.assignedNodes().includes(n)) ?? null;
+    return slot ?? n.parentElement ?? n.getRootNode()?.host ?? null;
+  }
+
+  /**
+   * Whether an element is drawn where its box says, at its own size: not scaled, rotated, mirrored,
+   * skewed or zoomed, by itself or by anything around it. A plain move (translate) is fine. Anything
+   * in an SVG (a foreignObject) is not, since SVG has transforms of its own.
+   */
+  function plainlyPlaced(el) {
+    const r = el.getBoundingClientRect();
+    if (Math.abs(r.width - el.offsetWidth) > 1 || Math.abs(r.height - el.offsetHeight) > 1) return false;
+    for (let n = el; n; n = drawnIn(n)) {
+      if (n.namespaceURI === SVG) return false;
+      const cs = getComputedStyle(n);
+      const t = cs.transform;
+      if (t && t !== "none" && !/^matrix\(1, 0, 0, 1, [^,]+, [^,]+\)$/.test(t)) return false;
+      if ((cs.rotate && cs.rotate !== "none") || (cs.scale && cs.scale !== "none")) return false;
+      if (cs.offsetPath && cs.offsetPath !== "none") return false;
+      if (cs.zoom && cs.zoom !== "1" && cs.zoom !== "normal") return false;
+    }
+    return true;
+  }
+
+  /** Whether an element's pixels stay inside its bounds: not under an SVG filter, which can draw them
+   * anywhere, or a drop-shadow, which draws their shape a second time somewhere else. */
+  function drawnInBounds(el) {
+    for (let n = el; n; n = drawnIn(n)) {
+      if (/url\(|drop-shadow/.test(getComputedStyle(n).filter)) return false;
+    }
+    return true;
+  }
+
+  /** This document's frames: frame id, viewport box, drawn bounds, whether drawn plainly and at all. */
+  function childFrames() {
+    return {
+      frames: framesIn(document).map((el) => {
+        const r = el.getBoundingClientRect();
+        return {
+          frameId: browser.runtime.getFrameId(el), ...frameBox(el),
+          bounds: { x: r.left, y: r.top, width: r.width, height: r.height },
+          plain: plainlyPlaced(el), inBounds: drawnInBounds(el), shown: el.getClientRects().length > 0,
+        };
+      }),
+    };
+  }
+
   function waitCheck({ selector, text }) {
     if (selector && !document.querySelector(selector)) return { found: false };
     if (text && !(document.body?.innerText ?? "").includes(text)) return { found: false };
@@ -611,7 +691,8 @@
       }
     };
     visit(document);
-    return { rects };
+    // This frame's own viewport size: background.js checks it against the box its parent sees.
+    return { rects, width: window.innerWidth, height: window.innerHeight };
   }
 
   const TEXT_INPUTS = new Set(["text", "search", "email", "url", "tel", "password", "number", ""]);
@@ -648,6 +729,7 @@
 
   const OPS = {
     readPage, evaluate, find, pageText, point, watchPress, pressResult, paintStart, paintRead, formInput, setFiles, viewport, waitCheck, focusInfo, filledSecret, secretRects, agentInput,
+    childFrames,
     untrustedMouse, untrustedType, untrustedKeys, untrustedScroll,
     ping: () => ({ ok: true }),
     scrollTo: ({ ref }) => {
