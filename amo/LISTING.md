@@ -1,7 +1,26 @@
 # Text for the addons.mozilla.org listing
 
-Used by `scripts/sign.py --channel listed` (through `metadata-listed.json`) and for the fields that
+Used by `scripts/sign.py --channel listed` (through `metadata-listed.json`), `scripts/amo_listing.py`
+(the icon) and for the fields that
 are filled in by hand on the add-on's page there.
+
+## Icon
+
+AMO does not take the listing icon from the add-on's manifest: the page shows Mozilla's default icon
+until an author uploads one (Edit Product Page, Media, or the add-on Edit API's `icon` field). The
+add-on ships only `extension/icons/icon.svg`, so the icon for the listing is
+[icon-128.png](icon-128.png), drawn from that SVG at 128x128 (AMO's recommended size; it must be a
+square PNG or JPEG):
+
+```bash
+uv run --python 3.15 scripts/amo_listing.py --render    # redraw icon-128.png (Inkscape)
+uv run --python 3.15 scripts/amo_listing.py --dry-run   # show the request; sends nothing
+uv run --python 3.15 scripts/amo_listing.py             # upload it as the listing icon
+```
+
+The upload is one `PATCH https://addons.mozilla.org/api/v5/addons/addon/foxreach%40foxreach.local/`
+with the PNG as the multipart field `icon`, signed with the same API key as `scripts/sign.py`
+(`~/.config/foxreach/amo.env`). It changes only the icon; uploading another one replaces it.
 
 ## Summary
 
