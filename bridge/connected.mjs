@@ -15,7 +15,7 @@ export const fixedSocket = () => !!process.env.FOXREACH_SOCKET;
 export const folder = () => path.dirname(socketPath());
 
 /** What the browser that started this host is: name, packaging, Flatpak id, from /proc. */
-function describeParent(ppid = process.ppid) {
+export function describeParent(ppid = process.ppid) {
   let exe = "";
   try {
     exe = fs.readlinkSync(`/proc/${ppid}/exe`);

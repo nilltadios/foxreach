@@ -8,6 +8,7 @@ import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
 import { notConnectedMessage } from "./browsers.mjs";
+import { lastEndNote, recentSessions } from "./history.mjs";
 import { connectedBrowsers, describe, fixedSocket, readDefault } from "./connected.mjs";
 import { assertPrivate, socketPath } from "./socket.mjs";
 import { TOOLS } from "./tools.mjs";
@@ -111,7 +112,7 @@ async function connect() {
     });
     c.on("error", (e) => {
       if (!conn) {
-        reject(new Error(notConnectedMessage(e.code, SOCKET)));
+        reject(new Error(notConnectedMessage(e.code, SOCKET) + lastEndNote()));
       }
     });
     c.on("close", () => {
@@ -422,7 +423,9 @@ async function callTool(name, args = {}) {
     versionChecked = true;
     const warning = versionWarning(status.version);
     const extra = fixedSocket() ? {} : { chosenBrowser: chosen?.label ?? null };
-    const text = JSON.stringify({ ...status, bridgeVersion: VERSION, ...extra, ...(warning ? { warning } : {}) });
+    // How earlier connections ended: a browser that closed or crashed between tasks shows here.
+    const history = recentSessions(5);
+    const text = JSON.stringify({ ...status, bridgeVersion: VERSION, ...extra, ...(warning ? { warning } : {}), ...(history.length ? { history } : {}) });
     return { content: [{ type: "text", text }] };
   }
   let result;

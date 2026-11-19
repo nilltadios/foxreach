@@ -1346,6 +1346,15 @@ function connectHost() {
   send({ hello: { version: VERSION, trustedInput: trusted, wantsHostInfo: true } });
 }
 
+// Tell the native host when the browser quits normally, so its history can tell a quit from a
+// crash (bridge/history.mjs). Only the full build hears of the quit.
+function watchQuit() {
+  if (!trusted) return;
+  privileged(null, "untilQuit").then(() => {
+    send({ bye: "quit" });
+  }, () => {});
+}
+
 /* ---------- after install ---------- */
 
 // Installed or updated from the release link, the browser leaves the tab that showed the .xpi
@@ -1535,5 +1544,6 @@ browser.webRequest.onErrorOccurred.addListener((d) => {
   settings.siteAccess ??= (await browserGrants("*")) ? "all" : "listed";
   updateBadge();
   connectHost();
+  watchQuit();
   setTimeout(welcomeTab, 1000); // a new version, also after a restart that cut the install event short
 })();

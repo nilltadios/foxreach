@@ -4,7 +4,8 @@ import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
 import { parentApp } from "./browsers.mjs";
-import { fixedSocket, register } from "./connected.mjs";
+import { describeParent, fixedSocket, register } from "./connected.mjs";
+import { appendHistory } from "./history.mjs";
 import { assertPrivate, socketPath } from "./socket.mjs";
 
 // The browser accepts at most 1 MB per message; 300k UTF-16 units cannot exceed that once encoded.
@@ -44,6 +45,14 @@ function findProfile() {
 }
 let profile = findProfile();
 debug(`profile ${profile}`);
+
+// Recorded in history.jsonl (bridge/history.mjs): this connection's start, and how it ended.
+const browserPid = process.ppid;
+const hostStarted = Date.now();
+const parent = describeParent();
+const historyId = { hostPid: process.pid, hostStarted };
+appendHistory({ event: "start", ...historyId, browser: parent.name, packaging: parent.packaging, profile });
+let quitting = false; // the add-on said the browser is quitting (full build only)
 function agentsStopped() {
   profile ??= findProfile();
   return profile !== null && fs.existsSync(path.join(profile, STOP_MARK));
@@ -68,6 +77,11 @@ function sendRequest(message) {
 }
 
 function fromBrowser(message) {
+  if (message.bye) {
+    quitting = message.bye === "quit";
+    debug(`bye ${message.bye}`);
+    return;
+  }
   if (message.hello) {
     hello = message.hello;
     // The browser started this host: its program says which browser it is, where the browser itself
@@ -97,8 +111,33 @@ process.stdin.on("data", (data) => {
 let ownsSocket = false;
 let registration = null; // this browser's own socket and info file, when several may serve agents
 
-function shutdown() {
-  debug("shutdown");
+const parentAlive = () => {
+  try {
+    process.kill(browserPid, 0);
+    return process.ppid === browserPid; // a dead parent's children are handed to another process
+  } catch {
+    return false;
+  }
+};
+
+// How the connection ended. Without the add-on's word that the browser is quitting, a browser
+// gone within a moment exited some other way; one still running stopped the add-on, or is still
+// shutting down. The browser kills its host a few seconds after closing the connection, so the
+// wait stays short.
+async function howItEnded(signal) {
+  if (quitting) return "quit";
+  if (signal) return "host";
+  for (let waited = 0; waited < END_WAIT_MS && parentAlive(); waited += 100) await new Promise((r) => setTimeout(r, 100));
+  if (parentAlive()) return "addon";
+  return hello?.trustedInput ? "lost" : "closed";
+}
+const END_WAIT_MS = 1500;
+
+let ending = false;
+async function shutdown(signal) {
+  if (ending) return;
+  ending = true;
+  debug(`shutdown${signal ? ` on ${signal}` : ""}`);
   registration?.remove();
   // Only the host that created the socket may remove it: it may be another browser's.
   if (ownsSocket) {
@@ -106,10 +145,13 @@ function shutdown() {
       fs.unlinkSync(sock);
     } catch {}
   }
+  const how = await howItEnded(signal);
+  debug(`ended: ${how}`);
+  appendHistory({ event: "end", ...historyId, how });
   process.exit(0);
 }
-process.stdin.on("end", shutdown);
-process.on("SIGTERM", shutdown);
+process.stdin.on("end", () => shutdown());
+process.on("SIGTERM", () => shutdown("SIGTERM"));
 
 function serveClient(conn) {
   const clientId = nextClient++;

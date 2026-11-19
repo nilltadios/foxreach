@@ -325,6 +325,14 @@ nothing (the display is off or asleep). `status` with a `tabId` measures that pa
 (`page.framesPerSecond`, `page.hidden`, and a `note` when it matters), and `wait_for` adds the same
 note when it times out.
 
+`status` also lists the last connections (`history`, newest first) and how each ended: `quit` (a
+normal quit), `lost` (the browser exited without one: a crash, a kill, a SIGTERM such as at logout;
+session-only sign-ins are then gone), `addon` (the add-on restarted while the browser stayed open),
+`closed` (the build without privileged code cannot tell a quit from a crash). When no browser is
+connected, the error ends with the last one. Each native host writes this to `history.jsonl` in
+the socket folder (`$XDG_RUNTIME_DIR/foxreach`), so it is cleared at logout or reboot;
+[test/history.py](test/history.py) checks each case on a throwaway profile.
+
 `status` names the browser program in `app` (LibreWolf, Zen...), which the host reads from the
 process that started it: forks such as LibreWolf tell add-ons they are Firefox.
 
@@ -512,6 +520,7 @@ The tests use `FOXREACH_BROWSER` (a path or a command), else the only browser in
 | `test/restart_loop.py` | The add-on returns after every restart |
 | `test/real_site.py` | Search and read a real site (Wikipedia, needs internet) |
 | `test/real_agents.py` | Claude Code and Codex each finish a task; uses a little quota |
+| `test/history.py` | How connections ended (quit, killed, add-on restarted) reaches `status` and the not-connected error |
 | `test/security.py` | The bridge refuses hidden-file uploads, non-image `save_to`, and a socket folder others can write; starts no browser |
 | `test/first_run_prompt.py` | `tabs_select` says when a browser prompt keeps the tab from the front |
 | `test/browsers.py` | Browsers are found however installed, and the native host goes where each looks; starts no browser |

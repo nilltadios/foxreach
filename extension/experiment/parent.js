@@ -223,6 +223,16 @@ function promptState() {
   });
 }
 
+function untilQuit() {
+  return new Promise((resolve) => {
+    const observer = () => {
+      Services.obs.removeObserver(observer, "quit-application-granted");
+      resolve({ quitting: true });
+    };
+    Services.obs.addObserver(observer, "quit-application-granted");
+  });
+}
+
 this.foxreachInput = class extends ExtensionAPI {
   onShutdown() {
     for (const { finish } of [...prompts.values()]) finish("withdrawn");
@@ -307,6 +317,9 @@ this.foxreachInput = class extends ExtensionAPI {
           if (method === "prompt") return showPrompt(extension, args ?? {});
           if (method === "removePrompt") return removePrompt(args ?? {});
           if (method === "promptState") return promptState();
+          // Resolves when the user quits the browser, so the add-on can tell its native host that
+          // the connection is ending because of a normal quit rather than a crash.
+          if (method === "untilQuit") return untilQuit();
           if (!Object.hasOwn(handlers, method)) throw new ExtensionError(`Unknown method ${method}`);
           try {
             const browser = browserOf(tabId);
