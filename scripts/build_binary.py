@@ -4,6 +4,8 @@
 Run:      uv run --python 3.15 scripts/build_binary.py            dist/foxreach, for this machine
           uv run --python 3.15 scripts/build_binary.py --release  dist/release/foxreach-{linux,darwin}-{x64,arm64},
                                                                    foxreach-windows-{x64,arm64}.exe
+          uv run --python 3.15 scripts/build_binary.py --target foxreach-linux-arm64   only that one, the
+                                                                   same bytes as in a --release build
 Needs:    Bun (the build machine only). --release downloads Bun's runtime for the other targets once.
 Expected: the paths written, each with its SHA-256, exit 0.
 
@@ -71,10 +73,13 @@ def sha256(path):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--release", action="store_true", help="build every published target into dist/release")
+    parser.add_argument("--target", action="append", choices=TARGETS, metavar="NAME",
+                        help="build only this published target into dist/release (repeatable), e.g. foxreach-linux-arm64")
     args = parser.parse_args()
+    names = args.target or (list(TARGETS) if args.release else [])
     built = (
-        [build(DIST / "release" / name, target) for name, target in TARGETS.items()]
-        if args.release else [build(DIST / ("foxreach.exe" if os.name == "nt" else "foxreach"))]
+        [build(DIST / "release" / name, TARGETS[name]) for name in names]
+        if names else [build(DIST / ("foxreach.exe" if os.name == "nt" else "foxreach"))]
     )
     for path in built:
         print(f"{sha256(path)}  {path.relative_to(ROOT)}")
