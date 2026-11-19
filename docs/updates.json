@@ -41,6 +41,16 @@
               "strict_min_version": "159.0"
             }
           }
+        },
+        {
+          "version": "0.4.0",
+          "update_link": "https://nilltadios.github.io/foxreach/foxreach-0.4.0.xpi",
+          "update_hash": "sha256:ce039032fa73d4d80f21b9b372e764834ff47632420338ba2ca673fce125924e",
+          "applications": {
+            "gecko": {
+              "strict_min_version": "159.0"
+            }
+          }
         }
       ]
     }
