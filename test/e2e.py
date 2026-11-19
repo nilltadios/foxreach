@@ -122,6 +122,17 @@ addEventListener('mouseup',()=>on=false);</script>""",
 // Jumps away when the pointer arrives, so the press lands on what was under it.
 dodge.addEventListener('mousemove', () => {{ dodge.style.top = '600px'; under2.style.top = '120px'; }});
 </script>""",
+    "/pin": """<!doctype html><meta charset=utf-8><title>PIN</title>
+<form autocomplete=off><input id=p0 maxlength=1 aria-label="Digit 1"><input id=p1 maxlength=1><input id=p2 maxlength=1><input id=p3 maxlength=1></form>
+<script>
+// Each box moves focus to the next 100 ms after its digit, as PIN prompts do. Timed without
+// setTimeout, which a background tab slows to a second.
+function later(fn, ms) { const t = performance.now() + ms, ch = new MessageChannel();
+  ch.port1.onmessage = () => performance.now() >= t ? fn() : ch.port2.postMessage(0); ch.port2.postMessage(0); }
+const boxes = [...document.querySelectorAll('input')];
+boxes.forEach((b, i) => b.addEventListener('input', () => later(() => boxes[i + 1]?.focus(), 100)));
+window.pin = () => boxes.map(b => b.value || '_').join('');
+</script>""",
     "/filedrop": """<!doctype html><title>File</title><input id=f type=file>
 <script nonce=x></script>""",
 }
@@ -342,6 +353,26 @@ def t_tabs_mine(mcp):
     check("tabs_close with neither tabId nor mine is refused", expect_error(lambda: mcp.call("tabs_close"), "mine"))
     other.call("tabs_close", tabId=theirs)
     other.close()
+
+
+def t_slow_typing(mcp):
+    """type_text's delay_ms: keys for boxes that move focus after each digit."""
+    tab = tab_id(mcp.call("tabs_create", url=f"{MAIN}/pin"))
+    pin = ref_of(mcp.call("find", tabId=tab, query="Digit 1"), "Digit 1")
+    mcp.call("type_text", tabId=tab, ref=pin, text="1234")
+    time.sleep(0.5)
+    fast = js(mcp, tab, "pin()")
+    check("PIN boxes lose keys typed at once (the page under test works)", fast != "1234", fast)
+    mcp.call("navigate", tabId=tab, url=f"{MAIN}/pin?again")  # a reload would restore the boxes' values
+    pin = ref_of(mcp.call("find", tabId=tab, query="Digit 1"), "Digit 1")
+    started = time.monotonic()
+    out = mcp.call("type_text", tabId=tab, ref=pin, text="1234", delay_ms=250)
+    took = time.monotonic() - started
+    time.sleep(0.3)
+    check("type_text delay_ms fills each box", js(mcp, tab, "pin()") == "1234" and "4 characters" in out, (out, js(mcp, tab, "pin()")))
+    check("...and takes about the pauses it was given", 0.7 < took < 4, took)
+    check("delay_ms over 2000 is refused", expect_error(lambda: mcp.call("type_text", tabId=tab, text="1", delay_ms=5000), "between 0 and 2000"))
+    mcp.call("tabs_close", tabId=tab)
 
 
 def t_keyboard(mcp):
@@ -1350,7 +1381,7 @@ def popup_tests(browser, mcp):
 
 
 TESTS = {
-    "protocol": t_protocol, "click": t_click_trusted, "refs": t_refs, "painting": t_painting, "tabs": t_tabs_mine, "keyboard": t_keyboard, "focus": t_focus_switch, "read": t_read,
+    "protocol": t_protocol, "click": t_click_trusted, "refs": t_refs, "painting": t_painting, "tabs": t_tabs_mine, "slowtype": t_slow_typing, "keyboard": t_keyboard, "focus": t_focus_switch, "read": t_read,
     "forms": t_forms, "frames": t_frames, "scroll": t_scroll_and_shots, "devtools": t_devtools, "script": t_script,
     "navigation": t_navigation, "dialogs": t_dialogs, "drag": t_drag, "background": t_background_tab,
     "policy": t_policy, "multi": t_multi_agent, "speed": t_agent_speed, "pointer": t_pointer,

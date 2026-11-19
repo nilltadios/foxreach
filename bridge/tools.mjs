@@ -79,6 +79,7 @@ export const TOOLS = [
     text: { type: "string" },
     ref: { ...ref, description: "Click this element first." },
     allow_non_text: { type: "boolean", description: "Type even though focus is not on a text field, for keyboard-driven pages. Default false." },
+    delay_ms: { type: "integer", description: "Pause between keys, up to 2000. For PIN and code boxes that move focus to the next box after each digit and lose faster keys: 250-400 in the tab in front; in a background tab the page's own timers run at most once a second, so use 1200 there, or tabs_select first. Default 0." },
   }, ["tabId", "text"]),
   tool("press_key", 'Press keys with real events. Space-separated sequence, + for combos: "Enter", "mod+a Delete", "shift+Tab". ' +
     "mod is Cmd on macOS and Ctrl elsewhere, for shortcuts such as select all; ctrl is always Control. " +

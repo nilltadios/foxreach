@@ -503,6 +503,10 @@ const SETTLE_TRIES = 8;
 
 const BUTTONS = { left: 0, middle: 1, right: 2 };
 
+// type_text's delay_ms: at most this per key, and this in all.
+const MAX_KEY_DELAY_MS = 2000;
+const MAX_SLOW_TYPING_MS = 120_000;
+
 // How long to count a page's animation frames: a background tab gets about one a second.
 const PAINT_PROBE_MS = 1500;
 
@@ -925,7 +929,7 @@ const TOOLS = {
     return { text: `Dragged to ${res.target ?? "the release point"} at (${to_x}, ${to_y}).${kind}` };
   },
 
-  async type_text({ tabId, text, ref, allow_non_text = false }) {
+  async type_text({ tabId, text, ref, allow_non_text = false, delay_ms = 0 }) {
     await accessibleTab(tabId);
     await assertNoDialog(tabId);
     if (typeof text !== "string") throw new Error("text is required.");
@@ -937,9 +941,24 @@ const TOOLS = {
     if (target && !target.editable && !allow_non_text) {
       throw new Error(`Nothing was typed: focus is on ${describeFocus(target)}, which is not a text field. ${NOT_TEXT_HINT}`);
     }
-    const res = await asAgentInput(tabId, () => (trusted
-      ? privileged(tabId, "type", { text })
-      : contentCall(tabId, 0, "untrustedType", { text })));
+    const delay = Math.round(Number(delay_ms) || 0);
+    if (delay < 0 || delay > MAX_KEY_DELAY_MS) throw new Error(`delay_ms must be between 0 and ${MAX_KEY_DELAY_MS}.`);
+    if (delay * [...text].length > MAX_SLOW_TYPING_MS) throw new Error(`That would take over ${MAX_SLOW_TYPING_MS / 1000} s; use a shorter delay_ms or less text.`);
+    const typeNow = (t) => (trusted ? privileged(tabId, "type", { text: t }) : contentCall(tabId, 0, "untrustedType", { text: t }));
+    const res = await asAgentInput(tabId, async () => {
+      if (!delay) return typeNow(text);
+      // One character per call, with a pause before the next: prompts that move focus to the next
+      // box after each digit (PIN and code boxes) lose keys sent faster than they move. Each call
+      // finds the focused element again, so the keys follow focus.
+      let typed = 0;
+      for (const ch of text) {
+        if (typed) await sleep(delay);
+        const r = await typeNow(ch);
+        if (r.blockedByDialog) return r;
+        typed += r.typed;
+      }
+      return { typed };
+    });
     if (res.blockedByDialog) return { text: `Typing was interrupted.${DIALOG_NOTE}` };
     const after = await focusTarget(tabId);
     let note = "";

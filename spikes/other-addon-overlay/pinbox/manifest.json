@@ -1,0 +1,8 @@
+{
+  "manifest_version": 2,
+  "name": "foxreach probe: PIN box overlay",
+  "version": "1.0",
+  "browser_specific_settings": { "gecko": { "id": "pinbox-probe@foxreach.local" } },
+  "content_scripts": [{ "matches": ["http://127.0.0.1/*"], "js": ["inject.js"] }],
+  "web_accessible_resources": ["box.html", "box.js"]
+}

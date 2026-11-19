@@ -353,6 +353,11 @@ Delete or Backspace, when focus is not on a text field, so keys meant for a sear
 as page shortcuts (such as deleting the selected messages in a mail app). `allow_non_text: true`
 overrides this for keyboard-driven pages. `type_text` also warns when the field's value did not change.
 
+`type_text`'s `delay_ms` types one key at a time with a pause between, for PIN and code boxes that
+move focus to the next box after each digit and lose keys sent faster. The keys follow focus, also
+into another add-on's prompt inside the page (a password manager's PIN box), which `read_page` and
+`find` cannot see but screenshots show; see [spikes/other-addon-overlay](spikes/other-addon-overlay/FINDINGS.md).
+
 `press_key` and the `modifiers` of `click` and `drag` take `mod`, the key shortcuts use on the browser's
 system: Cmd on macOS, Ctrl elsewhere. The MCP server turns it into `meta` or `ctrl` before the add-on
 sees it, so an add-on from before `mod` gets a key it knows. `mod+a` selects all on both; `ctrl` is always the Control key,
