@@ -1,0 +1,154 @@
+# Publishes https://nilltadios.github.io/foxreach/: docs/ unchanged (updates.json,
+# updates-signed.json and the .xpi files installed add-ons poll) plus the manager's signed Flatpak
+# repository, .flatpakref and .flatpakrepo, laid out by manager/flatpak/build-site.sh.
+#
+# Stateless: the Flatpak content is the x86_64 and aarch64 bundles of the newest release that has
+# both, checked against their .sha256 and build attestation before import. Unchanged bundles give
+# the same commits, so a redeploy is no update for clients.
+#
+# Does nothing (one notice) until Pages is set to deploy from GitHub Actions: while Pages builds
+# from main /docs ("legacy"), that keeps serving docs/ as before.
+#
+# If the Flatpak part fails (no GPG_PRIVATE_KEY secret, a key other than
+# manager/flatpak/signing-key.asc, no release with bundles, a checksum or attestation mismatch),
+# docs/ is deployed alone, so the add-on update lists always go out, and the run fails afterwards.
+# That deployment has no Flatpak repository: installed copies report an error on update until the
+# next good run.
+#
+# The github-pages environment deploys from main only, so release.yml starts this workflow on main
+# (workflow_dispatch) after attaching the manager files, rather than calling it from the tag.
+name: pages
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - docs/**
+      - manager/flatpak/build-site.sh
+      - manager/flatpak/signing-key.asc
+      - .github/workflows/pages.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    runs-on: ubuntu-26.04
+    permissions:
+      pages: read
+    outputs:
+      enabled: ${{ steps.mode.outputs.enabled }}
+    steps:
+      - id: mode
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mode=$(gh api "repos/$GITHUB_REPOSITORY/pages" --jq .build_type)
+          if [[ $mode == workflow ]]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::Pages builds from a branch ($mode), not from this workflow: nothing to do."
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  flatpak:
+    needs: gate
+    if: needs.gate.outputs.enabled == 'true'
+    runs-on: ubuntu-26.04
+    permissions:
+      contents: read
+      attestations: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tools
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends flatpak ostree
+          flatpak --version; ostree --version | sed -n 2p; gpg --version | head -1
+      - name: Signing key (must be the one in manager/flatpak/signing-key.asc)
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+        run: |
+          test -n "$GPG_PRIVATE_KEY" || { echo "::error::The GPG_PRIVATE_KEY repository secret is not set: the Flatpak repository cannot be signed."; exit 1; }
+          export GNUPGHOME="$RUNNER_TEMP/gnupg"
+          mkdir -m700 "$GNUPGHOME"
+          echo "GNUPGHOME=$GNUPGHOME" >> "$GITHUB_ENV"
+          printf '%s\n' "$GPG_PRIVATE_KEY" | gpg --batch --import
+      - name: The newest release with both bundles, checked
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          tag=
+          for t in $(gh release list --exclude-pre-releases --exclude-drafts --limit 30 --json tagName --jq '.[].tagName'); do
+            n=$(gh release view "$t" --json assets --jq '[.assets[].name | select(test("^foxreach-manager-.*-(x86_64|aarch64)\\.flatpak$"))] | length')
+            if [[ $n == 2 ]]; then tag=$t; break; fi
+          done
+          test -n "$tag" || { echo "::error::No release has both manager .flatpak bundles."; exit 1; }
+          echo "Bundles from $tag"
+          mkdir bundles
+          gh release download "$tag" --dir bundles --pattern 'foxreach-manager-*-x86_64.flatpak*' --pattern 'foxreach-manager-*-aarch64.flatpak*'
+          cd bundles
+          sha256sum -c ./*.flatpak.sha256
+          for f in ./*.flatpak; do gh attestation verify "$f" --repo "$GITHUB_REPOSITORY"; done
+          echo "BUNDLE_TAG=$tag" >> "$GITHUB_ENV"
+      - name: Site (docs/ and the signed repository)
+        run: |
+          base="https://${GITHUB_REPOSITORY_OWNER,,}.github.io/${GITHUB_REPOSITORY#*/}/"
+          manager/flatpak/build-site.sh site "$base" bundles/*.flatpak
+      - uses: actions/upload-artifact@v4
+        with:
+          name: site
+          path: site
+          include-hidden-files: true
+          retention-days: 1
+          if-no-files-found: error
+
+  site:
+    needs: [gate, flatpak]
+    if: always() && needs.gate.outputs.enabled == 'true'
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        if: needs.flatpak.result == 'success'
+        with:
+          name: site
+          path: site
+      - name: Fallback, docs/ alone
+        if: needs.flatpak.result != 'success'
+        run: |
+          echo "::warning::The Flatpak part failed: deploying docs/ alone. The Flatpak repository is offline until the next good run."
+          manager/flatpak/build-site.sh --docs-only site
+      - name: Every file in docs/ is in the site, unchanged
+        run: |
+          cd docs
+          find . -type f -print0 | while IFS= read -r -d '' f; do cmp -- "$f" "../site/$f"; done
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: site
+          include-hidden-files: true
+
+  deploy:
+    needs: [gate, flatpak, site]
+    if: always() && needs.site.result == 'success'
+    runs-on: ubuntu-26.04
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5
+      - name: Fail the run if the Flatpak part failed (docs/ went out alone)
+        if: needs.flatpak.result != 'success'
+        run: |
+          echo "::error::Deployed docs/ without the Flatpak repository; see the flatpak job."
+          exit 1

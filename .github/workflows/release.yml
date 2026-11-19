@@ -64,3 +64,16 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release upload "$GITHUB_REF_NAME" dist/manager/* --clobber --repo "$GITHUB_REPOSITORY"
+
+  # Republish the Pages site, whose Flatpak repository takes the newest release's bundles. Started
+  # on main, the only branch the github-pages environment deploys from; a release made with the
+  # workflow's token would not start it through a release event.
+  pages:
+    needs: manager-files
+    runs-on: ubuntu-26.04
+    permissions:
+      actions: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run pages.yml --ref main --repo "$GITHUB_REPOSITORY"
