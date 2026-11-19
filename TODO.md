@@ -8,11 +8,11 @@ Open items, newest first. Remove an item when it is done.
    day (commits b333266..2ce2cb9): `javascript` with a leading function declaration, ref clicks
    (settle after scrolling, where the press landed, right-click handled or not, stale refs found
    again), painting (`status` with `tabId`, `wait_for` timeouts), connection history in `status`,
-   `browser_open`, agent tabs (`tabs_close` `mine`, hint at five), `type_text` `delay_ms`. All of
-   it needs a release to reach the add-on in a profile (the signed build: Mozilla signs again);
-   until then the bridge from a checkout talks to the installed 0.3.4, which ignores `tabId` on
-   `status` and `delay_ms`, refuses `tabs_close` `mine`, and records every quit as `closed`.
-   Version is still 0.3.4: bump it before releasing (0.3.4 is waiting for AMO review, item 3).
+   `browser_open`, agent tabs (`tabs_close` `mine`, hint at five), `type_text` `delay_ms`. They
+   ship in 0.4.0 (prepared 2026-11-18). The full build reaches profiles through `docs/updates.json`
+   once 0.4.0 is published; the signed build only after Mozilla approves 0.4.0 (item 3). Until a
+   profile has 0.4.0, the add-on there ignores `tabId` on `status` and `delay_ms`, refuses
+   `tabs_close` `mine`, and records every quit as `closed`.
    Still open:
    - **Typing a secret from a file** (not built). Proposal: `type_text` takes `text_file` instead
      of `text`; the MCP server reads it (so the secret never enters the agent's context, the
@@ -56,9 +56,10 @@ Open items, newest first. Remove an item when it is done.
    tab; reported by the user with screenshots):
    - **Firefox Flatpak is not offered an update.** Profile `default-release` shows `0.3.2` (no "Full
      build", so the signed build) with no Update button, while LibreWolf Flatpak's full build 0.3.2 gets
-     "Update to 0.3.4". Not checked yet; likely cause is that signed 0.3.4 is still waiting for AMO
-     review (item 3), so `docs/updates-signed.json` has nothing newer. If so, the app should say why
-     (for example "0.3.4 waiting for Mozilla's signature") instead of showing nothing.
+     "Update to 0.3.4". Not checked yet; likely cause is that `docs/updates-signed.json` has nothing
+     newer than 0.3.2: 0.3.4 was approved on AMO 2026-11-18, but its signed file was deliberately not
+     published there, since 0.4.0 replaces it (item 3). If so, the app should say why (for example
+     "0.4.0 waiting for Mozilla's signature") instead of showing nothing.
    - **Update can be clicked while the browser is open.** The LibreWolf AppImage `default` profile was
      updated to full build 0.3.4 with LibreWolf running. Earlier the app refused this (the add-on file
      is replaced on disk, which needs the browser closed); find what changed and restore the guard, or
@@ -68,24 +69,16 @@ Open items, newest first. Remove an item when it is done.
      once the install finishes, or install without leaving a visible page.
 
 0. **Manager AppImage and Flatpak in the release.** v0.3.4 (2026-11-14) shipped only the foxreach
-   program and the add-on. Done on branch `manager-ci` (2026-11-18), not yet run in CI:
-   `.github/workflows/manager.yml` builds the AppImage (same container, pinned quick-sharun and
-   uruntime) and a Flatpak bundle (offline, vendored crates), each for x86_64 and aarch64 on native
-   runners, smoke-checks each without a display, and fails the aarch64 jobs on any shipped ELF file
-   aligned below 16 KiB; `release.yml` calls it on a tag and attaches and attests the four files and
-   their `.sha256` (see "In CI" in `manager/README.md`). Left:
-   - run it (push the branch, *Run workflow*) and fix what the first CI run finds; nothing of the
-     aarch64 builds or the Flatpak CI job has run yet;
-   - **16 KiB pages (Asahi):** the foxreach program is not known to run there (Bun's compiled
-     executables and non-4 KiB pages, oven-sh/bun#17627, still open; Bun 1.4.4 untested). Try on an
-     Asahi machine: `getconf PAGESIZE`, the release's `foxreach-linux-arm64 version`, the aarch64
-     AppImage and Flatpak with `--version` and `--check`. If the program fails, follow #17627 for a
-     Bun that works and bump `.bun-version` then;
+   program and the add-on; from 0.4.0 the release also carries the manager's AppImage and Flatpak
+   bundle for x86_64 and aarch64 (`.github/workflows/manager.yml`, called by `release.yml`; see "In
+   CI" in `manager/README.md`). Done: CI run 44439124322 on main f44430b passed all five jobs; the
+   aarch64 AppImage and Flatpak from it, and the v0.3.4 `foxreach-linux-arm64`, ran on Fedora Asahi
+   Remix with 16 KiB pages (2026-11-18, details in `manager/README.md`); the x86_64 packages passed
+   the same run but were not launched by hand. The manager takes foxreach's version (0.4.0, so the
+   files are `foxreach-manager-0.4.0-ARCH.*`); `release.py` and the release workflow refuse when the
+   two differ. Left:
    - a signed Flatpak repository on GitHub Pages with a `.flatpakref` (needs a GPG key kept as a
      repository secret), instead of or next to the bundles;
-   - one version for the manager and the release (the manager's `Cargo.toml` says 0.1.0 while
-     foxreach is 0.3.4, so the release files are named `foxreach-manager-0.1.0-*`): decide whether it
-     follows foxreach's number;
    - `scripts/verify_release.py` and `test/release.py` checking the new files the way they check the
      programs (reproducible builds, hashes in `SHA256SUMS`; the manager files are not in it).
 
@@ -94,7 +87,7 @@ Open items, newest first. Remove an item when it is done.
    signing `install.sh` does); agents other than Claude Code and Claude desktop, whose settings paths
    on macOS were taken to be the same as on Linux.
 
-1. **Manager app: open items from the 2026-11-12/13 session** (UI reworked into tabs; uncommitted).
+1. **Manager app: open items from the 2026-11-12/13 session** (UI reworked into tabs).
    - **Add-on permissions in the app** (user request, from the toolbar panel): show pause, "ask before
      a new agent", sites (every site / only these, the list), fields agents may not read, blocked
      sites and recent activity for the connected browser. Rule: changes that make things safer apply
@@ -105,7 +98,7 @@ Open items, newest first. Remove an item when it is done.
      so the browser must be where loosening is approved. Needs an add-on release: settings read and
      change messages in `extension/background.js` (today only the popup changes them, lines ~1220-1295),
      a `foxreach settings` command, then the app's view. The signed build needs Mozilla to sign again.
-   - Manager reworked 2026-11-14 (uncommitted): it reads with its own foxreach (bundled, or the
+   - Manager reworked 2026-11-14: it reads with its own foxreach (bundled, or the
      checkout a development build came from), acts through the foxreach the browsers and agents run
      (`status --json` `setup`: release program or checkout), Install downloads the release when there
      is no bundled copy (`foxreach install-program`), a checkout gets "Use the release program", tabs
@@ -113,7 +106,7 @@ Open items, newest first. Remove an item when it is done.
      dialog. `scripts/browsers.py` (setup scripts) does not see through wrapper scripts as
      `bridge/addon.mjs` now does. Merging into the `macos` branch will conflict in `bridge/update.mjs`
      (asset choice) and `test/status_json.py`.
-   - Several browsers at once (2026-11-14, uncommitted): each native host has its own socket and
+   - Several browsers at once (2026-11-14): each native host has its own socket and
      info file in $XDG_RUNTIME_DIR/foxreach (`bridge/connected.mjs`), the first also serves
      browser.sock for older agents; agents get `browsers_list` / `browser_select` (one browser: used
      automatically; several: the default from `foxreach browsers default`, else the agent must
@@ -126,7 +119,9 @@ Open items, newest first. Remove an item when it is done.
      yet: torbrowser-launcher's Flatpak; clicking Connect in the manager window.
    - More browsers still to add: Mullvad Browser (same start-script family as Tor, likely the same
      data-folder rule; not installed here), IceCat. Helium is Chromium-based (no support).
-   - Rebuild the AppImage and Flatpak with the new UI (tabs, search, Test, logos) and recheck both.
+   - The AppImage and Flatpak with the new UI (tabs, search, Test, logos): built by CI from main
+     f44430b; the aarch64 ones opened and drew on Asahi (KDE Plasma, Wayland), the x86_64 ones were
+     not launched by hand.
    - AppImage segfault in `wl_proxy_destroy` (core dump 2026-11-12 23:24, on closing the window):
      iced-winit's detached Wayland thread dropped its objects while the main thread was already in
      `exit()`. Closing now ends the process directly (`Message::Quit`, `on_app_exit`,
@@ -145,9 +140,9 @@ Open items, newest first. Remove an item when it is done.
 2. **foxreach manager app.** Linux part built in `manager/` (Rust, libcosmic; see
    `manager/README.md`): program install and update, the signed add-on per browser profile, agents,
    removal; AppImage (`manager/packaging/container-build.sh`) and Flatpak (`manager/flatpak/build.sh`).
-   Not yet: a published Flatpak repository and `.flatpakref` (signing key, Pages), the AppImage in
-   the release workflow, Windows and macOS. The original plan:
-   A desktop app that manages foxreach end to end, built on the same
+   Not yet: a published Flatpak repository and `.flatpakref` (signing key, Pages), Windows and macOS.
+   (The release workflow builds and attaches the AppImage and Flatpak bundles, item 0.) The original
+   plan: a desktop app that manages foxreach end to end, built on the same
    code as the `foxreach` program (`bridge/agents.mjs`, `bridge/install.mjs`, `bridge/update.mjs`):
    - choose which agents get the MCP server (the list `foxreach agents` shows), add and remove them;
    - updates: see whether a newer release exists and apply it (what `foxreach update` does), and
@@ -169,17 +164,23 @@ Open items, newest first. Remove an item when it is done.
    The program runs on Linux and macOS (host registration, socket, release builds, `install.sh`,
    `foxreach update`); Windows needs the host registration and agent paths ported first.
 
-3. **addons.mozilla.org listing: 0.3.4 awaiting Mozilla's review.** One version number for both, so the
-   listing and the GitHub release stay in sync: 0.3.4 was released on GitHub 2026-11-14 without a signed
-   build and submitted listed the same day (AMO disabled the pending 0.3.3 then). Signed installs stay
-   on 0.3.2 until approval. Status and reviewer questions:
+3. **addons.mozilla.org listing: submit 0.4.0.** One version number for both, so the listing and the
+   GitHub release stay in sync. As of 2026-11-18: 0.3.4 (listed) is approved and public; 0.3.3 and
+   0.3.1 (listed) are disabled; 0.3.2 and 0.3.0 are signed unlisted. The signed 0.3.4 file was not
+   published to `docs/updates-signed.json` (the owner's choice: 0.4.0 replaces it), so signed installs
+   stay on 0.3.2 for now. Status and reviewer questions:
    https://addons.mozilla.org/en-US/developers/addon/fe1f53e268044b529443/versions
-   When 0.3.4 is approved: download the signed file from
-   https://addons.mozilla.org/en-US/developers/addon/fe1f53e268044b529443/versions/6710498 to
-   `dist/signed/foxreach-0.3.4-signed.xpi`, run `scripts/release.py` (it adds the file and its entry in
-   `docs/updates-signed.json`), commit `docs/` and push (ask first), then `release.py --verify`. The
-   release's own files stay as they are; add the signed file to the v0.3.4 release with
-   `gh release upload v0.3.4 docs/foxreach-0.3.4-signed.xpi` if it should be listed there too.
+   - Submit 0.4.0 to the listed channel (`scripts/sign.py --channel listed`); it then waits for
+     Mozilla's review.
+   - When 0.4.0 is approved: download its signed file from the add-on's versions page to
+     `dist/signed/foxreach-0.4.0-signed.xpi`, add it to `docs/` with its entry in
+     `docs/updates-signed.json`, commit `docs/` and push (ask first), then `release.py --verify`.
+     `release.py` itself refuses a version already in `docs/updates.json`, which 0.4.0 will be, so
+     this step needs the signed half of `prepare()` on its own (or by hand). Add the signed file to
+     the v0.4.0 release with `gh release upload v0.4.0 docs/foxreach-0.4.0-signed.xpi` if it should
+     be listed there too.
+   - The listing shows Mozilla's default icon: upload `amo/icon-128.png` with
+     `scripts/amo_listing.py` (prepared and dry-run only; see `amo/LISTING.md`).
 
 4. **A command line beside the MCP server.** `foxreach call <tool> --tab N [--name AGENT] ...` reusing
    every tool over the same socket: text out, screenshots to files, the agent's name for the approval

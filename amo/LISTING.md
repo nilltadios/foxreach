@@ -1,8 +1,8 @@
 # Text for the addons.mozilla.org listing
 
-Used by `scripts/sign.py --channel listed` (through `metadata-listed.json`), `scripts/amo_listing.py`
-(the icon) and for the fields that
-are filled in by hand on the add-on's page there.
+Used by `scripts/sign.py --channel listed` (through `metadata-listed.json`), by
+`scripts/amo_listing.py` (the icon), and for the fields that are filled in by hand on the add-on's
+page there.
 
 ## Icon
 

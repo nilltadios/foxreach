@@ -63,7 +63,9 @@ Each comes with a `.sha256`; they are the run's artifacts `manager-appimage-ARCH
 `manager-flatpak-ARCH`. On a `v*` tag, `release.yml` runs this workflow too and attaches the files
 to the release with build attestations (`gh attestation verify FILE --repo nilltadios/foxreach`),
 after the release's own files; a failure there leaves the rest of the release as it was. The files
-carry the manager's own version from `Cargo.toml`, which does not follow foxreach's yet.
+carry the version from `Cargo.toml`, which is foxreach's own (from 0.4.0): `scripts/release.py` and
+the release workflow refuse when `Cargo.toml` and `extension/manifest.json` differ. The first run
+(44439124322, main f44430b, 2026-11-18) passed all five jobs.
 
 ### Running each package
 
@@ -82,16 +84,29 @@ every bundled library, the app, the foxreach program) is aligned below 0x4000
 quick-sharun's sharun, helper libraries and appimagetool for aarch64 are aligned to 64 KiB, and the DwarFS inside the uruntime is jemalloc built
 for pages up to 64 KiB (`--with-lg-page=16` in DwarFS's static build script for non-x86 targets),
 so it should run with 4, 16 and 64 KiB pages; the app itself uses the system allocator (no jemalloc
-or mimalloc in `Cargo.lock`). **Not known to work yet: the foxreach program.** Bun's tracking issue
-for non-4 KiB pages on aarch64 Linux (oven-sh/bun#17627) is still open, with "check it works on
-16k" unticked; Bun's automated triage of a crash report (oven-sh/bun#32418, Bun 1.3.14) says
-`bun build --compile` programs do not run with non-4 KiB pages yet, while a maintainer wrote earlier
-(oven-sh/bun#6241) that JavaScriptCore expects 16 KiB pages on this target. Bun's release notes from
-1.3.12 to 1.4.4 say nothing about page sizes, and nobody has reported Bun 1.4.4 on 16 KiB pages
-either way. If the program fails there, the manager still opens, but the program it installs does
-not run. GitHub's arm runners are expected to use 4 KiB pages (the jobs print `getconf PAGESIZE`),
-so only a run on an Asahi machine can tell: `getconf PAGESIZE` (16384), then `foxreach version`
-with the release's `foxreach-linux-arm64`, and the packages' `--version` and `--check`.
+or mimalloc in `Cargo.lock`).
+
+**Run on 16 KiB pages, 2026-11-18** (Fedora Asahi Remix 45, aarch64, an Apple Silicon Mac,
+`getconf PAGESIZE` 16384, KDE Plasma on Wayland):
+
+- the v0.3.4 release's `foxreach-linux-arm64` (a Bun 1.4.4 compiled program, its checksum matching
+  the release's `SHA256SUMS`): `foxreach version` printed 0.3.4, and `foxreach status --json`
+  returned its report;
+- `foxreach-manager-0.1.0-aarch64.AppImage` from CI run 44439124322 (main f44430b; the arm runner's
+  page size was 4096, and the alignment check passed on 71 ELF files in the AppImage and 2 in the
+  Flatpak) ran directly, mounted through FUSE (`fuse.dwarfs`), not extracted: `--version` printed,
+  the bundled foxreach ran from the mount, and the window opened and drew;
+- `foxreach-manager-0.1.0-aarch64.flatpak` from the same run, installed with
+  `flatpak install --user --bundle` (runtime from Flathub): `--version` and the bundled foxreach ran
+  in the sandbox, and the window opened and drew.
+
+The only log noise was `MESA: error: Opening /dev/dri/card2 failed: Permission denied` (started over
+SSH), which did not stop the drawing. Background: Bun's tracking issue for non-4 KiB pages on
+aarch64 Linux (oven-sh/bun#17627) is still open, and Bun's automated triage of a crash report
+(oven-sh/bun#32418, Bun 1.3.14) said `bun build --compile` programs did not run with non-4 KiB
+pages; the Bun 1.4.4 program above does. GitHub's arm runners use 4 KiB pages, so CI cannot show
+this: after a change of `.bun-version`, check again on an Asahi machine with `getconf PAGESIZE`,
+`foxreach version` from the release's `foxreach-linux-arm64`, and the packages' `--version`.
 
 ## Check a build
 
