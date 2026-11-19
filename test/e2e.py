@@ -14,6 +14,7 @@ import io
 import json
 import os
 import re
+import shutil
 import struct
 import subprocess
 import sys
@@ -751,6 +752,7 @@ def t_script(mcp):
     check("js timeout cuts a slow script",
           expect_error(lambda: mcp.call("javascript", tabId=tab, code="await new Promise(r => setTimeout(r, 4000)); 1", timeout=1), "Timed out|did not answer"))
     mcp.call("tabs_close", tabId=tab)
+    shutil.rmtree(work, ignore_errors=True)
 
     tab = tab_id(mcp.call("tabs_create", url=f"{MAIN}/csp"))
     js(mcp, tab, "cspGlobal = 'yes'; 1")

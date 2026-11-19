@@ -9,6 +9,7 @@ import path from "node:path";
 import readline from "node:readline";
 import { notConnectedMessage } from "./browsers.mjs";
 import { lastEndNote, recentSessions } from "./history.mjs";
+import { chooseProfile, launch, profileInUse } from "./open.mjs";
 import { connectedBrowsers, describe, fixedSocket, readDefault } from "./connected.mjs";
 import { assertPrivate, socketPath } from "./socket.mjs";
 import { TOOLS } from "./tools.mjs";
@@ -406,8 +407,49 @@ async function browserTool(name, args) {
   return text(`This session now works in ${label(b)}. Tabs from another browser are not available here.`);
 }
 
+const OPEN_WAIT_MS = 45_000;
+
+function socketAnswers(file) {
+  return new Promise((resolve) => {
+    const c = net.connect(file);
+    c.on("connect", () => {
+      c.destroy();
+      resolve(true);
+    });
+    c.on("error", () => resolve(false));
+  });
+}
+
+/** Whether the profile's browser is connected: its host's socket, or the one fixed socket. */
+async function profileConnected(profile) {
+  if (fixedSocket()) return socketAnswers(SOCKET);
+  return (await connectedBrowsers()).some((b) => b.profile && path.resolve(b.profile) === path.resolve(profile));
+}
+
+/** browser_open: start a recorded profile's browser and wait until foxreach in it connects. */
+async function openBrowser(args) {
+  const rec = chooseProfile(args.profile);
+  const text = (t) => ({ content: [{ type: "text", text: t }] });
+  if (await profileConnected(rec.profile)) return text(`The browser with ${rec.profile} is already connected.`);
+  if (profileInUse(rec)) {
+    throw new Error(`A browser already has ${rec.profile} open, but foxreach in it has not connected. ` +
+      "Check that the add-on is enabled in about:addons and not paused; do not start a second copy.");
+  }
+  const command = await launch(rec);
+  const deadline = Date.now() + OPEN_WAIT_MS;
+  while (Date.now() < deadline) {
+    if (await profileConnected(rec.profile)) {
+      return text(`Started ${command}; foxreach is connected. Sign-ins kept only for a session are gone after a restart: check the page before relying on one.`);
+    }
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  throw new Error(`Started ${command}, but foxreach did not connect within ${OPEN_WAIT_MS / 1000} s. ` +
+    "The browser may be showing a prompt (a crash or profile prompt) that the user must answer.");
+}
+
 async function callTool(name, args = {}) {
   if (name === "browsers_list" || name === "browser_select") return browserTool(name, args);
+  if (name === "browser_open") return openBrowser(args);
   if (name === "status") {
     let status;
     try {

@@ -296,7 +296,7 @@ have that folder; on macOS, `~/Library/Application Support/Mozilla/NativeMessagi
 
 ## Tools
 
-`status`, `tabs_list`, `tabs_create`, `tabs_close`, `tabs_select`, `navigate`, `read_page`, `find`,
+`status`, `browser_open`, `tabs_list`, `tabs_create`, `tabs_close`, `tabs_select`, `navigate`, `read_page`, `find`,
 `get_page_text`, `click`, `hover`, `drag`, `type_text`, `press_key`, `scroll`, `scroll_to`,
 `form_input`, `file_upload`, `screenshot`, `wait`, `wait_for`, `javascript`, `read_console`,
 `read_network`, `resize_window`, `handle_dialog`, `record`, `batch`.
@@ -332,6 +332,13 @@ session-only sign-ins are then gone), `addon` (the add-on restarted while the br
 connected, the error ends with the last one. Each native host writes this to `history.jsonl` in
 the socket folder (`$XDG_RUNTIME_DIR/foxreach`), so it is cleared at logout or reboot;
 [test/history.py](test/history.py) checks each case on a throwaway profile.
+
+`browser_open` starts the browser when none is connected, on a profile in foxreach's record (the
+one `setup_profile.py` keeps, which the not-connected error lists), with the browser recorded for
+it, and waits up to 45 s for the add-on to connect. An agent cannot pass a command or a profile
+that is not recorded; a profile that a running browser already holds is refused, so a second copy
+is never started on it. With several recorded profiles it takes `profile`, else the user's default
+(`foxreach browsers default`).
 
 `status` names the browser program in `app` (LibreWolf, Zen...), which the host reads from the
 process that started it: forks such as LibreWolf tell add-ons they are Firefox.
@@ -520,6 +527,7 @@ The tests use `FOXREACH_BROWSER` (a path or a command), else the only browser in
 | `test/restart_loop.py` | The add-on returns after every restart |
 | `test/real_site.py` | Search and read a real site (Wikipedia, needs internet) |
 | `test/real_agents.py` | Claude Code and Codex each finish a task; uses a little quota |
+| `test/browser_open.py` | `browser_open` starts a recorded throwaway profile and waits for it; refuses unrecorded, open and missing ones |
 | `test/history.py` | How connections ended (quit, killed, add-on restarted) reaches `status` and the not-connected error |
 | `test/security.py` | The bridge refuses hidden-file uploads, non-image `save_to`, and a socket folder others can write; starts no browser |
 | `test/first_run_prompt.py` | `tabs_select` says when a browser prompt keeps the tab from the front |
