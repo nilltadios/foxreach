@@ -52,7 +52,10 @@ const hostStarted = Date.now();
 const parent = describeParent();
 const historyId = { hostPid: process.pid, hostStarted };
 appendHistory({ event: "start", ...historyId, browser: parent.name, packaging: parent.packaging, profile });
-let quitting = false; // the add-on said the browser is quitting (full build only)
+// When the add-on said the browser is quitting (full build only). A quit can still be cancelled
+// (a page's "leave page?" prompt), so it counts only if the connection ends soon after.
+let quitSaid = 0;
+const QUIT_COUNTS_MS = 30_000;
 function agentsStopped() {
   profile ??= findProfile();
   return profile !== null && fs.existsSync(path.join(profile, STOP_MARK));
@@ -78,7 +81,7 @@ function sendRequest(message) {
 
 function fromBrowser(message) {
   if (message.bye) {
-    quitting = message.bye === "quit";
+    if (message.bye === "quit") quitSaid = Date.now();
     debug(`bye ${message.bye}`);
     return;
   }
@@ -125,7 +128,7 @@ const parentAlive = () => {
 // shutting down. The browser kills its host a few seconds after closing the connection, so the
 // wait stays short.
 async function howItEnded(signal) {
-  if (quitting) return "quit";
+  if (quitSaid && Date.now() - quitSaid < QUIT_COUNTS_MS) return "quit";
   if (signal) return "host";
   for (let waited = 0; waited < END_WAIT_MS && parentAlive(); waited += 100) await new Promise((r) => setTimeout(r, 100));
   if (parentAlive()) return "addon";

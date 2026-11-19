@@ -522,19 +522,22 @@ async function paintState(tabId) {
   }
 }
 
-/** What an agent should know when a page may not be drawing, or "" when it is. */
+/**
+ * What an agent should know when a page may not be drawing, or "" when it is. A hidden page (a
+ * background tab, a minimized window) gets at most about one frame a second, sometimes none in
+ * the probe's time, so "no frames" means "not painting" only for a page that is not hidden.
+ */
 function paintNote(state) {
   if (!state) return "";
-  if (state.frames === 0) {
-    return `The page drew no frames in ${(state.ms / 1000).toFixed(1)} s: the browser is not painting it` +
-      `${state.hidden ? "" : " although it is the visible tab"}, as when the display is off or asleep. ` +
-      "Pages that draw on animation frames (virtualized lists such as mail inboxes, feeds) do not update " +
-      "until it paints again; ask the user to wake the display.";
-  }
   if (state.hidden) {
-    return `This tab is in the background (document.hidden), where the page gets about ${state.framesPerSecond} frame(s) a second, ` +
-      "so lists that draw on animation frames fill slowly. tabs_select brings it to the front of its window " +
-      "(the user then sees it).";
+    return `This tab is hidden (in the background, or its window is minimized), where the page gets at most about one frame a second` +
+      ` (${state.frames} in ${(state.ms / 1000).toFixed(1)} s), so lists that draw on animation frames fill slowly. ` +
+      "tabs_select brings it to the front of its window (the user then sees it).";
+  }
+  if (state.frames === 0) {
+    return `The page drew no frames in ${(state.ms / 1000).toFixed(1)} s although it is the visible tab: the browser is not painting it, ` +
+      "as when the display is off or asleep. Pages that draw on animation frames (virtualized lists such as mail inboxes, " +
+      "feeds) do not update until it paints again; ask the user to wake the display.";
   }
   return "";
 }
@@ -1390,6 +1393,7 @@ function watchQuit() {
   if (!trusted) return;
   privileged(null, "untilQuit").then(() => {
     send({ bye: "quit" });
+    setTimeout(watchQuit, 1000); // a page may cancel the quit: listen for the next one
   }, () => {});
 }
 

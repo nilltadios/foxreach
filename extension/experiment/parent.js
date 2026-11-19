@@ -223,13 +223,17 @@ function promptState() {
   });
 }
 
+// The request comes before windows close, early enough for the add-on's message to reach its host
+// (at "granted" it lost the race about one quit in six); a request a page cancels is handled by
+// the host, which counts it only if the connection ends soon after.
+const QUIT_TOPICS = ["quit-application-requested", "quit-application-granted"];
 function untilQuit() {
   return new Promise((resolve) => {
     const observer = () => {
-      Services.obs.removeObserver(observer, "quit-application-granted");
+      for (const t of QUIT_TOPICS) Services.obs.removeObserver(observer, t);
       resolve({ quitting: true });
     };
-    Services.obs.addObserver(observer, "quit-application-granted");
+    for (const t of QUIT_TOPICS) Services.obs.addObserver(observer, t);
   });
 }
 
