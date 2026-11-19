@@ -7,8 +7,13 @@
 #           BIN_DIR: folder with the release foxreach-manager (default target/release)
 #           OUT_DIR: output folder (default dist)
 #           Normally run by packaging/container-build.sh inside the build container.
-# Output:   OUT_DIR/foxreach-manager-VERSION-ARCH.AppImage and .sha256, ARCH from uname -m
-#           (x86_64 or aarch64: build on the architecture the AppImage is for, no cross builds)
+# Output:   OUT_DIR/foxreach-manager-VERSION-ARCH.AppImage, its .sha256 and .zsync, ARCH from
+#           uname -m (x86_64 or aarch64: build on the architecture the AppImage is for, no cross builds)
+# Updates:  the AppImage carries update information (packaging/update-info.sh) in the runtime's
+#           .upd_info section, and the .zsync made from its final bytes is what updaters fetch from
+#           the release. quick-sharun's appimagetool (pinned there by SHA-256) writes both: UPINFO
+#           goes into the runtime before packing, the .zsync is made from the finished file. Nothing
+#           may change the AppImage afterwards. Check: packaging/check-update-info.sh OUT_DIR/*.AppImage
 # Carries:  the foxreach program from ../dist/foxreach (FOXREACH_PROGRAM overrides) in
 #           share/foxreach-manager/, which the app installs to ~/.local/bin/foxreach on request.
 # Expected: the AppImage path on the last line, exit 0.
@@ -18,6 +23,7 @@
 # architecture; the SHA-256s are the ones GitHub lists for the v0.8.1 release assets.
 set -euo pipefail
 cd -- "$(dirname -- "$0")/.."
+. packaging/update-info.sh
 QS_COMMIT=1a5594c7f47ec5cb46ce70f6e11b5c5781f17f5f
 QS_SHA=35ba7b95f91f4665707c4cab5ed99407ceea636c15675990bb42816d6d84cc33
 RT_VERSION=v0.8.1
@@ -82,6 +88,8 @@ export OUTPATH="$out"
 export OUTNAME="foxreach-manager-$version-$arch.AppImage"
 export MAIN_BIN=foxreach-manager
 export VERSION="$version"
+UPINFO=$(update_info "$arch")
+export UPINFO
 # Rendering is wgpu with a software fallback; the host's GPU drivers are used, not bundled ones.
 export DEPLOY_VULKAN=0 DEPLOY_OPENGL=0
 # No test launch (it would also pick up the GPU drivers it happened to load), and no guessing of
@@ -106,7 +114,8 @@ rmdir "$APPDIR/share/fonts" 2>/dev/null || true
 install -Dm755 "$program" "$APPDIR/share/foxreach-manager/foxreach"
 install -Dm644 "resources/$app.metainfo.xml" "$APPDIR/share/metainfo/$app.appdata.xml"
 install -Dm644 "resources/$app.svg" "$APPDIR/share/icons/hicolor/scalable/apps/$app.svg"
-rm -f "$out/$OUTNAME"
+rm -f "$out/$OUTNAME" "$out/$OUTNAME.zsync"
 ( cd "$work" && HOME="$qs_home" XDG_CONFIG_HOME="$qs_home/.config" XDG_DATA_HOME="$qs_home/.local/share" "$qs" --make-appimage )
+[[ -s $out/$OUTNAME.zsync ]] || { echo "appimagetool wrote no $OUTNAME.zsync" >&2; exit 1; }
 ( cd "$out" && sha256sum "$OUTNAME" > "$OUTNAME.sha256" )
 echo "$out/$OUTNAME"
