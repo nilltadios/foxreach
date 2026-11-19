@@ -3,6 +3,8 @@
 
 Run:      uv run --python 3.15 scripts/release.py              prepare the manifest's version
           uv run --python 3.15 scripts/release.py --verify     check what GitHub Pages serves now
+          uv run --python 3.15 scripts/release.py --signed     add the signed build of a version already
+                                                               released (Mozilla approved it later)
 Before:   raise "version" in extension/manifest.json and, to the same number, in manager/Cargo.toml (and
             its entry in manager/Cargo.lock and the metainfo's releases), commit; the work tree must be clean.
           For release Firefox, sign that version first: scripts/sign.py (optional; needs an API key).
@@ -10,6 +12,8 @@ Makes:    docs/foxreach-<version>.xpi and an entry in docs/updates.json: the ful
             installed copies fetch by themselves (GitHub Pages serves docs/; older entries stay).
           docs/foxreach-<version>-signed.xpi and an entry in docs/updates-signed.json, if
             dist/signed/ holds the signed build of this version.
+          --signed: only docs/foxreach-<version>-signed.xpi and its entry in docs/updates-signed.json,
+            for a version already in docs/updates.json (a listed build approved after the release).
           dist/release/: the foxreach program for x64 and arm64, install.sh, install.ps1, the add-ons, SHA256SUMS
             and BUILDINFO.txt: the same files the release workflow builds and publishes.
 Publish:  this script changes no remote. It prints the commit, tag and push commands; pushing the
@@ -25,6 +29,7 @@ import pathlib
 import shutil
 import subprocess
 import sys
+import tempfile
 import tomllib
 import urllib.request
 import zipfile
@@ -76,7 +81,8 @@ def add_update(listing, ver, xpi):
     data = json.loads(file.read_text()) if file.exists() else {"addons": {ADDON_ID: {"updates": []}}}
     updates = data["addons"][ADDON_ID]["updates"]
     if any(u["version"] == ver for u in updates):
-        raise SystemExit(f"{ver} is already in {file.relative_to(ROOT)}. Raise the version in extension/manifest.json.")
+        raise SystemExit(f"{ver} is already in {file.relative_to(ROOT)}. Raise the version in extension/manifest.json "
+                         "(or, for its signed build only, run release.py --signed).")
     updates.append(updates_entry(ver, f"{update_url().rsplit('/', 1)[0]}/{xpi.name}", xpi))
     file.write_text(json.dumps(data, indent=2) + "\n")
     return len(updates)
@@ -158,6 +164,36 @@ def prepare():
     print(f"Then check:  uv run --python 3.15 scripts/release.py --verify && uv run --python 3.15 scripts/verify_release.py {ver}")
 
 
+def add_signed():
+    """Publish the Mozilla-signed build of a version that is already released. A listed build is
+    approved days after the release, when prepare() refuses the version. Writes only the signed file
+    in docs/ and its entry in docs/updates-signed.json."""
+    ver = version()
+    signed = signed_path(ver)
+    listing = DOCS / pathlib.PurePosixPath(SIGNED_UPDATES).name
+    listed = lambda file: [u["version"] for u in json.loads(file.read_text())["addons"][ADDON_ID]["updates"]] if file.exists() else []  # noqa: E731
+    if ver not in listed(DOCS / "updates.json"):
+        raise SystemExit(f"{ver} is not released (not in docs/updates.json): release it first, with release.py alone.")
+    if ver in listed(listing):
+        raise SystemExit(f"{ver} is already in {listing.relative_to(ROOT)}: nothing to add.")
+    if not signed.exists():
+        raise SystemExit(f"No {signed.relative_to(ROOT)}: download the signed file from addons.mozilla.org to there.")
+    files = entries(signed)
+    unsigned = {n: h for n, h in files.items() if not n.startswith("META-INF/")}
+    if unsigned == files:
+        raise SystemExit(f"{signed.relative_to(ROOT)} has no signature (META-INF/).")
+    with tempfile.TemporaryDirectory(prefix="foxreach-signed-") as d:
+        # What scripts/sign.py sends, for either channel: the signed file must hold exactly that.
+        if not any(entries(build_store(pathlib.Path(d) / f"{c}.xpi", c)) == unsigned for c in ("listed", "unlisted")):
+            raise SystemExit(f"{signed.relative_to(ROOT)} does not hold the files this source builds for Mozilla (scripts/sign.py).")
+    shutil.copyfile(signed, DOCS / signed.name)
+    count = add_update(listing.name, ver, DOCS / signed.name)
+    print(f"signed build of {ver}: docs/{signed.name} sha256 {sha256(signed)} ({count} entries in docs/{listing.name})")
+    print("\nTo publish (changes GitHub):")
+    print(f"  git add docs && git commit -m 'Signed build of {ver}' && git push origin main")
+    print("Then check:  uv run --python 3.15 scripts/release.py --verify")
+
+
 def verify():
     failed = 0
     for url in (update_url(), SIGNED_UPDATES):
@@ -182,9 +218,12 @@ def verify():
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--verify", action="store_true")
+    parser.add_argument("--signed", action="store_true", help="only add the signed build of a version already released")
     parser.add_argument("--files-only", metavar="DIR", help="only build the release's files into DIR (the release workflow)")
     args = parser.parse_args()
     if args.files_only:
         print(*release_files(version(), pathlib.Path(args.files_only).resolve()), sep="\n")
         sys.exit(0)
-    sys.exit(verify() if args.verify else prepare() or 0)
+    if args.verify:
+        sys.exit(verify())
+    add_signed() if args.signed else prepare()

@@ -283,6 +283,9 @@ the same version.
   (the signed build: `docs/updates-signed.json`, which holds only signed builds, so neither build
   ever replaces the other). The browser checks about once a day and installs a newer version in the
   background. Firefox has this on by default and LibreWolf leaves it on (`extensions.update.enabled`).
+  The signed build from 0.4.0 is the one listed on addons.mozilla.org, which has no `update_url`:
+  Firefox then asks addons.mozilla.org for updates. Signed 0.3.x copies (unlisted) reach 0.4.0
+  through `docs/updates-signed.json` and from there update the same way.
 - **The program, installed from a release, updates with one command:**
 
   ```bash
@@ -331,11 +334,18 @@ here and not signed has no `update_url`.
 6. After the push, `uv run --python 3.15 scripts/release.py --verify` checks that Pages serves the new
    entries and that the files' hashes match, and `scripts/verify_release.py` checks the release
    against its source.
+7. A listed build is approved days later, when step 3 refuses the version. Download its signed file
+   from the add-on's versions page on addons.mozilla.org (or `current_version.file.url` of
+   `https://addons.mozilla.org/api/v5/addons/addon/foxreach@foxreach.local/`) to
+   `dist/signed/foxreach-<version>-signed.xpi` and check it against the hash shown there. Then
+   `uv run --python 3.15 scripts/release.py --signed` adds only that file and its entry in
+   `docs/updates-signed.json` (it refuses a file that is not this source's build plus Mozilla's
+   signature); commit `docs/`, push, and run `release.py --verify` again.
 
 [test/update.py](test/update.py) proves the update path on a throwaway profile: the browser's
 background check installs a newer version from an `updates.json` of the same layout, and the bridge
-warns that the versions differ. [test/release.py](test/release.py) runs steps 3 and 6 in a throwaway
-copy of the repository, publishing nothing.
+warns that the versions differ. [test/release.py](test/release.py) runs steps 3, 6 and 7 in a
+throwaway copy of the repository, publishing nothing.
 
 ## Checking a release
 

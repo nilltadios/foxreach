@@ -134,6 +134,42 @@ def main():
         bad = damaged(f"foxreach-{ver}.xpi", add_entry)
         check("a changed add-on is reported", bad.returncode == 1 and f"FAILED   foxreach-{ver}.xpi" in bad.stdout, bad.stdout)
 
+        # release.py --signed: a listed build Mozilla approved after the release (no update_url).
+        add_signed = lambda: run(*py, "scripts/release.py", "--signed", cwd=repo)  # noqa: E731
+        refused = add_signed()
+        check("--signed refuses a version whose signed build is already listed", refused.returncode == 1 and "already in" in refused.stderr, refused.stderr)
+        listing = repo / "docs/updates-signed.json"
+        data = json.loads(listing.read_text())
+        data["addons"]["foxreach@foxreach.local"]["updates"].pop()
+        listing.write_text(json.dumps(data, indent=2) + "\n")
+        git("rm", "-q", f"docs/foxreach-{ver}-signed.xpi")
+        git("commit", "-q", "-am", "Before the signed build")
+        signed.unlink()
+        refused = add_signed()
+        check("--signed refuses without a signed file", refused.returncode == 1 and "No dist/signed/" in refused.stderr, refused.stderr)
+        run(*py, "python", "-c", "import sys; sys.path.insert(0, 'scripts'); import sign; sign.build_store(sign.signed_path(), 'listed')", cwd=repo)
+        refused = add_signed()
+        check("--signed refuses a file without Mozilla's signature", refused.returncode == 1 and "no signature" in refused.stderr, refused.stderr)
+        listed_build = signed.read_bytes()
+        add_entry(signed)
+        with zipfile.ZipFile(signed, "a") as z:
+            z.writestr("META-INF/mozilla.rsa", b"stand-in for a signature")
+        refused = add_signed()
+        check("--signed refuses a signed file with a file the source does not have", refused.returncode == 1 and "does not hold" in refused.stderr, refused.stderr)
+        signed.write_bytes(listed_build)
+        with zipfile.ZipFile(signed, "a") as z:
+            z.writestr("META-INF/mozilla.rsa", b"stand-in for a signature")
+        before = {n: (repo / "docs" / n).read_bytes() for n in ("updates.json", f"foxreach-{ver}.xpi")}
+        added = add_signed()
+        entry = json.loads(listing.read_text())["addons"]["foxreach@foxreach.local"]["updates"][-1]
+        status = sorted(git("status", "--porcelain").splitlines())
+        check("--signed adds the listed signed build and its entry, and changes nothing else",
+              added.returncode == 0 and entry["version"] == ver and entry["update_link"].endswith(f"/foxreach-{ver}-signed.xpi")
+              and (repo / f"docs/foxreach-{ver}-signed.xpi").read_bytes() == signed.read_bytes()
+              and all((repo / "docs" / n).read_bytes() == b for n, b in before.items())
+              and status == [" M docs/updates-signed.json", f"?? docs/foxreach-{ver}-signed.xpi"],
+              (added.stdout, added.stderr, entry, status))
+
         home = work / "home"
         home.mkdir()
         env = {k: v for k, v in os.environ.items() if not k.startswith("XDG_")} | {

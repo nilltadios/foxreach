@@ -164,21 +164,25 @@ Open items, newest first. Remove an item when it is done.
    The program runs on Linux and macOS (host registration, socket, release builds, `install.sh`,
    `foxreach update`); Windows needs the host registration and agent paths ported first.
 
-3. **addons.mozilla.org listing: submit 0.4.0.** One version number for both, so the listing and the
-   GitHub release stay in sync. As of 2026-11-18: 0.3.4 (listed) is approved and public; 0.3.3 and
-   0.3.1 (listed) are disabled; 0.3.2 and 0.3.0 are signed unlisted. The signed 0.3.4 file was not
-   published to `docs/updates-signed.json` (the owner's choice: 0.4.0 replaces it), so signed installs
-   stay on 0.3.2 for now. Status and reviewer questions:
+3. **addons.mozilla.org listing: 0.4.0 approved 2026-11-18.** One version number for both, so the
+   listing and the GitHub release stay in sync. 0.4.0 (listed) is approved and public; 0.3.4
+   (listed) was approved earlier the same day; 0.3.3 and 0.3.1 (listed) are disabled; 0.3.2 and
+   0.3.0 are signed unlisted. The signed 0.3.4 file was never published to
+   `docs/updates-signed.json` (the owner's choice: 0.4.0 replaces it). Status and reviewer questions:
    https://addons.mozilla.org/en-US/developers/addon/fe1f53e268044b529443/versions
-   - Submit 0.4.0 to the listed channel (`scripts/sign.py --channel listed`); it then waits for
-     Mozilla's review.
-   - When 0.4.0 is approved: download its signed file from the add-on's versions page to
-     `dist/signed/foxreach-0.4.0-signed.xpi`, add it to `docs/` with its entry in
-     `docs/updates-signed.json`, commit `docs/` and push (ask first), then `release.py --verify`.
-     `release.py` itself refuses a version already in `docs/updates.json`, which 0.4.0 will be, so
-     this step needs the signed half of `prepare()` on its own (or by hand). Add the signed file to
-     the v0.4.0 release with `gh release upload v0.4.0 docs/foxreach-0.4.0-signed.xpi` if it should
-     be listed there too.
+   - Done (branch `manager-test-ci`, not pushed yet): the signed 0.4.0 file, downloaded from
+     addons.mozilla.org and checked against its stated hash, holds exactly the listed build of
+     94830a4 plus `META-INF/`; `release.py --signed` (new, for a version already released) added it
+     to `docs/` with its entry in `docs/updates-signed.json`. It has no `update_url`, so signed
+     0.3.2 copies take it from that list and then update from addons.mozilla.org.
+   - Left: push (ask first), then `release.py --verify` (the signed list should show 0.4.0, hash
+     matches). Add the file to the v0.4.0 release, outside `SHA256SUMS`, so the README's install
+     step finds it: `gh release upload v0.4.0 docs/foxreach-0.4.0-signed.xpi --repo nilltadios/foxreach`.
+   - Not yet seen: a release Firefox on signed 0.3.2 actually moving to 0.4.0 and then asking
+     addons.mozilla.org (Firefox's source says it does, `XPIInstall.sys.mjs` UpdateChecker).
+   - `scripts/verify_release.py` compares a signed file with the unlisted build only, so a listed
+     signed file named in a release's `SHA256SUMS` would be reported as differing in
+     `manifest.json` (its missing `update_url`).
    - The listing shows Mozilla's default icon: upload `amo/icon-128.png` with
      `scripts/amo_listing.py` (prepared and dry-run only; see `amo/LISTING.md`).
 
