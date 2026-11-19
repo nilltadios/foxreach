@@ -82,6 +82,22 @@ iframe{{position:absolute;left:0;top:0;width:500px;height:300px;border:0}}</styl
 #ii{{position:absolute;left:50px;top:120px;width:150px;height:30px}}</style>
 <button id=ib>Inner button</button><input id=ii aria-label="Inner input">
 <script>console.log('inner frame says hi')</script>""",
+    # A frame from another site with a border and padding, so its viewport starts at (60+7+13,
+    # 40+7+13) = (80, 60) in the tab, not at its box. Magenta marks the password field and, as a
+    # control, a plain box beside it in the same frame.
+    "/secretframe": f"""<!doctype html><meta charset=utf-8><title>Secret frame</title><style>body{{margin:0;background:#fff}}
+#sf{{position:absolute;left:60px;top:40px;width:400px;height:260px;border:7px solid #888;padding:13px;background:#fff}}</style>
+<iframe id=sf src="{OTHER_SITE}/secretinner"></iframe>""",
+    "/lowframe": f"""<!doctype html><meta charset=utf-8><title>Low frame</title><style>body{{margin:0;height:4000px}}
+#sf{{position:absolute;left:60px;top:1500px;width:400px;height:260px;border:7px solid #888;padding:13px}}</style>
+<iframe id=sf src="{OTHER_SITE}/secretinner"></iframe>""",
+    "/secretinner": f"""<!doctype html><meta charset=utf-8><title>Secret inner</title>{RECORDER}<style>body{{margin:0;height:1400px;background:#fff}}
+#spw{{position:absolute;left:40px;top:30px;width:200px;height:40px;background:#f0f;border:0;padding:0;outline:none;color:#000}}
+#plain{{position:absolute;left:40px;top:120px;width:200px;height:40px;background:#f0f}}
+#deep{{position:absolute;left:100px;top:1000px;width:160px;height:40px}}
+#deeper{{position:absolute;left:20px;top:1300px;width:100px;height:30px}}</style>
+<input id=spw type=password aria-label="Frame password"><div id=plain>Plain box</div>
+<button id=deep>Deep button</button><button id=deeper>Deeper button</button>""",
     "/scroll": f"""<!doctype html><title>Scroll</title>{RECORDER}<body style="margin:0;height:5000px">
 <div style="position:absolute;top:3000px"><button id=far>Far button</button></div>
 <div id=box style="position:fixed;left:400px;top:0;width:200px;height:200px;background:#0a0"></div>""",
@@ -634,6 +650,98 @@ def t_frames(mcp):
     check("typing reaches a cross-process frame", js(mcp, tab, "document.getElementById('ii').value", frame_id=frame) == "in frame",
           js(mcp, tab, "document.getElementById('ii').value", frame_id=frame))
     check("console includes frames", "inner frame says hi" in mcp.call("read_console", tabId=tab))
+    mcp.call("tabs_close", tabId=tab)
+
+
+def magenta_at(png, box=None, outside=None):
+    """Magenta pixels in box (x0, y0, x1, y1) of a picture, or in all of it, leaving out `outside`."""
+    from PIL import Image
+    im = Image.open(io.BytesIO(png)).convert("RGB")
+    x0, y0, x1, y1 = box or (0, 0, *im.size)
+    px = im.load()
+    count = 0
+    for y in range(y0, y1):
+        for x in range(x0, x1):
+            if outside and outside[0] <= x < outside[2] and outside[1] <= y < outside[3]:
+                continue
+            r, g, b = px[x, y]
+            count += r > 200 and g < 80 and b > 200
+    return count
+
+
+def t_frame_secret(mcp):
+    """A frame from another site with a border and padding: pictures cover a filled password field
+    in it where it is drawn, scroll_to gives its refs in tab coordinates, ref clicks land."""
+    tab = tab_id(mcp.call("tabs_create", url=f"{MAIN}/secretframe"))
+    tree = mcp.call("read_page", tabId=tab)
+    check("frame with border and padding: its fields are read", "Frame password" in tree and "Deep button" in tree, tree)
+    frame = int(re.match(r"f(\d+):", ref_of(tree, "Frame password")).group(1))
+    # From the page's CSS: the frame's viewport is at (80, 60); the field at (40, 30) in it, 200x40;
+    # the plain magenta box at (40, 120).
+    field, plain = (120, 90, 320, 130), (120, 180, 320, 220)
+    area = 200 * 40
+    shot = lambda **kw: mcp.image(tabId=tab, format="png", show_pointer=False, **kw)[0]  # noqa: E731
+
+    empty = shot()
+    check("control: an empty password field in the frame shows magenta where the page puts it",
+          magenta_at(empty, field) >= 0.95 * area and magenta_at(empty, plain) >= 0.95 * area,
+          (magenta_at(empty, field), magenta_at(empty, plain)))
+    mcp.call("form_input", tabId=tab, ref=ref_of(tree, "Frame password"), value="hunter2hunter2")
+    line = next(l for l in mcp.call("read_page", tabId=tab).splitlines() if "Frame password" in l)
+    check("the frame's password field holds a value, which read_page does not show", ", filled" in line and "hunter2" not in line, line)
+    filled = shot()
+    check("a picture shows no magenta of a filled password field in a bordered, padded frame",
+          magenta_at(filled, outside=plain) == 0, magenta_at(filled, outside=plain))
+    check("...it is painted black where it is drawn", colour_at(filled, 220, 110) == (0, 0, 0), colour_at(filled, 220, 110))
+    check("...and the rest of the frame is not covered (the plain box beside it stays magenta)",
+          magenta_at(filled, plain) >= 0.95 * area, magenta_at(filled, plain))
+    part = shot(region={"x": 100, "y": 70, "width": 240, "height": 80})
+    check("a region picture covers the field in the frame too",
+          magenta_at(part) == 0 and colour_at(part, 120, 40) == (0, 0, 0), (magenta_at(part), colour_at(part, 120, 40)))
+    mcp.call("form_input", tabId=tab, ref=ref_of(tree, "Frame password"), value="")
+    check("once the field is cleared, the picture shows it again", magenta_at(shot(), field) >= 0.95 * area)
+
+    def centre_in_tab(element_id, frame_left, frame_top):
+        r = js(mcp, tab, f"const r = document.getElementById('{element_id}').getBoundingClientRect(); [r.left + r.width / 2, r.top + r.height / 2]", frame_id=frame)
+        return r[0] + frame_left, r[1] + frame_top
+
+    out = mcp.call("scroll_to", tabId=tab, ref=ref_of(tree, "Deep button"))
+    m = re.search(r"centred at \((-?\d+), (-?\d+)\)\.$", out)
+    want = centre_in_tab("deep", 80, 60)
+    check("scroll_to on a ref in a bordered, padded frame gives tab coordinates",
+          m and "in its frame" not in out and abs(int(m.group(1)) - want[0]) <= 1 and abs(int(m.group(2)) - want[1]) <= 1, f"{out} want {want}")
+    if m:
+        clear(mcp, tab, frame)
+        mcp.call("click", tabId=tab, x=int(m.group(1)), y=int(m.group(2)))
+        ev = events(mcp, tab, frame)
+        check("...a point click there lands on the element", any(e["type"] == "click" and e["target"] == "deep" for e in ev), ev)
+
+    clear(mcp, tab, frame)
+    out = mcp.call("click", tabId=tab, ref=ref_of(tree, "Deeper button"))  # off the frame's view: scrolled, then measured again
+    ev = events(mcp, tab, frame)
+    check("a ref click scrolls the frame and lands on its element",
+          any(e["type"] == "click" and e["trusted"] and e["target"] == "deeper" for e in ev) and "landed on" not in out, f"{out} {ev}")
+
+    mcp.call("tabs_close", tabId=tab)
+
+    # A frame below the fold: scroll_to scrolls the page as well as the frame. The page is loaded
+    # that way: a frame whose style was changed just before, with no layout since, was seen to have
+    # only the frame scrolled (the page stayed at 0), while after a layout or a second it works.
+    tab = tab_id(mcp.call("tabs_create", url=f"{MAIN}/lowframe"))
+    tree = mcp.call("read_page", tabId=tab, scope="page")
+    frame = int(re.match(r"f(\d+):", ref_of(tree, "Deep button")).group(1))
+    out = mcp.call("scroll_to", tabId=tab, ref=ref_of(tree, "Deep button"))
+    m = re.search(r"centred at \((-?\d+), (-?\d+)\)\.$", out)
+    box = js(mcp, tab, "const r = sf.getBoundingClientRect(); [r.left, r.top]")
+    want = centre_in_tab("deep", box[0] + 20, box[1] + 20)
+    check("scroll_to on a ref in a frame below the fold gives tab coordinates",
+          m and "in its frame" not in out and js(mcp, tab, "scrollY") > 0
+          and abs(int(m.group(1)) - want[0]) <= 1 and abs(int(m.group(2)) - want[1]) <= 1, f"{out} want {want} scrollY {js(mcp, tab, 'scrollY')}")
+    if m:
+        clear(mcp, tab, frame)
+        mcp.call("click", tabId=tab, x=int(m.group(1)), y=int(m.group(2)))
+        ev = events(mcp, tab, frame)
+        check("...a point click there lands on the element", any(e["type"] == "click" and e["target"] == "deep" for e in ev), ev)
     mcp.call("tabs_close", tabId=tab)
 
 
@@ -1396,7 +1504,7 @@ def popup_tests(browser, mcp):
 
 TESTS = {
     "protocol": t_protocol, "click": t_click_trusted, "refs": t_refs, "painting": t_painting, "tabs": t_tabs_mine, "slowtype": t_slow_typing, "keyboard": t_keyboard, "focus": t_focus_switch, "read": t_read,
-    "forms": t_forms, "frames": t_frames, "scroll": t_scroll_and_shots, "devtools": t_devtools, "script": t_script,
+    "forms": t_forms, "frames": t_frames, "framesecret": t_frame_secret, "scroll": t_scroll_and_shots, "devtools": t_devtools, "script": t_script,
     "navigation": t_navigation, "dialogs": t_dialogs, "drag": t_drag, "background": t_background_tab,
     "policy": t_policy, "multi": t_multi_agent, "speed": t_agent_speed, "pointer": t_pointer,
 }
