@@ -314,7 +314,10 @@ here and not signed has no `update_url`.
 
 ## Releasing
 
-1. Raise `version` in `extension/manifest.json` (the bridge reads it from there too), commit.
+1. Raise `version` in `extension/manifest.json` (the bridge reads it from there too) and, to the same
+   number, in `manager/Cargo.toml`, the `foxreach-manager` entry in `manager/Cargo.lock` and a new
+   `<release>` in `manager/resources/dev.nilltadios.FoxreachManager.metainfo.xml`; commit. The manager
+   follows foxreach's version: `release.py` and the release workflow refuse when the two differ.
 2. For release Firefox, have Mozilla sign that version: `uv run --python 3.15 scripts/sign.py`
    (`--dry-run` checks without sending). It needs an API key from addons.mozilla.org and sends the
    add-on's files there; the signed file lands in `dist/signed/`. `--channel listed` submits it for

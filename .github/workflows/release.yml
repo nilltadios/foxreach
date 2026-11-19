@@ -22,8 +22,10 @@ jobs:
         with:
           bun-version-file: .bun-version
       - uses: astral-sh/setup-uv@v6
-      - name: The tag is the add-on's version
-        run: test "v$(jq -r .version extension/manifest.json)" = "$GITHUB_REF_NAME"
+      - name: The tag is the add-on's version, and the manager's
+        run: |
+          test "v$(jq -r .version extension/manifest.json)" = "$GITHUB_REF_NAME"
+          test "v$(sed -n 's/^version = "\(.*\)"$/\1/p' manager/Cargo.toml | head -1)" = "$GITHUB_REF_NAME"
       - name: Build the release's files
         run: uv run --python 3.15 scripts/release.py --files-only dist/release
       - uses: actions/attest-build-provenance@v2

@@ -3,7 +3,8 @@
 
 Run:      uv run --python 3.15 scripts/release.py              prepare the manifest's version
           uv run --python 3.15 scripts/release.py --verify     check what GitHub Pages serves now
-Before:   raise "version" in extension/manifest.json and commit; the work tree must be clean.
+Before:   raise "version" in extension/manifest.json and, to the same number, in manager/Cargo.toml (and
+            its entry in manager/Cargo.lock and the metainfo's releases), commit; the work tree must be clean.
           For release Firefox, sign that version first: scripts/sign.py (optional; needs an API key).
 Makes:    docs/foxreach-<version>.xpi and an entry in docs/updates.json: the full add-on, which
             installed copies fetch by themselves (GitHub Pages serves docs/; older entries stay).
@@ -24,6 +25,7 @@ import pathlib
 import shutil
 import subprocess
 import sys
+import tomllib
 import urllib.request
 import zipfile
 
@@ -57,6 +59,11 @@ def updates_entry(ver, link, xpi):
         "update_hash": f"sha256:{sha256(xpi)}",
         "applications": {"gecko": {"strict_min_version": MIN_BROWSER}},
     }
+
+
+def manager_version():
+    """The manager app's version, which follows foxreach's (its release files carry it in their names)."""
+    return tomllib.loads((ROOT / "manager/Cargo.toml").read_text())["package"]["version"]
 
 
 def git(*args):
@@ -120,6 +127,8 @@ def release_files(ver, out):
 
 def prepare():
     ver = version()
+    if manager_version() != ver:
+        raise SystemExit(f"manager/Cargo.toml says {manager_version()}, extension/manifest.json {ver}: give both the same version.")
     if git("status", "--porcelain"):
         raise SystemExit("The work tree has changes. Commit them first, so the release matches a commit.")
     if build_binary.bun_version() != build_binary.pinned_bun():
