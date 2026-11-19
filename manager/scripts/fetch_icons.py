@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.12"
+# dependencies = ["pillow>=11"]
+# ///
 """Fetch the brand icons the app bundles and generate src/bundled_icons.rs.
 
 Run:      uv run --python 3.15 manager/scripts/fetch_icons.py
@@ -9,13 +13,14 @@ Sources:  two npm packages, each version pinned below and checked by SHA-256:
             brand's colour;
           - @lobehub/icons-static-svg (https://github.com/lobehub/lobe-icons, MIT), for AI brands
             Simple Icons lacks (Grok, OpenAI, OpenClaw, Hermes Agent, Muse);
-          and logos taken from a project's own site or repository (DIRECT: Pi, T3 Code), each pinned
-          by SHA-256.
+          and logos taken from a project's own site or repository (DIRECT: Pi, T3 Code, Waterfox),
+          each pinned by SHA-256 (a PNG app icon is scaled to 128x128 with Pillow).
           The logos are their owners' trademarks; see SOURCES.md for each one.
-Writes:   manager/resources/icons/<name>.svg, SOURCES.md beside them, and manager/src/bundled_icons.rs,
+Writes:   manager/resources/icons/<name>.svg (or .png), SOURCES.md beside them, and manager/src/bundled_icons.rs,
           which compiles them into the app.
-Expected: one line per icon written, exit 0 (--check: "N bundled names resolve", exit 0). The app prefers an icon installed on the system and
-          falls back to these; brands not listed here get a coloured initial.
+Expected: one line per icon written, exit 0 (--check: "N bundled names resolve", exit 0). The app
+          prefers an icon installed on the system and falls back to these; every agent, app and
+          browser the app knows must have one (the test in src/icons.rs fails otherwise).
 """
 import hashlib
 import io
@@ -46,6 +51,7 @@ SIMPLE = {
     "librewolf": "LibreWolf",
     "floorp": "Floorp",
     "zenbrowser": "Zen",
+    "torbrowser": "Tor Browser",
 }
 
 LOBE_VERSION = "1.102.0"
@@ -72,12 +78,19 @@ DIRECT = {
     # The Pi coding agent's logo, as its README shows it (https://github.com/badlogic/pi-mono, MIT).
     "pi": ("https://pi.dev/logo.svg", "abd66e7868b2d24f0f0895f9237ee8a6dcb22337583b0dc54aeb595acecb4d6b", "Pi",
            "the project's own logo"),
-    # T3 Code's production logo from its repository, pinned to a commit
-    # (https://github.com/pingdotgg/t3code, assets/prod/logo.svg; MIT, T3 Tools Inc.).
-    "t3code": ("https://raw.githubusercontent.com/pingdotgg/t3code/0226239a41e1fd0649fdd2562421d8950db7f39c/assets/prod/logo.svg",
-               "fbceddbceeb75136fb8e2c702cf0fe459d153b629abbda6262a63d7c4c65e673", "T3 Code",
-               "the project's own logo; its repository is MIT (T3 Tools Inc.)"),
+    # T3 Code's app icon (the stable build's Linux icon, productionLinuxIconPng in its
+    # scripts/lib/brand-assets.ts), from its repository at a pinned commit
+    # (https://github.com/pingdotgg/t3code, MIT, T3 Tools Inc.); 1024 px, scaled to 128.
+    "t3code": ("https://raw.githubusercontent.com/pingdotgg/t3code/0226239a41e1fd0649fdd2562421d8950db7f39c/assets/prod/black-universal-1024.png",
+               "403e874556ffbecee8d1b2b5d612a874303fac791212a261bb3bd1b71d83e78d", "T3 Code",
+               "the project's own app icon; its repository is MIT (T3 Tools Inc.)"),
+    # Waterfox's logo from its branding folder at a pinned commit (https://github.com/BrowserWorks/Waterfox,
+    # waterfox/browser/branding/LICENSE: MPL 2.0, no trademark rights).
+    "waterfox": ("https://raw.githubusercontent.com/BrowserWorks/Waterfox/9230b1e71d7856ab94c7c619832be653bf7f1d4f/waterfox/browser/branding/content/about-logo.svg",
+                 "31635db0eccc79f4009dddf88c1b3b452f83ae64ebd672f6baec6c734bd0ea7f", "Waterfox",
+                 "MPL-2.0 (its branding LICENSE; no trademark rights granted)"),
 }
+PNG_SIZE = 128
 
 MANAGER = pathlib.Path(__file__).resolve().parent.parent
 OUT = MANAGER / "resources/icons"
@@ -118,7 +131,7 @@ def main():
     if sys.argv[1:] == ["--check"]:
         return check()
     OUT.mkdir(parents=True, exist_ok=True)
-    rows, themed, names = [], set(), []
+    rows, themed, names, files = [], set(), [], {}
 
     read = fetch(SIMPLE_URL, SIMPLE_SHA256)
     meta = json.loads(read("data/simple-icons.json"))
@@ -153,10 +166,20 @@ def main():
         got = hashlib.sha256(data).hexdigest()
         if got != sha256:
             raise SystemExit(f"{url}: SHA-256 {got}, expected {sha256}. Nothing written.")
-        (OUT / f"{name}.svg").write_text(plain(name, data.decode()))
-        rows.append(f"| `{name}.svg` | {use} | {use} | {url} (SHA-256 `{sha256[:16]}…`) | {lic} |")
+        if url.endswith(".png"):
+            from PIL import Image
+            file = f"{name}.png"
+            image = Image.open(io.BytesIO(data)).convert("RGBA").resize((PNG_SIZE, PNG_SIZE), Image.Resampling.LANCZOS)
+            image.save(OUT / file, "PNG", optimize=True)
+            source = f"{url} (SHA-256 `{sha256[:16]}…`, scaled to {PNG_SIZE} px)"
+        else:
+            file = f"{name}.svg"
+            (OUT / file).write_text(plain(name, data.decode()))
+            source = f"{url} (SHA-256 `{sha256[:16]}…`)"
+        rows.append(f"| `{file}` | {use} | {use} | {source} | {lic} |")
         names.append(name)
-        print(OUT / f"{name}.svg")
+        files[name] = file
+        print(OUT / file)
 
     (OUT / "SOURCES.md").write_text(
         "# Bundled icons\n\nWritten by `manager/scripts/fetch_icons.py` from two pinned npm packages and from logos "
@@ -168,10 +191,10 @@ def main():
         "The logos are trademarks of their owners and are used here only to show which app is which. "
         "The app uses an icon installed on the system first.\n\n"
         "| File | Brand | Shown for | Source | License |\n|---|---|---|---|---|\n" + "\n".join(rows) + "\n")
-    arms = "\n".join(f'        "{n}" => (include_bytes!("../resources/icons/{n}.svg"), {str(n in themed).lower()}),' for n in names)
+    arms = "\n".join(f'        "{n}" => (include_bytes!("../resources/icons/{files.get(n, n + ".svg")}"), {str(n in themed).lower()}),' for n in names)
     (MANAGER / "src/bundled_icons.rs").write_text(
         "// Generated by manager/scripts/fetch_icons.py; do not edit.\n"
-        "/// A bundled brand icon by name: the SVG, and whether it is drawn in the theme's text colour\n"
+        "/// A bundled brand icon by name: the SVG (or PNG), and whether it is drawn in the theme's text colour\n"
         "/// (a black or currentColor logo) instead of its own colours.\n"
         "pub fn get(name: &str) -> Option<(&'static [u8], bool)> {\n"
         "    Some(match name {\n" + arms + "\n        _ => return None,\n    })\n}\n")

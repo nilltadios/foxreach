@@ -61,7 +61,7 @@ fn differs(theirs: Option<&str>, ours: Option<&str>) -> bool {
 }
 
 /// Apps that read an agent's settings file, so they get foxreach with it.
-fn linked(id: &str) -> &'static [(&'static str, &'static str)] {
+pub(crate) fn linked(id: &str) -> &'static [(&'static str, &'static str)] {
     match id {
         "claude-code" => &[("claude-desktop", "Claude desktop, Code tab"), ("t3code", "T3 Code"), ("grok", "Grok Build")],
         "codex" => &[("chatgpt", "ChatGPT app"), ("t3code", "T3 Code")],

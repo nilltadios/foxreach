@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 //! Icons for agents and browsers: the app's own icon installed on this system when there is one
-//! (full colour), else a bundled brand logo (Simple Icons, src/bundled_icons.rs), else a coloured
+//! (full colour), else a bundled brand logo (src/bundled_icons.rs). Every agent, app and browser
+//! foxreach knows has a bundled logo (the test below); only a name it does not know gets a coloured
 //! initial.
 
 use std::collections::HashMap;
@@ -56,13 +57,14 @@ pub fn browser(name: &str, spec: &str) -> Look {
     let (host, bundled): (&'static [&'static str], Option<&'static str>) = match (name, flatpak) {
         ("Firefox", Some(_)) => (&["org.mozilla.firefox", "firefox"], Some("firefoxbrowser")),
         ("Firefox", None) => (&["firefox", "org.mozilla.firefox"], Some("firefoxbrowser")),
+        ("Firefox ESR", _) => (&["firefox-esr", "firefox"], Some("firefoxbrowser")),
         ("LibreWolf", Some(_)) => (&["io.gitlab.librewolf-community", "librewolf"], Some("librewolf")),
         ("LibreWolf", None) => (&["librewolf", "io.gitlab.librewolf-community"], Some("librewolf")),
         ("Floorp", _) => (&["one.ablaze.floorp", "floorp"], Some("floorp")),
-        ("Waterfox", _) => (&["net.waterfox.waterfox", "waterfox"], None),
+        ("Waterfox", _) => (&["net.waterfox.waterfox", "waterfox"], Some("waterfox")),
         ("Zen", _) => (&["app.zen_browser.zen", "zen-browser", "zen"], Some("zenbrowser")),
         // torbrowser-launcher installs this icon; Tor Browser itself installs none.
-        ("Tor Browser", _) => (&["org.torproject.torbrowser-launcher", "torbrowser", "tor-browser"], None),
+        ("Tor Browser", _) => (&["org.torproject.torbrowser-launcher", "torbrowser", "tor-browser"], Some("torbrowser")),
         _ => (&[], None),
     };
     Look { host, bundled }
@@ -73,11 +75,15 @@ pub fn view<'a, M: 'a>(look: &Look, label: &str, size: u16) -> Element<'a, M> {
     if let Some(path) = look.host.iter().find_map(|n| index().find(n)) {
         return icon::icon(icon::from_path(path)).size(size).into();
     }
-    if let Some((svg, themed)) = look.bundled.and_then(bundled_icons::get) {
-        return icon::icon(icon::from_svg_bytes(svg).symbolic(themed)).size(size).into();
+    if let Some((data, themed)) = look.bundled.and_then(bundled_icons::get) {
+        // An app icon published only as a PNG (T3 Code's) is bundled as one.
+        let handle = if data.starts_with(PNG) { icon::from_raster_bytes(data) } else { icon::from_svg_bytes(data).symbolic(themed) };
+        return icon::icon(handle).size(size).into();
     }
     monogram(label, size)
 }
+
+const PNG: &[u8] = b"\x89PNG\r\n\x1a\n";
 
 /// A coloured circle with the first letter, the colour picked from the name.
 fn monogram<'a, M: 'a>(label: &str, size: u16) -> Element<'a, M> {
@@ -166,4 +172,46 @@ impl Index {
 
 fn read_dir(dir: &Path) -> Vec<PathBuf> {
     std::fs::read_dir(dir).map(|it| it.filter_map(|e| e.ok().map(|e| e.path())).filter(|p| p.is_file()).collect()).unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{PNG, agent, browser};
+    use crate::bundled_icons;
+
+    /// The quoted value after each `key` at the start of a line: `id: "codex"` -> codex.
+    fn values<'a>(source: &'a str, key: &str) -> Vec<&'a str> {
+        source.lines().filter_map(|l| l.trim_start().strip_prefix(key)?.split('"').next()).collect()
+    }
+
+    fn assert_bundled(what: &str, bundled: Option<&str>) {
+        let name = bundled.unwrap_or_else(|| panic!("{what} has no bundled icon: it would show a coloured initial"));
+        let (data, _) = bundled_icons::get(name).unwrap_or_else(|| panic!("{what}: no bundled icon named {name} (manager/scripts/fetch_icons.py)"));
+        assert!(data.starts_with(PNG) || std::str::from_utf8(data).is_ok_and(|s| s.contains("<svg")), "{what}: {name} is neither SVG nor PNG");
+    }
+
+    #[test]
+    fn every_agent_and_app_foxreach_knows_has_a_bundled_icon() {
+        // The agents `foxreach agents` lists, read from the program's own list, so a new one fails here.
+        let ids = values(include_str!("../../bridge/agents.mjs"), "id: \"");
+        assert!(ids.len() >= 19, "read only {} agent ids from bridge/agents.mjs", ids.len());
+        let hosts: Vec<&str> = ids.iter().flat_map(|id| crate::app::linked(id).iter().map(|(host, _)| *host)).collect();
+        assert!(hosts.contains(&"t3code"));
+        for id in ids.iter().chain(&hosts) {
+            assert_bundled(id, agent(id).bundled);
+        }
+    }
+
+    #[test]
+    fn every_browser_foxreach_knows_has_a_bundled_icon() {
+        // The browsers whose profiles `foxreach status` lists (bridge/addon.mjs), Tor Browser, and
+        // the names a connected browser is shown by (bridge/browsers.mjs) that are those browsers.
+        let mut names = values(include_str!("../../bridge/addon.mjs"), "{ name: \"");
+        assert!(names.len() >= 5, "read only {} browsers from bridge/addon.mjs", names.len());
+        names.extend(["Tor Browser", "Firefox ESR"]);
+        for name in names {
+            assert_bundled(name, browser(name, "").bundled);
+            assert_bundled(name, browser(name, "flatpak:x").bundled);
+        }
+    }
 }

@@ -24,6 +24,7 @@ The logos are trademarks of their owners and are used here only to show which ap
 | `librewolf.svg` | LibreWolf | LibreWolf | Simple Icons 16.37.0 | CC0-1.0 |
 | `floorp.svg` | Floorp | Floorp | Simple Icons 16.37.0 | CC-BY-SA-4.0 |
 | `zenbrowser.svg` | Zen Browser | Zen | Simple Icons 16.37.0 | CC0-1.0 |
+| `torbrowser.svg` | Tor Browser | Tor Browser | Simple Icons 16.37.0 | CC0-1.0 |
 | `grok.svg` | grok | Grok Build | LobeHub icons 1.102.0 | MIT |
 | `openai.svg` | openai | Codex, ChatGPT app | LobeHub icons 1.102.0 | MIT |
 | `openclaw-color.svg` | openclaw-color | OpenClaw | LobeHub icons 1.102.0 | MIT |
@@ -35,4 +36,5 @@ The logos are trademarks of their owners and are used here only to show which ap
 | `xiaomimimo.svg` | xiaomimimo | MiMo Code | LobeHub icons 1.102.0 | MIT |
 | `zai.svg` | zai | ZCode (Z.ai) | LobeHub icons 1.102.0 | MIT |
 | `pi.svg` | Pi | Pi | https://pi.dev/logo.svg (SHA-256 `abd66e7868b2d24f…`) | the project's own logo |
-| `t3code.svg` | T3 Code | T3 Code | https://raw.githubusercontent.com/pingdotgg/t3code/0226239a41e1fd0649fdd2562421d8950db7f39c/assets/prod/logo.svg (SHA-256 `fbceddbceeb75136…`) | the project's own logo; its repository is MIT (T3 Tools Inc.) |
+| `t3code.png` | T3 Code | T3 Code | https://raw.githubusercontent.com/pingdotgg/t3code/0226239a41e1fd0649fdd2562421d8950db7f39c/assets/prod/black-universal-1024.png (SHA-256 `403e874556ffbece…`, scaled to 128 px) | the project's own app icon; its repository is MIT (T3 Tools Inc.) |
+| `waterfox.svg` | Waterfox | Waterfox | https://raw.githubusercontent.com/BrowserWorks/Waterfox/9230b1e71d7856ab94c7c619832be653bf7f1d4f/waterfox/browser/branding/content/about-logo.svg (SHA-256 `31635db0eccc79f4…`) | MPL-2.0 (its branding LICENSE; no trademark rights granted) |
