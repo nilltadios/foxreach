@@ -78,17 +78,20 @@ carry the manager's own version from `Cargo.toml`, which does not follow foxreac
 A 16 KiB-page kernel cannot load an ELF file whose LOAD segments are aligned to less than 16 KiB.
 The aarch64 CI jobs fail if any ELF file shipped in either package (the AppImage runtime, sharun,
 every bundled library, the app, the foxreach program) is aligned below 0x4000
-(`packaging/check-elf-alignment.sh`). As found on 2026-11-18: the uruntime (v0.8.1) and quick-sharun's
-sharun, helper libraries and appimagetool for aarch64 are aligned to 64 KiB, and the DwarFS inside the
-uruntime is built with jemalloc for 64 KiB pages (`--with-lg-page=16`), so it runs with 4, 16 and
-64 KiB pages; the app itself uses the system allocator. **Not known to work yet: the foxreach
-program.** Bun's tracking issue for non-4 KiB pages on aarch64 Linux
-(oven-sh/bun#17627) is still open, and Bun's triage there says programs built with
-`bun build --compile` do not yet run with non-4 KiB pages; nobody has reported Bun 1.4.4 on 16 KiB
-pages either way. If it fails, the manager still opens, but the program it installs does not run.
-GitHub's arm runners use 4 KiB pages, so only a run on an Asahi machine can tell: `getconf PAGESIZE`
-(16384), then `foxreach version` with the release's `foxreach-linux-arm64`, and the packages'
-`--version` and `--check`.
+(`packaging/check-elf-alignment.sh`). As found on 2026-11-18: the uruntime (v0.8.1), and
+quick-sharun's sharun, helper libraries and appimagetool for aarch64 are aligned to 64 KiB, and the DwarFS inside the uruntime is jemalloc built
+for pages up to 64 KiB (`--with-lg-page=16` in DwarFS's static build script for non-x86 targets),
+so it should run with 4, 16 and 64 KiB pages; the app itself uses the system allocator (no jemalloc
+or mimalloc in `Cargo.lock`). **Not known to work yet: the foxreach program.** Bun's tracking issue
+for non-4 KiB pages on aarch64 Linux (oven-sh/bun#17627) is still open, with "check it works on
+16k" unticked; Bun's automated triage of a crash report (oven-sh/bun#32418, Bun 1.3.14) says
+`bun build --compile` programs do not run with non-4 KiB pages yet, while a maintainer wrote earlier
+(oven-sh/bun#6241) that JavaScriptCore expects 16 KiB pages on this target. Bun's release notes from
+1.3.12 to 1.4.4 say nothing about page sizes, and nobody has reported Bun 1.4.4 on 16 KiB pages
+either way. If the program fails there, the manager still opens, but the program it installs does
+not run. GitHub's arm runners are expected to use 4 KiB pages (the jobs print `getconf PAGESIZE`),
+so only a run on an Asahi machine can tell: `getconf PAGESIZE` (16384), then `foxreach version`
+with the release's `foxreach-linux-arm64`, and the packages' `--version` and `--check`.
 
 ## Check a build
 

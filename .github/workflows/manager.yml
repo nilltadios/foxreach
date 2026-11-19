@@ -5,7 +5,8 @@
 #
 # The aarch64 jobs also fail if any shipped ELF file has a LOAD segment aligned below 16 KiB:
 # such a file does not load on a 16 KiB-page kernel (Asahi Linux on Apple Silicon). GitHub's arm
-# runners use 4 KiB pages, so these jobs cannot run the packages with 16 KiB pages themselves.
+# runners are expected to use 4 KiB pages (the jobs print it), so these jobs do not run the packages
+# with 16 KiB pages themselves.
 name: manager
 
 on:
