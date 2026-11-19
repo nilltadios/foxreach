@@ -4,6 +4,54 @@ Open items, newest first. Remove an item when it is done.
 
 ## Next
 
+0. **Problems from the 2026-11-18 session (YouTube Music, Outlook): what is left.** Fixed the same
+   day (commits b333266..2ce2cb9): `javascript` with a leading function declaration, ref clicks
+   (settle after scrolling, where the press landed, right-click handled or not, stale refs found
+   again), painting (`status` with `tabId`, `wait_for` timeouts), connection history in `status`,
+   `browser_open`, agent tabs (`tabs_close` `mine`, hint at five), `type_text` `delay_ms`. All of
+   it needs a release to reach the add-on in a profile (the signed build: Mozilla signs again);
+   until then the bridge from a checkout talks to the installed 0.3.4, which ignores `tabId` on
+   `status` and `delay_ms`, refuses `tabs_close` `mine`, and records every quit as `closed`.
+   Version is still 0.3.4: bump it before releasing (0.3.4 is waiting for AMO review, item 3).
+   Still open:
+   - **Typing a secret from a file** (not built). Proposal: `type_text` takes `text_file` instead
+     of `text`; the MCP server reads it (so the secret never enters the agent's context, the
+     activity log or a recording label), types it with `delay_ms`, replies only with the count,
+     and deletes the file afterwards. Which files: deleting is only safe for one-use handoff
+     files, and typing a file into a page is the same leak as uploading it, so only from a
+     handoff folder: foxreach's own `$XDG_RUNTIME_DIR/foxreach/secrets/` (0700), and T3 Code's
+     `~/.t3/userdata/secrets/files/`, which `file_upload`'s hidden-file rule refuses today. The
+     activity log stores tool arguments (`logActivity` in `extension/background.js`): mark the
+     call so the text is never stored. Needs the user's decision on the folders. Related: GitHub
+     issue #33377 (repository not recorded in the request; check which).
+   - **Outlook right-click with no menu: cause not confirmed.** The transcript shows the clicks hit
+     the row itself (r224/r324 were the rows; `scrollIntoView` centres any row at the same point,
+     so the repeated (444, 494) was right). The first right-click opened the menu; later ones,
+     with a menu or submenu possibly still open and the display off, did not. The replies now
+     say whether the page took the right-click and whether the press landed on the element: try
+     it on Outlook again (the user's session, with the user's OK) to see which.
+   - **Settling after a scroll is a measurement, not a guarantee**: the box is measured every
+     60 ms until it holds still, but in a background tab the page redraws about once a second, so
+     a virtualized list can still move the row after that. The press check then warns; a retry
+     after a miss would risk acting twice and is not done.
+   - **Display off: only reasoned, not seen.** With no frames at all, `status` and `wait_for` say
+     the browser is not painting. Headless tests cover the background-tab case (about 1 frame/s,
+     `document.hidden`); whether a DPMS-off display gives 0 frames and `hidden` false in
+     LibreWolf on KDE Wayland is not measured (it needs the user's display turned off). Check it
+     the next time the screens are off anyway: `status` with a `tabId` of a tab in front.
+   - **Other add-ons' toolbar popups** (Proton Pass's own panel) are not part of a tab: no
+     screenshot, click or key reaches them (`spikes/other-addon-overlay/FINDINGS.md`). Their
+     in-page prompts are reachable by point and keys, not by `read_page`/`find`. A window-level
+     capture would need privileged code that draws browser windows and panels (for example
+     `drawSnapshot` on the panel's browsing context); input there is input into another add-on's
+     UI outside any page, which the approval rules do not cover. Decide whether to offer it.
+   - Connection history lives in `$XDG_RUNTIME_DIR/foxreach/history.jsonl`, so it is gone after a
+     reboot or logout; SIGTERM to the browser (logout, `kill`) is recorded as `lost`, since
+     Firefox does not treat it as a quit.
+   - `browser_open` runs without the browser's approval prompt (the browser is not running to ask
+     in); it can only start profiles in the record, with their recorded browser. Say if it should
+     ask, for example through MCP elicitation.
+
 0. **Manager: add-on update issues seen 2026-11-14** (release build of `manager/` from main, Browsers
    tab; reported by the user with screenshots):
    - **Firefox Flatpak is not offered an update.** Profile `default-release` shows `0.3.2` (no "Full
