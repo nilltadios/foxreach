@@ -67,4 +67,72 @@ try:
 finally:
     browser.stop()
     browser.cleanup()
+
+
+# A real install from the link, as the foxreach app and the README's link do it. The browser then
+# leaves a tab that never loaded anything: its address is about:blank, and only its label (the
+# add-on API's title) and the address bar still show the .xpi address. The release site is
+# stood in for by a local proxy that answers every request with the add-on.
+import http.server  # noqa: E402
+import threading  # noqa: E402
+
+XPI = (ROOT / "dist/foxreach.xpi").read_bytes()
+RELEASE_LINK = "http://nilltadios.github.io/foxreach/foxreach-0.4.0-signed.xpi"
+
+
+class Release(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *_):
+        pass
+
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "application/x-xpinstall")
+        self.send_header("Content-Length", str(len(XPI)))
+        self.end_headers()
+        self.wfile.write(XPI)
+
+
+proxy = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Release)
+threading.Thread(target=proxy.serve_forever, daemon=True).start()
+browser = Browser(ROOT / "dist/foxreach.xpi")
+try:
+    with open(browser.profile / "user.js", "a") as prefs:
+        prefs.write(
+            'user_pref("network.proxy.type", 1);\n'
+            'user_pref("network.proxy.http", "127.0.0.1");\n'
+            f'user_pref("network.proxy.http_port", {proxy.server_address[1]});\n'
+            'user_pref("network.proxy.no_proxies_on", "");\n'
+            'user_pref("dom.security.https_only_mode", false);\n'
+            'user_pref("dom.security.https_first", false);\n'
+        )
+    browser.start(marionette=True)
+    m = Marionette()
+    m.command("WebDriver:NewSession", {})
+    m.command("Marionette:SetContext", {"value": "chrome"})
+    run = lambda script: m.command("WebDriver:ExecuteScript", {"script": script, "args": []})["value"]  # noqa: E731
+    # Opened as from outside the browser (the app runs `firefox <link>`): a trusted new tab.
+    run(f"openTrustedLinkIn({RELEASE_LINK!r}, 'tab'); return 1;")
+    added = False
+    for _ in range(60):
+        added = run('const n = document.getElementById("addon-webext-permissions-notification");'
+                    "if (!n || n.hidden || !n.button) return false; n.button.click(); return true;")
+        if added:
+            break
+        time.sleep(0.25)
+    check("from the link, the browser asks to add foxreach, and Add is pressed", added)
+    tab_state = lambda: run("return gBrowser.tabs.map((t) => [t.linkedBrowser.currentURI.spec, t.label])")  # noqa: E731
+    left = tab_state()
+    tabs = left
+    for _ in range(60):
+        tabs = tab_state()
+        if any(u.endswith("/welcome/welcome.html") for u, _ in tabs):
+            break
+        time.sleep(0.25)
+    check("the tab the install left behind became the welcome page",
+          any(u.startswith("moz-extension://") and u.endswith("/welcome/welcome.html") for u, _ in tabs),
+          {"just after Add": left, "after 15 s": tabs})
+finally:
+    browser.stop()
+    browser.cleanup()
+    proxy.shutdown()
 sys.exit(1 if fails else 0)

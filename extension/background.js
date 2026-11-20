@@ -1514,7 +1514,10 @@ function watchQuit() {
 
 // Installed or updated from the release link, the browser leaves the tab that showed the .xpi
 // behind, blank. Turn that tab into a short page saying foxreach is ready (welcome/welcome.html).
-const RELEASE_FILES = ["*://nilltadios.github.io/foxreach/*.xpi", "*://github.com/nilltadios/foxreach/releases/*"];
+// That tab never loaded anything: its address is about:blank, and only its label (the API's title)
+// still shows the link, without the scheme. A release page that did load is found by its address.
+const RELEASE_ADDRESS = /^(https?:\/\/)?(nilltadios\.github\.io\/foxreach\/[^?#]*\.xpi|github\.com\/nilltadios\/foxreach\/releases\/)/;
+const releaseTab = (t) => RELEASE_ADDRESS.test(t.url ?? "") || (t.url === "about:blank" && RELEASE_ADDRESS.test(t.title ?? ""));
 // Decided by version rather than by the install event alone: allowing the add-on in private
 // windows (the box in the install prompt; Tor Browser needs it) restarts it at once, and an event
 // or a timer from before the restart is lost. A version not welcomed yet is welcomed once.
@@ -1534,7 +1537,7 @@ async function welcomeTab() {
   // The tab may not be listed at once: look for a few seconds, then stop either way.
   try {
     for (let i = 0; i < 10; i++) {
-      const tabs = await browser.tabs.query({ url: RELEASE_FILES }).catch(() => []);
+      const tabs = (await browser.tabs.query({}).catch(() => [])).filter(releaseTab);
       if (tabs.length) {
         for (const t of tabs) browser.tabs.update(t.id, { url }).catch((e) => console.warn("foxreach: welcome page", e));
         return;
