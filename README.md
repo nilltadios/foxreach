@@ -89,6 +89,11 @@ The first time an agent calls, the browser asks whether to allow it.
 `foxreach uninstall` removes what `foxreach install` wrote, including the agents' entries
 (`--keep-agents` keeps those).
 
+On Linux, the [manager app](manager/README.md) does the same from a window: its AppImage
+(`foxreach-manager-<version>-<arch>.AppImage`) and Flatpak bundle are in the latest release too. It
+has its own version and does not carry the program: it downloads `foxreach` from the latest release
+and checks it against `SHA256SUMS`, as `install.sh` does.
+
 ## Windows
 
 The signed add-on with the `foxreach` program, as above. What has run: Windows 11 (x64), LibreWolf
@@ -317,10 +322,31 @@ here and not signed has no `update_url`.
 
 ## Releasing
 
-1. Raise `version` in `extension/manifest.json` (the bridge reads it from there too) and, to the same
-   number, in `manager/Cargo.toml`, the `foxreach-manager` entry in `manager/Cargo.lock` and a new
-   `<release>` in `manager/resources/dev.nilltadios.FoxreachManager.metainfo.xml`; commit. The manager
-   follows foxreach's version: `release.py` and the release workflow refuse when the two differ.
+There are two kinds of release, each from its own tag:
+
+- `v<version>`: foxreach itself, the add-on and the program for each platform (they speak one
+  protocol, so they share a version), with `install.sh`, `install.ps1`, `SHA256SUMS` and
+  `BUILDINFO.txt`. Steps below; [release.yml](.github/workflows/release.yml).
+- `manager-v<version>`: the [manager app](manager/README.md), its AppImage and Flatpak bundle for
+  x86_64 and aarch64, with its own version (`manager/Cargo.toml`). The app does not carry the
+  program; it downloads it from the latest release. [manager-release.yml](.github/workflows/manager-release.yml).
+
+Every release is complete, whichever kind it is: installed programs and `install.sh` download from
+the release GitHub marks latest, installed manager AppImages look there for their `.zsync`, and the
+Pages site takes the Flatpak bundles from it too. So each release also carries the other set of
+files, copied byte for byte from the release that was latest before it
+([scripts/carry_release.sh](scripts/carry_release.sh); a copy keeps its build attestation). The
+workflows make the release as a draft, upload its own files, carry the others,
+check it with [scripts/check_release_complete.sh](scripts/check_release_complete.sh), and only then
+publish it as latest. Releases run one at a time (one `release` concurrency group). A rerun after a
+failure deletes the leftover draft and starts again; a published release is never changed.
+Do not add a file to a published release by hand: one that is not in `SHA256SUMS` and has no
+attestation makes the next release refuse to carry that release's files, until it is removed
+(v0.4.0 holds such a file, a signed add-on uploaded by hand; signed builds go to `docs/` instead).
+
+foxreach (`v<version>`):
+
+1. Raise `version` in `extension/manifest.json` (the bridge reads it from there too); commit.
 2. For release Firefox, have Mozilla sign that version: `uv run --python 3.15 scripts/sign.py`
    (`--dry-run` checks without sending). It needs an API key from addons.mozilla.org and sends the
    add-on's files there; the signed file lands in `dist/signed/`. `--channel listed` submits it for
@@ -329,7 +355,8 @@ here and not signed has no `update_url`.
    builds the release's files into `dist/release/`, and prints the commit, tag and push commands.
    It changes no remote.
 4. Pushing the tag starts [the release workflow](.github/workflows/release.yml), which builds the
-   same files from the tag on GitHub's machines, attests them, and publishes the release.
+   same files from the tag on GitHub's machines, attests them, adds the manager files of the latest
+   release, and publishes the release as latest.
 5. Once per repository, serve `docs/` from `main` with GitHub Pages.
 6. After the push, `uv run --python 3.15 scripts/release.py --verify` checks that Pages serves the new
    entries and that the files' hashes match, and `scripts/verify_release.py` checks the release
@@ -347,6 +374,22 @@ background check installs a newer version from an `updates.json` of the same lay
 warns that the versions differ. [test/release.py](test/release.py) runs steps 3, 6 and 7 in a
 throwaway copy of the repository, publishing nothing.
 
+The manager (`manager-v<version>`):
+
+1. Raise `version` in `manager/Cargo.toml` (and the `foxreach-manager` entry in `manager/Cargo.lock`),
+   add a `<release>` for it to `manager/resources/dev.nilltadios.FoxreachManager.metainfo.xml`,
+   commit and push. The workflow refuses a tag that is not `manager-v` plus that version, or a
+   version the metainfo does not list.
+2. Rehearse with `git tag manager-v<version>-rc1 && git push origin manager-v<version>-rc1`. The
+   workflow does everything a release does (tests, both packages for both architectures, the draft,
+   the carried foxreach files, the check), but publishes a prerelease that is never marked latest
+   and does not republish Pages, so no client sees it. Check it with
+   `scripts/check_release_complete.sh manager-v<version>-rc1`; it can be deleted afterwards
+   (`gh release delete manager-v<version>-rc1 --cleanup-tag`).
+3. `git tag manager-v<version> && git push origin manager-v<version>`: the same, published as
+   latest; then `pages.yml` runs again, rebuilding the Flatpak repository from the latest
+   release's bundles.
+
 ## Checking a release
 
 Builds are reproducible: the same commit gives the same add-on, byte for byte, and with the Bun
@@ -362,6 +405,16 @@ and `BUILDINFO.txt` with the commit and the Bun version. To check who built a fi
 
 ```bash
 gh attestation verify foxreach-linux-x64 --repo nilltadios/foxreach
+```
+
+`verify_release.py` checks foxreach's files from their own `v<version>` release. A release carries
+the other set unchanged, so a file's attestation still names the workflow run that built it (a
+manager file carried into a `v` release names a `manager-v` run, and the reverse). That a release
+holds both sets, with matching hashes and one manager AppImage, `.zsync` and Flatpak bundle per
+architecture:
+
+```bash
+scripts/check_release_complete.sh v0.4.1     # or manager-v<version>; needs gh
 ```
 
 Releases up to 0.2.0 predate this and cannot be rebuilt byte for byte. Tags are not signed.

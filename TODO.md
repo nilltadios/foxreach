@@ -75,9 +75,9 @@ Open items, newest first. Remove an item when it is done.
    CI" in `manager/README.md`). Done: CI run 44439124322 on main f44430b passed all five jobs; the
    aarch64 AppImage and Flatpak from it, and the v0.3.4 `foxreach-linux-arm64`, ran on Fedora Asahi
    Remix with 16 KiB pages (2026-11-18, details in `manager/README.md`); the x86_64 packages passed
-   the same run but were not launched by hand. The manager takes foxreach's version (0.4.0, so the
-   files are `foxreach-manager-0.4.0-ARCH.*`); `release.py` and the release workflow refuse when the
-   two differ. Left:
+   the same run but were not launched by hand. Since 2026-11-20 the manager has its own version and
+   release (tag `manager-v<version>`, `manager-release.yml`), its packages no longer carry the
+   program, and every release carries both sets of files (README.md, "Releasing"). Left:
    - AppImage updates: done for the release after 0.4.0 (update information and a `.zsync` per
      architecture, `manager/README.md`, "AppImage updates"); a 0.4.0 AppImage has none and has to
      be replaced by hand once. Not yet seen working against a real release.

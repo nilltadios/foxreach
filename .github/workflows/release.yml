@@ -1,7 +1,24 @@
-# Builds a release's files from the tag and publishes them, so that what people download was built
-# from the source they can read, by a machine that is not the maintainer's. The files are attested:
+# Builds foxreach's release files (the program for each platform, the add-on, the installers) from
+# a tag v<version> and publishes them, so that what people download was built from the source they
+# can read, by a machine that is not the maintainer's. The files are attested:
 # `gh attestation verify <file> --repo nilltadios/foxreach` shows this workflow built them.
 # scripts/verify_release.py rebuilds them anywhere and compares.
+#
+# Every release is complete: clients look only in the release marked latest (install.sh and
+# bridge/update.mjs for the program, the manager AppImage's update information for its .zsync,
+# pages.yml for the Flatpak bundles), so this release also carries the manager's files, copied byte
+# for byte from the release that is latest before it (scripts/carry_release.sh; they keep their
+# attestation from manager-release.yml or the release that built them). The manager is built and
+# versioned on its own, by manager-release.yml on a tag manager-v<version>.
+#
+# Order: build and attest; create the release as a draft; upload; carry the manager files from the
+# release that is latest now; scripts/check_release_complete.sh; only then publish it as latest and
+# start pages.yml. Until the last step the release is a draft, which no client sees, and the
+# previous release stays latest.
+#
+# Rerun: a draft left by a failed run is deleted and made again (the tag stays), so it never keeps
+# files carried from a release that is no longer latest. A release that is already published is not
+# touched: the run stops with an error.
 name: release
 
 on:
@@ -9,67 +26,82 @@ on:
     tags: ["v*"]
 
 permissions:
-  contents: write
-  id-token: write
-  attestations: write
+  contents: read
 
 jobs:
   release:
     runs-on: ubuntu-26.04
+    permissions:
+      contents: write       # the release and its files
+      id-token: write       # attest-build-provenance
+      attestations: write   # attest-build-provenance; includes the read gh attestation verify needs
+    # Shared with manager-release.yml: between reading which release is latest and publishing this
+    # one as latest, no other release may do the same, or one of them would carry stale files.
+    # GitHub keeps one run waiting per group: a third release pushed meanwhile cancels the waiting
+    # one, which then has to be rerun.
+    concurrency:
+      group: release
+      cancel-in-progress: false
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ github.ref_name }}
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version-file: .bun-version
       - uses: astral-sh/setup-uv@v6
-      - name: The tag is the add-on's version, and the manager's
-        run: |
-          test "v$(jq -r .version extension/manifest.json)" = "$GITHUB_REF_NAME"
-          test "v$(sed -n 's/^version = "\(.*\)"$/\1/p' manager/Cargo.toml | head -1)" = "$GITHUB_REF_NAME"
+      - name: The tag is the add-on's version
+        run: test "v$(jq -r .version extension/manifest.json)" = "$TAG"
       - name: Build the release's files
         run: uv run --python 3.15 scripts/release.py --files-only dist/release
       - uses: actions/attest-build-provenance@v2
         with:
           subject-path: dist/release/*
-      - name: Publish
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: The release that is latest now (its manager files are carried)
+        id: latest
         run: |
-          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 ||
-            gh release create "$GITHUB_REF_NAME" --verify-tag --title "foxreach ${GITHUB_REF_NAME#v}" --notes-file dist/release/BUILDINFO.txt
-          gh release upload "$GITHUB_REF_NAME" dist/release/* --clobber
-
-  # The manager's AppImage and Flatpak bundle for x86_64 and aarch64 (manager.yml), attached to the
-  # same release once it exists, with each AppImage's .zsync: the AppImages' update information
-  # (manager/packaging/update-info.sh) looks for it in the latest release. A failure here leaves the
-  # release above as it is, and AppImage updaters then find no .zsync in it until this is rerun.
-  manager:
-    uses: ./.github/workflows/manager.yml
-    permissions:
-      contents: read
-
-  manager-files:
-    needs: [release, manager]
-    runs-on: ubuntu-26.04
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: manager-*-*
-          merge-multiple: true
-          path: dist/manager
-      - uses: actions/attest-build-provenance@v2
-        with:
-          subject-path: dist/manager/*
-      - name: Attach to the release
+          latest=$(gh api "repos/$GH_REPO/releases/latest" --jq .tag_name) \
+            || { echo "::error::No release is marked latest: there are no manager files to carry."; exit 1; }
+          echo "Latest now: $latest"
+          echo "tag=$latest" >> "$GITHUB_OUTPUT"
+      - name: A new draft with this release's files
         env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh release upload "$GITHUB_REF_NAME" dist/manager/* --clobber --repo "$GITHUB_REPOSITORY"
+          LATEST: ${{ steps.latest.outputs.tag }}
+        run: |
+          # gh says "release not found" when there is none; any other failure stops the run, so a
+          # failed lookup cannot lead to a second draft beside an old one.
+          if ! draft=$(gh release view "$TAG" --json isDraft --jq .isDraft 2>&1); then
+            [[ $draft == *"release not found"* ]] || { echo "::error::Cannot read release $TAG: $draft"; exit 1; }
+            draft=none
+          fi
+          if [[ $draft == false ]]; then
+            echo "::error::$TAG is already published; this run changes nothing in it."
+            exit 1
+          fi
+          # A draft from an earlier run may carry another release's files: start again.
+          if [[ $draft == true ]]; then gh release delete "$TAG" --yes; fi
+          { cat dist/release/BUILDINFO.txt
+            echo
+            echo "The foxreach manager files (foxreach-manager-*) are carried unchanged from $LATEST."
+          } > "$RUNNER_TEMP/notes.txt"
+          gh release create "$TAG" --verify-tag --draft --title "foxreach ${TAG#v}" --notes-file "$RUNNER_TEMP/notes.txt"
+          gh release upload "$TAG" dist/release/*
+      - name: Carry the manager files from the latest release
+        env:
+          LATEST: ${{ steps.latest.outputs.tag }}
+        run: CARRY_KEEP=dist/release scripts/carry_release.sh manager "$LATEST" "$TAG"
+      - name: The draft is complete
+        run: scripts/check_release_complete.sh "$TAG" dist/release
+      - name: Publish as latest
+        run: gh release edit "$TAG" --draft=false --latest
 
   # Republish the Pages site, whose Flatpak repository takes the newest release's bundles. Started
   # on main, the only branch the github-pages environment deploys from; a release made with the
   # workflow's token would not start it through a release event.
   pages:
-    needs: manager-files
+    needs: release
     runs-on: ubuntu-26.04
     permissions:
       actions: write

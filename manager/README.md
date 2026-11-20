@@ -100,23 +100,26 @@ icon); the package jobs wait for it, so a failing test builds and attaches nothi
 | `foxreach-manager-VERSION-x86_64.flatpak`, `-aarch64.flatpak` | `flatpak/build.sh` in the `ghcr.io/flathub-infra/flatpak-github-actions:freedesktop-26.08` container, with crates vendored by an earlier job (`VENDOR=0 BUILD_SCOPE=0`) | `flatpak/smoke.sh`: `flatpak install --user`, `flatpak run ... --version`, no foxreach program packed |
 
 Each package comes with a `.sha256`; they are the run's artifacts `manager-appimage-ARCH` and
-`manager-flatpak-ARCH`. On a `v*` tag, `release.yml` runs this workflow too and attaches the files
-to the release with build attestations (`gh attestation verify FILE --repo nilltadios/foxreach`),
-after the release's own files; a failure there leaves the rest of the release as it was. The files
-carry the version from `Cargo.toml`, which is foxreach's own (from 0.4.0): `scripts/release.py` and
-the release workflow refuse when `Cargo.toml` and `extension/manifest.json` differ. Run
-(44439124322, main f44430b, 2026-11-18) passed all five jobs.
+`manager-flatpak-ARCH`. On a `manager-v<version>` tag, `.github/workflows/manager-release.yml` runs
+this workflow and publishes the files in a release of their own, with build attestations
+(`gh attestation verify FILE --repo nilltadios/foxreach`). The files carry the version from
+`Cargo.toml`, which is the manager's own, apart from foxreach's; the tag must be `manager-v` plus
+that version (or that plus `-rc<N>` for a rehearsal, a prerelease never marked latest), and the
+metainfo must list it. A foxreach release (`v*`, `release.yml`) builds no manager: it carries the
+files of the latest release unchanged, so that whichever release is latest has both (README.md,
+"Releasing"). Run (44439124322, main f44430b, 2026-11-18) passed all five jobs.
 
 ### Flatpak repository
 
 `.github/workflows/pages.yml` publishes the GitHub Pages site: `docs/` unchanged (the add-on's
 update lists and `.xpi` files) plus a signed OSTree repository (`repo/`, branch `stable`, both
 architectures), `dev.nilltadios.FoxreachManager.flatpakref` and `foxreach.flatpakrepo`, laid out by
-`flatpak/build-site.sh`. Nothing of it is committed: each run takes the bundles of the newest
-release that has both, checks their `.sha256` and build attestation, and signs with the
+`flatpak/build-site.sh`. Nothing of it is committed: each run takes the bundles of the release
+marked latest (every release carries both; else of the newest release that has both), checks their
+`.sha256` and build attestation, and signs with the
 `GPG_PRIVATE_KEY` secret, which must be the key in `flatpak/signing-key.asc` (refused otherwise).
-It runs on a push to main that changes `docs/`, after `release.yml` attaches the manager files, and
-by hand. Unchanged bundles give the same commits (each bundle's commit is recommitted to `stable`
+It runs on a push to main that changes `docs/`, after `release.yml` or `manager-release.yml`
+publishes a release (not after a rehearsal), and by hand. Unchanged bundles give the same commits (each bundle's commit is recommitted to `stable`
 with its own timestamp; the appstream commits take the newest app commit's time), so a redeploy is
 not an update for clients. The bundles themselves stay on branch `master`, as before.
 
@@ -140,10 +143,12 @@ The `.zsync` is attested with the other files but has no `.sha256` of its own: a
 `….AppImage.zsync.sha256` would also start with the pattern. It records the AppImage's SHA-1,
 which updaters check after downloading.
 
-- "latest" is the newest release that is not a prerelease. It also carries the add-on and the
-  foxreach program; the pattern matches one file per architecture there (checked against v0.4.0's
-  asset names). The release exists before the `manager-files` job attaches the `.zsync`, so for
-  those minutes, or for good if that job fails, updaters find no update until it is rerun.
+- "latest" is the release GitHub marks latest, never a prerelease. Whether it is a `manager-v` or
+  a `v` release, it carries the manager files and foxreach's (the set it did not build is copied
+  from the release that was latest before); the pattern matches one file per architecture there,
+  which `scripts/check_release_complete.sh` checks before the release is published. Both release
+  workflows upload to a draft and publish only when it is complete, so the latest release always
+  has its `.zsync`.
 - **The 0.4.0 AppImage has no update information** (its `.upd_info` is empty) and the 0.4.0
   release has no `.zsync`: replace that AppImage by hand once with a newer one; updates work from
   then on.

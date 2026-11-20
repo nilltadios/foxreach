@@ -3,8 +3,9 @@
 # files, their .sha256 and each AppImage's .zsync (what AppImage updaters download) as this run's
 # artifacts (manager-appimage-ARCH, manager-flatpak-ARCH). The packages carry no foxreach program:
 # the app downloads the release when asked, so nothing outside manager/ is built here.
-# release.yml calls it on a tag and attaches the files to the release. The packages are built only
-# when the manager's unit tests pass (the `test` job), so a failing test attaches nothing.
+# manager-release.yml calls it on a manager-v<version> tag and publishes the files in a release.
+# The packages are built only when the manager's unit tests pass (the `test` job), so a failing
+# test publishes nothing.
 #
 # The aarch64 jobs also fail if any shipped ELF file has a LOAD segment aligned below 16 KiB:
 # such a file does not load on a 16 KiB-page kernel (Asahi Linux on Apple Silicon). GitHub's arm
@@ -16,7 +17,7 @@ on:
   workflow_dispatch:
   workflow_call:
   push:
-    # Branches only: a tag push builds these through release.yml.
+    # Branches only: a manager-v tag push builds these through manager-release.yml.
     branches: ["**"]
     paths:
       - manager/**

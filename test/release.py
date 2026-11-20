@@ -19,7 +19,6 @@ if os.name == "nt":
 import json
 import os
 import pathlib
-import re
 import shutil
 import subprocess
 import sys
@@ -59,8 +58,8 @@ def main():
         manifest = repo / "extension/manifest.json"
         ver = "9.9.9"  # no such release exists, so nothing here can be mistaken for one
         manifest.write_text(manifest.read_text().replace(f'"version": "{json.loads(manifest.read_text())["version"]}"', f'"version": "{ver}"'))
-        cargo = repo / "manager/Cargo.toml"
-        cargo.write_text(re.sub(r'(?m)^version = ".*"$', f'version = "{ver}"', cargo.read_text(), count=1))
+        # manager/Cargo.toml keeps its own version: the manager is released apart, so a release of
+        # foxreach 9.9.9 below also shows that a different manager version does not stop it.
         git = lambda *args: subprocess.run(["git", "-c", "user.name=test", "-c", "user.email=test@example.invalid", *args],  # noqa: E731
                                            cwd=repo, check=True, capture_output=True, text=True).stdout
         git("add", "-A")
@@ -71,9 +70,6 @@ def main():
         dirty.write_text("x")
         check("a release is refused while the work tree has changes", "work tree has changes" in run(*py, "scripts/release.py", cwd=repo).stderr)
         dirty.unlink()
-        cargo.write_text(cargo.read_text().replace(f'version = "{ver}"', 'version = "0.0.1"', 1))
-        check("a release is refused while the manager's version differs", "give both the same version" in run(*py, "scripts/release.py", cwd=repo).stderr)
-        git("checkout", "manager/Cargo.toml")
         # A signed build, as Mozilla returns it: the same files and a META-INF folder.
         made = run(*py, "python", "-c", "import sys; sys.path.insert(0, 'scripts'); import sign; sign.SIGNED.mkdir(parents=True, exist_ok=True); "
                    "sign.build_store(sign.signed_path(), 'unlisted')", cwd=repo)

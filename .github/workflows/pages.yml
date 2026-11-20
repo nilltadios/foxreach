@@ -2,8 +2,9 @@
 # updates-signed.json and the .xpi files installed add-ons poll) plus the manager's signed Flatpak
 # repository, .flatpakref and .flatpakrepo, laid out by manager/flatpak/build-site.sh.
 #
-# Stateless: the Flatpak content is the x86_64 and aarch64 bundles of the newest release that has
-# both, checked against their .sha256 and build attestation before import. Unchanged bundles give
+# Stateless: the Flatpak content is the x86_64 and aarch64 bundles of the release marked latest
+# (every release carries them: release.yml, manager-release.yml), else of the newest release that
+# has both, checked against their .sha256 and build attestation before import. Unchanged bundles give
 # the same commits, so a redeploy is no update for clients.
 #
 # Does nothing (one notice) until Pages is set to deploy from GitHub Actions: while Pages builds
@@ -15,8 +16,9 @@
 # That deployment has no Flatpak repository: installed copies report an error on update until the
 # next good run.
 #
-# The github-pages environment deploys from main only, so release.yml starts this workflow on main
-# (workflow_dispatch) after attaching the manager files, rather than calling it from the tag.
+# The github-pages environment deploys from main only, so release.yml and manager-release.yml start
+# this workflow on main (workflow_dispatch) after publishing a release, rather than calling it from
+# the tag.
 name: pages
 
 on:
@@ -79,13 +81,17 @@ jobs:
           mkdir -m700 "$GNUPGHOME"
           echo "GNUPGHOME=$GNUPGHOME" >> "$GITHUB_ENV"
           printf '%s\n' "$GPG_PRIVATE_KEY" | gpg --batch --import
-      - name: The newest release with both bundles, checked
+      - name: The latest release's bundles (else the newest release with both), checked
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
           tag=
-          for t in $(gh release list --exclude-pre-releases --exclude-drafts --limit 30 --json tagName --jq '.[].tagName'); do
+          # The release marked latest first. The list is ordered by the date of each release's
+          # tagged commit, not by when it was published, so its first entry can be a release
+          # published earlier, which carries the manager bundles of that time.
+          latest=$(gh api "repos/$GH_REPO/releases/latest" --jq .tag_name 2>/dev/null || true)
+          for t in $latest $(gh release list --exclude-pre-releases --exclude-drafts --limit 30 --json tagName --jq '.[].tagName'); do
             n=$(gh release view "$t" --json assets --jq '[.assets[].name | select(test("^foxreach-manager-.*-(x86_64|aarch64)\\.flatpak$"))] | length')
             if [[ $n == 2 ]]; then tag=$t; break; fi
           done

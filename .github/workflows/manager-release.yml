@@ -1,0 +1,165 @@
+# Releases the foxreach manager (manager/) on a tag manager-v<version>, <version> being the one in
+# manager/Cargo.toml: builds and checks its AppImage and Flatpak bundle for x86_64 and aarch64
+# (manager.yml), attests them and publishes them in a release of their own, marked latest.
+#
+# Every release is complete: clients look only in the release marked latest (install.sh and
+# bridge/update.mjs for the program, the manager AppImage's update information for its .zsync,
+# pages.yml for the Flatpak bundles), so this release also carries foxreach's files (programs,
+# add-on, installers, SHA256SUMS, BUILDINFO.txt), copied byte for byte from the release that is
+# latest before it (scripts/carry_release.sh; they keep their attestation from release.yml).
+#
+# Order: tag check; build (manager.yml: tests, both packages, both architectures); attest; create
+# the release as a draft; upload; carry foxreach's files from the release that is latest now;
+# scripts/check_release_complete.sh; only then publish it as latest and start pages.yml.
+#
+# Rehearsal: a tag manager-v<version>-rc<N> does all of this, but publishes a prerelease that is
+# not latest and does not start pages.yml, so no client sees it (/releases/latest and pages.yml
+# both skip prereleases). Only the exact tag manager-v<version> can mark latest.
+#
+# Rerun: a draft left by a failed run is deleted and made again (the tag stays), so it never keeps
+# files carried from a release that is no longer latest. A release that is already published is not
+# touched: the run stops with an error.
+name: manager-release
+
+on:
+  push:
+    tags: ["manager-v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-26.04
+    outputs:
+      version: ${{ steps.tag.outputs.version }}
+      final: ${{ steps.tag.outputs.final }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: The tag is manager-v<Cargo.toml version>[-rc<N>], and the metainfo lists that version
+        id: tag
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          # As manager/packaging/build-appimage.sh reads it: the version in [package].
+          version=$(awk -F'"' '/^\[/{p=($0=="[package]")} p && /^version *=/{print $2; exit}' manager/Cargo.toml)
+          [[ -n $version ]] || { echo "::error::Cannot read the version from manager/Cargo.toml"; exit 1; }
+          # String comparisons, not a regular expression: a dot in the version is a dot.
+          rc=${TAG#"manager-v$version-rc"}
+          if [[ $TAG == "manager-v$version" ]]; then
+            final=true
+          elif [[ $rc != "$TAG" && $rc =~ ^[0-9]+$ ]]; then
+            final=false
+          else
+            echo "::error::Tag $TAG is not manager-v$version or manager-v$version-rc<N> (manager/Cargo.toml says $version)."
+            exit 1
+          fi
+          metainfo=manager/resources/dev.nilltadios.FoxreachManager.metainfo.xml
+          awk -v v="$version" 'index($0, "<release version=\"" v "\"") {f = 1} END {exit !f}' "$metainfo" \
+            || { echo "::error::$metainfo has no <release version=\"$version\"> entry."; exit 1; }
+          echo "Manager $version, $([[ $final == true ]] && echo "release, marked latest" || echo "rehearsal, a prerelease")"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "final=$final" >> "$GITHUB_OUTPUT"
+
+  # Tests, then the AppImage (with its .zsync) and the Flatpak bundle for both architectures, each
+  # with its .sha256, as artifacts manager-appimage-ARCH and manager-flatpak-ARCH.
+  build:
+    needs: check
+    uses: ./.github/workflows/manager.yml
+    permissions:
+      contents: read
+
+  publish:
+    needs: [check, build]
+    runs-on: ubuntu-26.04
+    permissions:
+      contents: write       # the release and its files
+      id-token: write       # attest-build-provenance
+      attestations: write   # attest-build-provenance; includes the read gh attestation verify needs
+    # Shared with release.yml: between reading which release is latest and publishing this one, no
+    # other release may do the same, or one of them would carry stale files. Only this job holds it,
+    # not the build. GitHub keeps one run waiting per group: a third release pushed meanwhile
+    # cancels the waiting one, which then has to be rerun.
+    concurrency:
+      group: release
+      cancel-in-progress: false
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ github.ref_name }}
+      VERSION: ${{ needs.check.outputs.version }}
+      FINAL: ${{ needs.check.outputs.final }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: manager-*-*
+          merge-multiple: true
+          path: dist/manager
+      - name: The packages are this version's
+        run: |
+          ls -l dist/manager
+          for f in foxreach-manager-"$VERSION"-{x86_64,aarch64}.{AppImage,AppImage.zsync,AppImage.sha256,flatpak,flatpak.sha256}; do
+            test -f "dist/manager/$f" || { echo "::error::The build made no dist/manager/$f"; exit 1; }
+          done
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/manager/*
+      - name: The release that is latest now (its foxreach files are carried)
+        id: latest
+        run: |
+          latest=$(gh api "repos/$GH_REPO/releases/latest" --jq .tag_name) \
+            || { echo "::error::No release is marked latest: there are no foxreach files to carry."; exit 1; }
+          echo "Latest now: $latest"
+          echo "tag=$latest" >> "$GITHUB_OUTPUT"
+      - name: A new draft with the manager files
+        env:
+          LATEST: ${{ steps.latest.outputs.tag }}
+        run: |
+          # gh says "release not found" when there is none; any other failure stops the run, so a
+          # failed lookup cannot lead to a second draft beside an old one.
+          if ! draft=$(gh release view "$TAG" --json isDraft --jq .isDraft 2>&1); then
+            [[ $draft == *"release not found"* ]] || { echo "::error::Cannot read release $TAG: $draft"; exit 1; }
+            draft=none
+          fi
+          if [[ $draft == false ]]; then
+            echo "::error::$TAG is already published; this run changes nothing in it."
+            exit 1
+          fi
+          # A draft from an earlier run may carry another release's files: start again.
+          if [[ $draft == true ]]; then gh release delete "$TAG" --yes; fi
+          # A rehearsal is a prerelease from the start, so not even a stray edit can make it latest.
+          prerelease=()
+          [[ $FINAL == true ]] || prerelease=(--prerelease)
+          { echo "foxreach manager $VERSION (AppImage and Flatpak bundle for x86_64 and aarch64)."
+            echo
+            echo "The foxreach program, add-on and installers (every file not named foxreach-manager-*) are carried unchanged from $LATEST."
+          } > "$RUNNER_TEMP/notes.txt"
+          gh release create "$TAG" --verify-tag --draft "${prerelease[@]}" --title "foxreach manager ${TAG#manager-v}" --notes-file "$RUNNER_TEMP/notes.txt"
+          gh release upload "$TAG" dist/manager/*
+      - name: Carry foxreach's files from the latest release
+        env:
+          LATEST: ${{ steps.latest.outputs.tag }}
+        run: CARRY_KEEP=dist/manager scripts/carry_release.sh foxreach "$LATEST" "$TAG"
+      - name: The draft is complete
+        run: scripts/check_release_complete.sh "$TAG" dist/manager
+      - name: Publish (latest only for the exact tag manager-v<version>)
+        run: |
+          if [[ $FINAL == true ]]; then
+            gh release edit "$TAG" --draft=false --latest
+          else
+            gh release edit "$TAG" --draft=false --prerelease --latest=false
+          fi
+
+  # Republish the Pages site, whose Flatpak repository takes the newest release's bundles. Started
+  # on main, the only branch the github-pages environment deploys from. Not for a rehearsal.
+  pages:
+    needs: [check, publish]
+    if: needs.check.outputs.final == 'true'
+    runs-on: ubuntu-26.04
+    permissions:
+      actions: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run pages.yml --ref main --repo "$GITHUB_REPOSITORY"
