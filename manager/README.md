@@ -209,6 +209,11 @@ For testing against a throwaway home: `HOME=<folder> FOXREACH_AGENT_CLI=0`, and
 `FOXREACH_MANAGER_PROGRAM="bun /path/to/bridge/cli.mjs"` to run a checkout. The program's side
 is tested by `test/status_json.py`.
 
+`FOXREACH_MANAGER_CAPTURE=/path/shot.ppm foxreach-manager --demo` (with `FOXREACH_MANAGER_TAB=browsers|foxreach`
+for another tab) saves the window's own picture as a binary PPM about 2 s after its data is shown,
+then exits: a screenshot of a test window kept behind your other windows, which a screen capture
+cannot see.
+
 Install, when no foxreach reads the status, is the app's own download (`src/host.rs`
 `install_download`): `BUILDINFO.txt`, `SHA256SUMS` and `foxreach-linux-x64` or
 `foxreach-linux-arm64` from `FOXREACH_RELEASE_URL` (as for `install.sh` and `foxreach update`),

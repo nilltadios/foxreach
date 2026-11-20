@@ -5,7 +5,7 @@ Written by `manager/scripts/fetch_icons.py` from two pinned npm packages and fro
 - [Simple Icons](https://github.com/simple-icons/simple-icons) 16.37.0 (`https://registry.npmjs.org/simple-icons/-/simple-icons-16.37.0.tgz`, SHA-256 `cd9faf0e6faa8a8fdd15e9632ab4c86fcae4b986fe552b87673149847f2f671d`), CC0 1.0, filled with each brand's colour;
 - [LobeHub icons](https://github.com/lobehub/lobe-icons) 1.102.0 (`https://registry.npmjs.org/@lobehub/icons-static-svg/-/icons-static-svg-1.102.0.tgz`, SHA-256 `ad3f2ab605d59f3968b9ea57c9b2aab941ee3608da72fca57ac6e0ded301f5a2`), MIT.
 
-The logos are trademarks of their owners and are used here only to show which app is which. The app uses an icon installed on the system first.
+The logos are trademarks of their owners and are used here only to show which app is which. The app always shows these, never an icon installed on the system.
 
 | File | Brand | Shown for | Source | License |
 |---|---|---|---|---|

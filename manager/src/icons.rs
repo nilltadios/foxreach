@@ -1,12 +1,9 @@
 // SPDX-License-Identifier: MIT
-//! Icons for agents and browsers: the app's own icon installed on this system when there is one
-//! (full colour), else a bundled brand logo (src/bundled_icons.rs). Every agent, app and browser
-//! foxreach knows has a bundled logo (the tests below), except Pale Moon, whose branding licence
-//! forbids it; that and names foxreach does not know get a coloured initial.
-
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+//! Icons for agents and browsers: always the brand logo bundled with the app
+//! (src/bundled_icons.rs), never an icon installed on the system, so an item looks the same on
+//! every machine and desktop. Every agent, app and browser foxreach knows has a bundled logo (the
+//! tests below), except Pale Moon, whose branding licence forbids it; that and names foxreach
+//! does not know get a coloured initial.
 
 use cosmic::iced::{Alignment, Color, Length};
 use cosmic::prelude::*;
@@ -14,71 +11,62 @@ use cosmic::widget::{self, icon};
 
 use crate::bundled_icons;
 
-/// Where to look for an item's icon: names in the system's icon folders, then a bundled slug.
+/// An item's logo: its name in src/bundled_icons.rs, or none for a coloured initial.
 pub struct Look {
-    pub host: &'static [&'static str],
     pub bundled: Option<&'static str>,
 }
 
 /// Icons for agents, by foxreach's agent id (and for apps that share an agent's settings).
 pub fn agent(id: &str) -> Look {
-    let (host, bundled): (&'static [&'static str], Option<&'static str>) = match id {
+    let bundled = match id {
         // Claude Code and Codex have logos of their own, apart from their makers' apps' icons.
-        "claude-code" => (&["claude-code"], Some("claudecode-color")),
-        "claude-desktop" => (&["claude-desktop", "com.anthropic.Claude", "claude"], Some("claude")),
-        "codex" => (&["codex"], Some("codex-color")),
-        "antigravity" => (&["antigravity", "google-antigravity"], Some("antigravity-color")),
-        "opencode" => (&["opencode", "ai.opencode.desktop"], Some("opencode")),
-        "cursor" => (&["cursor", "co.anysphere.cursor"], Some("cursor")),
-        "pi" => (&[], Some("pi")),
-        "zcode" => (&["zcode"], Some("zai")),
-        "openclaw" => (&["openclaw"], Some("openclaw-color")),
-        "hermes" => (&["hermes", "hermes-agent"], Some("hermesagent")),
-        "copilot" => (&["github-copilot", "copilot"], Some("githubcopilot")),
-        "qwen" => (&["qwen-code", "qwen"], Some("qwen")),
-        "kimi" => (&["kimi-code", "kimi"], Some("kimi")),
-        "mimo" => (&["mimocode", "mimo"], Some("xiaomimimo")),
-        "minimax" => (&["minimax", "mcode"], Some("minimax")),
-        "vibe" => (&["mistral-vibe", "vibe"], Some("mistralai")),
-        "deepseek" => (&["deepseek"], Some("deepseek")),
-        // The logo the user picked, always (no system icon lookup).
-        "grok" => (&[], Some("grok")),
-        "muse" => (&["muse", "muse-code", "ai.meta.muse"], Some("muse-color")),
-        "t3code" => (&["com.t3tools.T3Code", "com.t3tools.t3code", "t3code"], Some("t3code")),
-        "chatgpt" => (&["chatgpt", "codex-desktop", "com.openai.Codex"], Some("openai")),
-        _ => (&[], None),
+        "claude-code" => Some("claudecode-color"),
+        "claude-desktop" => Some("claude"),
+        "codex" => Some("codex-color"),
+        "antigravity" => Some("antigravity-color"),
+        "opencode" => Some("opencode"),
+        "cursor" => Some("cursor"),
+        "pi" => Some("pi"),
+        "zcode" => Some("zai"),
+        "openclaw" => Some("openclaw-color"),
+        "hermes" => Some("hermesagent"),
+        "copilot" => Some("githubcopilot"),
+        "qwen" => Some("qwen"),
+        "kimi" => Some("kimi"),
+        "mimo" => Some("xiaomimimo"),
+        "minimax" => Some("minimax"),
+        "vibe" => Some("mistralai"),
+        "deepseek" => Some("deepseek"),
+        "grok" => Some("grok"),
+        "muse" => Some("muse-color"),
+        "t3code" => Some("t3code"),
+        "chatgpt" => Some("openai"),
+        _ => None,
     };
-    Look { host, bundled }
+    Look { bundled }
 }
 
-/// Icons for browsers, by name and Flatpak id (a Flatpak's own icon first).
-pub fn browser(name: &str, spec: &str) -> Look {
-    let flatpak = spec.strip_prefix("flatpak:");
-    let (host, bundled): (&'static [&'static str], Option<&'static str>) = match (name, flatpak) {
-        ("Firefox", Some(_)) => (&["org.mozilla.firefox", "firefox"], Some("firefoxbrowser")),
-        ("Firefox", None) => (&["firefox", "org.mozilla.firefox"], Some("firefoxbrowser")),
-        ("Firefox ESR", _) => (&["firefox-esr", "firefox"], Some("firefoxbrowser")),
-        ("LibreWolf", Some(_)) => (&["io.gitlab.librewolf-community", "librewolf"], Some("librewolf")),
-        ("LibreWolf", None) => (&["librewolf", "io.gitlab.librewolf-community"], Some("librewolf")),
-        ("Floorp", _) => (&["one.ablaze.floorp", "floorp"], Some("floorp")),
-        ("Waterfox", _) => (&["net.waterfox.waterfox", "waterfox"], Some("waterfox")),
-        ("Zen", _) => (&["app.zen_browser.zen", "zen-browser", "zen"], Some("zenbrowser")),
-        // torbrowser-launcher installs this icon; Tor Browser itself installs none.
-        ("Tor Browser", _) => (&["org.torproject.torbrowser-launcher", "torbrowser", "tor-browser"], Some("torbrowser")),
-        ("Mullvad Browser", _) => (&["mullvad-browser", "mullvadbrowser"], Some("mullvadbrowser")),
-        ("IceCat", _) => (&["icecat", "gnuicecat"], Some("gnuicecat")),
+/// Icons for browsers, by name. A Flatpak or other packaging shows the same logo; `_spec` stays so
+/// the callers need no change.
+pub fn browser(name: &str, _spec: &str) -> Look {
+    let bundled = match name {
+        "Firefox" | "Firefox ESR" => Some("firefoxbrowser"),
+        "LibreWolf" => Some("librewolf"),
+        "Floorp" => Some("floorp"),
+        "Waterfox" => Some("waterfox"),
+        "Zen" => Some("zenbrowser"),
+        "Tor Browser" => Some("torbrowser"),
+        "Mullvad Browser" => Some("mullvadbrowser"),
+        "IceCat" => Some("gnuicecat"),
         // No bundled logo: Pale Moon's branding licence forbids use in other products.
-        ("Pale Moon", _) => (&["palemoon"], None),
-        _ => (&[], None),
+        "Pale Moon" => None,
+        _ => None,
     };
-    Look { host, bundled }
+    Look { bundled }
 }
 
 /// The icon for an item, `size` pixels square.
 pub fn view<'a, M: 'a>(look: &Look, label: &str, size: u16) -> Element<'a, M> {
-    if let Some(path) = look.host.iter().find_map(|n| index().find(n)) {
-        return icon::icon(icon::from_path(path)).size(size).into();
-    }
     if let Some((data, themed)) = look.bundled.and_then(bundled_icons::get) {
         // An app icon published only as a PNG (T3 Code's) is bundled as one.
         let handle = if data.starts_with(PNG) { icon::from_raster_bytes(data) } else { icon::from_svg_bytes(data).symbolic(themed) };
@@ -106,76 +94,6 @@ fn monogram<'a, M: 'a>(label: &str, size: u16) -> Element<'a, M> {
             ..Default::default()
         }))
         .into()
-}
-
-/// Icon files on this system by name (without extension), indexed once.
-pub struct Index {
-    files: HashMap<String, PathBuf>,
-}
-
-pub fn index() -> &'static Index {
-    static INDEX: OnceLock<Index> = OnceLock::new();
-    INDEX.get_or_init(Index::load)
-}
-
-impl Index {
-    fn load() -> Index {
-        let home = crate::host::home();
-        let data_home = std::env::var_os("XDG_DATA_HOME").map_or_else(|| home.join(".local/share"), PathBuf::from);
-        let data_dirs = std::env::var("XDG_DATA_DIRS").unwrap_or_else(|_| String::from("/usr/local/share:/usr/share"));
-        let mut roots = vec![data_home.join("icons"), home.join(".local/share/icons"), home.join(".icons")];
-        roots.extend(data_dirs.split(':').filter(|d| !d.is_empty()).map(|d| Path::new(d).join("icons")));
-        // Inside a Flatpak the host's folders appear under /run/host (with --filesystem=host-os:ro)
-        // and the exported Flatpak icons under their usual paths (read-only permissions).
-        for base in ["/run/host/usr/share", "/var/lib/flatpak/exports/share"] {
-            roots.push(Path::new(base).join("icons"));
-        }
-        roots.push(home.join(".local/share/flatpak/exports/share/icons"));
-        let pixmaps = [PathBuf::from("/usr/share/pixmaps"), PathBuf::from("/run/host/usr/share/pixmaps")];
-
-        // Best first: scalable, then the largest raster. Only the hicolor theme holds app icons.
-        let sizes = ["scalable", "512x512", "256x256", "192x192", "128x128", "96x96", "64x64", "48x48"];
-        let mut files: HashMap<String, PathBuf> = HashMap::new();
-        let mut add = |path: PathBuf| {
-            let (Some(stem), Some(ext)) = (path.file_stem().and_then(|s| s.to_str()), path.extension().and_then(|s| s.to_str())) else {
-                return;
-            };
-            if !matches!(ext, "svg" | "png") || stem.ends_with("-symbolic") {
-                return;
-            }
-            files.entry(stem.to_string()).or_insert(path);
-        };
-        for root in &roots {
-            for size in sizes {
-                for entry in read_dir(&root.join("hicolor").join(size).join("apps")) {
-                    add(entry);
-                }
-            }
-            for entry in read_dir(root) {
-                add(entry);
-            }
-        }
-        for dir in &pixmaps {
-            for entry in read_dir(dir) {
-                add(entry);
-            }
-        }
-        Index { files }
-    }
-
-    /// The icon named exactly, or one an AppImage integration installed as
-    /// `appimagekit_<hash>_<name>`.
-    pub fn find(&self, name: &str) -> Option<PathBuf> {
-        if let Some(p) = self.files.get(name) {
-            return Some(p.clone());
-        }
-        let suffix = format!("_{name}");
-        self.files.iter().filter(|(k, _)| k.starts_with("appimagekit_") && k.ends_with(&suffix)).map(|(_, p)| p.clone()).next()
-    }
-}
-
-fn read_dir(dir: &Path) -> Vec<PathBuf> {
-    std::fs::read_dir(dir).map(|it| it.filter_map(|e| e.ok().map(|e| e.path())).filter(|p| p.is_file()).collect()).unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -223,5 +141,51 @@ mod tests {
             assert_bundled(name, browser(name, "").bundled);
             assert_bundled(name, browser(name, "flatpak:x").bundled);
         }
+    }
+
+    /// The window looks the same on every desktop only while every icon the app draws is compiled
+    /// in. This fails on an icon looked up by name in the icon theme or read from a system folder.
+    #[test]
+    fn no_icon_comes_from_the_system() {
+        // Split, so this test's own source does not match.
+        let forbidden: Vec<String> = [
+            ("from", "_name("),       // icon by name from the theme
+            ("from", "_path("),       // icon file read from disk
+            ("Named", "::new("),      // libcosmic's named-icon builder
+            ("freedesktop", "_icons"), // the theme lookup crate
+            ("-symbol", "ic\""),      // a theme icon's name
+            ("share/", "icons"),      // system icon folders
+            ("pix", "maps"),
+            ("join(\"", "icons\")"),
+            ("default_icon", "_theme("),
+        ]
+        .iter()
+        .map(|(a, b)| format!("{a}{b}"))
+        .collect();
+        // The one exception: main.rs's fallback_icon_theme() finds the desktop's icon theme for the
+        // few icons libcosmic's own widgets look up by name (window buttons, banner and toast close
+        // buttons, tab scroll arrows), which the app has no way to replace.
+        let allowed = |file: &str, pattern: &str| file == "main.rs" && (pattern.starts_with("default_icon") || pattern.starts_with("join("));
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut found = Vec::new();
+        for entry in std::fs::read_dir(&src).unwrap() {
+            let path = entry.unwrap().path();
+            let file = path.file_name().unwrap().to_string_lossy().into_owned();
+            if !file.ends_with(".rs") {
+                continue;
+            }
+            for (n, line) in std::fs::read_to_string(&path).unwrap().lines().enumerate() {
+                for p in forbidden.iter().filter(|p| line.contains(p.as_str()) && !allowed(&file, p)) {
+                    found.push(format!("src/{file}:{}: {p}", n + 1));
+                }
+            }
+        }
+        assert!(
+            found.is_empty(),
+            "icons taken from the system, so the window would look different on each desktop:\n{}\n\
+             Draw the icon for the app instead: an SVG in resources/ui/ (see resources/ui/SOURCES.md), \
+             compiled in with include_bytes! and drawn with icon::from_svg_bytes(..).symbolic(true).",
+            found.join("\n")
+        );
     }
 }

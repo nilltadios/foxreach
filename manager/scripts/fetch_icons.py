@@ -20,7 +20,7 @@ Sources:  two npm packages, each version pinned below and checked by SHA-256:
 Writes:   manager/resources/icons/<name>.svg (or .png), SOURCES.md beside them, and manager/src/bundled_icons.rs,
           which compiles them into the app.
 Expected: one line per icon written, exit 0 (--check: "N bundled names resolve", exit 0). The app
-          prefers an icon installed on the system and falls back to these; every agent, app and
+          always shows these, never an icon installed on the system; every agent, app and
           browser the app knows must have one (the test in src/icons.rs fails otherwise).
 """
 import hashlib
@@ -198,7 +198,7 @@ def main():
         f"- [LobeHub icons](https://github.com/lobehub/lobe-icons) {LOBE_VERSION} (`{LOBE_URL}`, "
         f"SHA-256 `{LOBE_SHA256}`), MIT.\n\n"
         "The logos are trademarks of their owners and are used here only to show which app is which. "
-        "The app uses an icon installed on the system first.\n\n"
+        "The app always shows these, never an icon installed on the system.\n\n"
         "| File | Brand | Shown for | Source | License |\n|---|---|---|---|---|\n" + "\n".join(rows) + "\n")
     arms = "\n".join(f'        "{n}" => (include_bytes!("../resources/icons/{files.get(n, n + ".svg")}"), {str(n in themed).lower()}),' for n in names)
     (MANAGER / "src/bundled_icons.rs").write_text(

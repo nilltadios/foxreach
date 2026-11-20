@@ -94,6 +94,38 @@ fn tab_icon(svg: &'static [u8]) -> icon::Icon {
     icon::icon(icon::from_svg_bytes(svg).symbolic(true)).size(16)
 }
 
+/// The window's other icons, drawn for this app (resources/ui/) for the same reason: one taken from
+/// the desktop's icon theme by name looks different on each desktop, or is blank where the theme
+/// lacks it. Symbolic, so they take the text colour.
+const UI_WARNING: &[u8] = include_bytes!("../resources/ui/warning-symbolic.svg");
+const UI_OFFLINE: &[u8] = include_bytes!("../resources/ui/offline-symbolic.svg");
+const UI_PROFILE: &[u8] = include_bytes!("../resources/ui/profile-symbolic.svg");
+const UI_MORE: &[u8] = include_bytes!("../resources/ui/more-symbolic.svg");
+const UI_REFRESH: &[u8] = include_bytes!("../resources/ui/refresh-symbolic.svg");
+const UI_SEARCH: &[u8] = include_bytes!("../resources/ui/search-symbolic.svg");
+const UI_CLEAR: &[u8] = include_bytes!("../resources/ui/clear-symbolic.svg");
+
+fn ui_icon(svg: &'static [u8]) -> icon::Handle {
+    icon::from_svg_bytes(svg).symbolic(true)
+}
+
+/// libcosmic's search field with the built-in magnifier and clear button in place of the theme's;
+/// the same sizes and padding as libcosmic's own, so nothing moves.
+fn search_field<'a>(placeholder: &'a str, value: &'a str, on_input: fn(String) -> Message) -> widget::TextInput<'a, Message> {
+    widget::search_input(placeholder, value)
+        .leading_icon(icon::icon(ui_icon(UI_SEARCH)).size(16).apply(widget::container).padding(8).into())
+        .on_input(on_input)
+        .trailing_icon(
+            icon::icon(ui_icon(UI_CLEAR))
+                .size(16)
+                .apply(widget::button::custom)
+                .class(cosmic::theme::Button::Icon)
+                .on_press(on_input(String::new()))
+                .padding(8)
+                .into(),
+        )
+}
+
 #[derive(Clone, Debug)]
 enum TestState {
     Running,
@@ -152,6 +184,9 @@ pub enum Message {
     DismissError,
     CloseToast(widget::ToastId),
     Quit,
+    /// FOXREACH_MANAGER_CAPTURE: take the window's own picture, then save it and exit.
+    Capture,
+    Captured(cosmic::iced::window::Screenshot),
 }
 
 /// Something the user finishes in the browser, which the app watches for by reading again.
@@ -237,6 +272,24 @@ fn background<T: Send + 'static>(
             Err(_) => Message::Refresh,
         }
     })
+}
+
+/// Ask for the FOXREACH_MANAGER_CAPTURE picture after `ms`: time for the first frames and icons.
+fn capture_after(ms: u64) -> Task<cosmic::Action<Message>> {
+    background(move || std::thread::sleep(std::time::Duration::from_millis(ms)), |()| Message::Capture)
+}
+
+/// Write the window's picture to FOXREACH_MANAGER_CAPTURE as binary PPM (RGB, alpha dropped), a
+/// format these few lines can write without an image crate, and exit.
+fn save_capture(shot: &cosmic::iced::window::Screenshot) -> ! {
+    let path = std::env::var_os("FOXREACH_MANAGER_CAPTURE").unwrap_or_default();
+    let mut ppm = format!("P6\n{} {}\n255\n", shot.size.width, shot.size.height).into_bytes();
+    ppm.extend(shot.rgba.as_chunks::<4>().0.iter().flat_map(|[r, g, b, _]| [*r, *g, *b]));
+    if let Err(e) = std::fs::write(&path, ppm) {
+        eprintln!("capture: {}: {e}", path.to_string_lossy());
+        std::process::exit(1);
+    }
+    std::process::exit(0)
 }
 
 fn caption<'a>(text: impl Into<String>) -> Element<'a, Message> {
@@ -447,7 +500,7 @@ impl App {
             widget::row::with_capacity(2)
                 .spacing(spacing.space_xs)
                 .align_y(Alignment::Center)
-                .push(widget::search_input("Search agents", &self.search).on_input(Message::Search).on_clear(Message::Search(String::new())))
+                .push(search_field("Search agents", &self.search, Message::Search))
                 .push(widget::button::standard("Test all").on_press_maybe((self.busy.is_none() && set_count > 0).then_some(Message::TestAll))),
         );
 
@@ -458,7 +511,7 @@ impl App {
                 widget::row::with_capacity(3)
                     .spacing(spacing.space_s)
                     .align_y(Alignment::Center)
-                    .push(icon::from_name("dialog-warning-symbolic").size(20))
+                    .push(icon::icon(ui_icon(UI_WARNING)).size(20))
                     .push(widget::text::body(format!("{stale} {} another foxreach", if stale == 1 { "agent uses" } else { "agents use" })).width(Length::Fill))
                     .push(widget::button::standard("Point at this one").on_press_maybe(self.can_act().then_some(Message::UseThisEverywhere)))
                     .into(),
@@ -560,11 +613,7 @@ impl App {
             col = col.push(self.not_set_up("add foxreach to your browsers"));
         }
 
-        col = col.push(
-            widget::search_input("Search browsers and profiles", &self.browser_search)
-                .on_input(Message::SearchBrowsers)
-                .on_clear(Message::SearchBrowsers(String::new())),
-        );
+        col = col.push(search_field("Search browsers and profiles", &self.browser_search, Message::SearchBrowsers));
         // The browsers serving agents now (several can be), from the hosts' own files.
         let connected = &status.connected;
         let is_default = |profile: Option<&String>| profile.is_some_and(|p| status.default_browser.as_deref() == Some(p.as_str()));
@@ -599,7 +648,7 @@ impl App {
             let mut conn = widget::row::with_capacity(5)
                 .spacing(spacing.space_s)
                 .align_y(Alignment::Center)
-                .push(icon::from_name("network-offline-symbolic").size(32))
+                .push(icon::icon(ui_icon(UI_OFFLINE)).size(32))
                 .push(text)
                 .push(widget::space().width(Length::Fill));
             if let Some((name, spec, profile)) = open {
@@ -685,7 +734,7 @@ impl App {
                     widget::row::with_capacity(2)
                         .spacing(spacing.space_xxs)
                         .align_y(Alignment::Center)
-                        .push(icon::from_name("dialog-warning-symbolic").size(16))
+                        .push(icon::icon(ui_icon(UI_WARNING)).size(16))
                         .push(caption("Not recommended for agents")),
                     w.clone(),
                 )
@@ -753,7 +802,7 @@ impl App {
         let name = widget::row::with_capacity(2)
             .spacing(spacing.space_xs)
             .align_y(Alignment::Center)
-            .push(icon::from_name("avatar-default-symbolic").size(16))
+            .push(icon::icon(ui_icon(UI_PROFILE)).size(16))
             .push(name);
         let mut buttons: Vec<Element<'_, Message>> = Vec::new();
         let state = match &p.addon {
@@ -830,7 +879,7 @@ impl App {
         if p.in_use {
             items = items.push(widget::container(caption("Close the browser to remove")).padding([2, 16, 6, 16]));
         }
-        let button = widget::button::icon(icon::from_name("view-more-symbolic"))
+        let button = widget::button::icon(ui_icon(UI_MORE))
             // No padding on the right: the dots sit at the row's edge, beside Update.
             .padding([8, 0, 8, 4])
             .tooltip("More")
@@ -1103,6 +1152,11 @@ impl Application for App {
         if let Some(id) = app.core.main_window_id() {
             tasks.push(app.set_window_title(String::from("foxreach"), id));
         }
+        // FOXREACH_MANAGER_CAPTURE=/file.ppm: the window photographs itself and the app exits. Tests
+        // keep the window behind the user's windows, where a screen capture cannot see it.
+        if std::env::var_os("FOXREACH_MANAGER_CAPTURE").is_some() {
+            tasks.push(capture_after(2000));
+        }
         (app, Task::batch(tasks))
     }
 
@@ -1118,7 +1172,7 @@ impl Application for App {
 
     fn header_end(&self) -> Vec<Element<'_, Message>> {
         vec![
-            widget::button::icon(icon::from_name("view-refresh-symbolic"))
+            widget::button::icon(ui_icon(UI_REFRESH))
                 .tooltip("Refresh")
                 .on_press_maybe(self.busy.is_none().then_some(Message::Refresh))
                 .into(),
@@ -1133,7 +1187,7 @@ impl Application for App {
                     widget::dialog()
                         .title(format!("Connect {name} anyway?"))
                         .body(format!("{warning}\n\n{}", "Then install the add-on in it, and when it asks, allow foxreach in private windows: Tor Browser has no other kind."))
-                        .icon(icon::from_name("dialog-warning-symbolic").size(64))
+                        .icon(icon::icon(ui_icon(UI_WARNING)).size(64))
                         .primary_action(widget::button::destructive("Connect anyway").on_press(Message::ConnectBrowser(spec.clone())))
                         .secondary_action(widget::button::standard("Cancel").on_press(Message::CloseDialog))
                         .into(),
@@ -1164,7 +1218,7 @@ impl Application for App {
             widget::dialog()
                 .title(if *everything { "Remove everything?" } else { "Remove the selected parts?" })
                 .body(body)
-                .icon(icon::from_name("dialog-warning-symbolic").size(64))
+                .icon(icon::icon(ui_icon(UI_WARNING)).size(64))
                 .primary_action(widget::button::destructive("Remove").on_press(Message::ConfirmRemove))
                 .secondary_action(widget::button::standard("Cancel").on_press(Message::CloseDialog))
                 .into(),
@@ -1466,6 +1520,12 @@ impl Application for App {
             // wl_proxy_destroy (core dump 2026-11-12 23:24, AppImage, on closing the window). Nothing
             // here needs a clean shutdown: settings are written as each action finishes.
             Message::Quit => std::process::exit(0),
+            // Wait for the data (at once in the demo), then capture what the window draws.
+            Message::Capture => match self.core.main_window_id() {
+                Some(id) if self.loaded => return cosmic::iced::window::screenshot(id).map(|shot| cosmic::Action::App(Message::Captured(shot))),
+                _ => return capture_after(500),
+            },
+            Message::Captured(shot) => save_capture(&shot),
         }
         Task::none()
     }

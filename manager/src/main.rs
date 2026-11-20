@@ -12,8 +12,13 @@ use std::path::{Path, PathBuf};
 
 pub const APP_ID: &str = "dev.nilltadios.FoxreachManager";
 
-/// libcosmic looks icons up in the COSMIC icon theme; outside COSMIC it is usually missing and
-/// symbolic icons come out blank, so use the desktop's own theme (KDE's, GTK's, Breeze, Adwaita).
+/// The app's own icons are compiled in, but a few that libcosmic's widgets draw are looked up by
+/// name in the icon theme, with no way for the app to pass its own: the header bar's minimize,
+/// maximize, restore and close buttons, the close button of an error banner (widget::warning) and
+/// of a toast (window-close-symbolic), and the tab bar's scroll arrows when the window is too
+/// narrow for the tabs (go-previous/go-next-symbolic). libcosmic asks the COSMIC theme; outside
+/// COSMIC it is usually missing and those come out blank, so use the desktop's own theme (KDE's,
+/// GTK's, Breeze, Adwaita).
 fn fallback_icon_theme() -> Option<String> {
     let home = host::home();
     let data_home = std::env::var_os("XDG_DATA_HOME").map_or_else(|| home.join(".local/share"), PathBuf::from);
