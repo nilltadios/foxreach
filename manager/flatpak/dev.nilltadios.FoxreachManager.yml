@@ -46,27 +46,11 @@ modules:
         url: https://static.rust-lang.org/dist/rust-1.100.0-aarch64-unknown-linux-gnu.tar.xz
         sha256: a21f6a21818df07c1e2e7addb570af5444b3fa9dd61e3a207f4fb1c5a5e665c9
 
-  # The foxreach program the app installs to ~/.local/bin/foxreach on request. A Bun single-file
-  # build: its code is appended to the runtime, so it must not be stripped. dist/foxreach must be
-  # built for the architecture of this build (foxreach-linux-x64 or foxreach-linux-arm64); the
-  # `foxreach version` below fails otherwise.
-  - name: foxreach-program
-    buildsystem: simple
-    build-options:
-      no-debuginfo: true
-      strip: false
-    build-commands:
-      - install -Dm755 foxreach /app/share/foxreach-manager/foxreach
-      - /app/share/foxreach-manager/foxreach version
-    sources:
-      - type: file
-        path: ../../dist/foxreach
-
   - name: foxreach-manager
     buildsystem: simple
     build-options:
-      # flatpak-builder's debuginfo pass at the end of this module strips every ELF file in /app,
-      # the foxreach program included, which loses its code. Cargo strips this binary already.
+      # Cargo strips this binary already (profile.release), so flatpak-builder's debuginfo and
+      # strip passes would find nothing to take out; they stay off.
       no-debuginfo: true
       strip: false
       prepend-path: /app/lib/rust/bin

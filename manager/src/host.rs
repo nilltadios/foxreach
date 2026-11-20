@@ -153,34 +153,96 @@ pub fn program_command() -> Vec<String> {
     }
 }
 
-/// FOXREACH_MANAGER_BUNDLED: a program to use as the bundled one (development, tests), of any version.
-fn bundled_override() -> Option<PathBuf> {
-    std::env::var_os("FOXREACH_MANAGER_BUNDLED").map(PathBuf::from)
+/// Words of one shell command line, with double- and single-quoted parts kept whole, as `words` in
+/// bridge/setup.mjs splits them.
+fn words(line: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut quote = None;
+    let mut any = false;
+    for ch in line.trim().chars() {
+        if let Some(q) = quote {
+            if ch == q {
+                quote = None;
+            } else {
+                cur.push(ch);
+            }
+        } else if ch == '"' || ch == '\'' {
+            quote = Some(ch);
+            any = true;
+        } else if ch.is_whitespace() {
+            if !cur.is_empty() || any {
+                out.push(std::mem::take(&mut cur));
+            }
+            any = false;
+        } else {
+            cur.push(ch);
+        }
+    }
+    if !cur.is_empty() || any {
+        out.push(cur);
+    }
+    out
 }
 
-/// The foxreach program shipped inside this app: (path the host sees, path this process sees).
-pub fn bundled_program() -> Option<(PathBuf, PathBuf)> {
-    if let Some(p) = bundled_override() {
-        return p.is_file().then(|| (p.clone(), p));
+/// What the file a host manifest names makes the browser run, as words: a script's `exec` line, or
+/// the file itself when it is no script (`manifestRuns` in bridge/setup.mjs). `head` is its start.
+fn wrapper_runs(target: &str, head: &str) -> Option<Vec<String>> {
+    if !head.starts_with("#!") {
+        return Some(vec![target.to_string()]);
     }
-    const REL: &str = "share/foxreach-manager/foxreach";
-    match packaging() {
-        Packaging::Flatpak { app_path } => {
-            let local = Path::new("/app").join(REL);
-            local.is_file().then(|| (app_path.join(REL), local))
-        }
-        Packaging::AppImage(_) => {
-            let appdir = std::env::var_os("APPDIR").map(PathBuf::from)?;
-            let local = appdir.join(REL);
-            local.is_file().then(|| (local.clone(), local))
-        }
-        Packaging::Plain => None,
+    let line = head.split('\n').map(str::trim).find(|l| l.starts_with("exec "))?;
+    Some(words(&line[5..]))
+}
+
+/// True for a path ending in bridge/cli.mjs, bridge/mcp.mjs or bridge/host.mjs (either separator).
+fn is_bridge_script(word: &str) -> bool {
+    ["cli", "mcp", "host"].iter().any(|name| {
+        let file = format!("{name}.mjs");
+        word.strip_suffix(file.as_str())
+            .and_then(|rest| rest.strip_suffix('/').or_else(|| rest.strip_suffix('\\')))
+            .and_then(|rest| rest.strip_suffix("bridge"))
+            .is_some_and(|rest| rest.ends_with('/') || rest.ends_with('\\'))
+    })
+}
+
+/// How to run the command line of the foxreach a command starts, as `classify` in bridge/setup.mjs
+/// tells: a checkout is `[runtime] <root>/bridge/cli.mjs`, the compiled program (a file named
+/// foxreach...) is itself. None for anything else, which is no foxreach to read with.
+fn cli_command(argv: &[String]) -> Option<Vec<String>> {
+    let first = argv.first()?;
+    if let Some(script) = argv.iter().find(|w| is_bridge_script(w)) {
+        let root = Path::new(script).parent()?.parent()?;
+        let mut cmd: Vec<String> = if first != script { vec![first.clone()] } else { Vec::new() };
+        cmd.push(root.join("bridge/cli.mjs").to_string_lossy().into_owned());
+        return Some(cmd);
     }
+    let name = Path::new(first).file_name()?.to_string_lossy();
+    name.starts_with("foxreach").then(|| vec![first.clone()])
+}
+
+/// The start of a file on the host (a Flatpak cannot read the host's home itself).
+fn host_file_head(path: &str) -> Option<String> {
+    let out = run(&["head".into(), "-c".into(), "8192".into(), path.to_string()]);
+    out.ok.then_some(out.text)
+}
+
+/// The foxreach the browsers' host manifest runs (`~/.mozilla`, then `~/.librewolf`, the Linux
+/// folders of bridge/install.mjs), as a command line to read with: how a packaged app sees a setup
+/// made from a checkout or with the program at another path.
+fn manifest_reader() -> Option<Vec<String>> {
+    [".mozilla", ".librewolf"].iter().find_map(|dir| {
+        let manifest = home().join(dir).join("native-messaging-hosts/foxreach.json");
+        let text = host_file_head(&manifest.to_string_lossy())?;
+        let value = serde_json::from_str::<serde_json::Value>(&text).ok()?;
+        let target = value.get("path")?.as_str().filter(|p| !p.is_empty())?.to_string();
+        cli_command(&wrapper_runs(&target, &host_file_head(&target)?)?)
+    })
 }
 
 /// The checkout a plain build was compiled from, run with Bun (or Node): a development build's own
-/// reader, as packaged builds carry a bundled program. None for packaged builds, or when the
-/// folder or a runtime is missing.
+/// reader when no foxreach is set up. None for packaged builds, or when the folder or a runtime is
+/// missing.
 pub fn dev_checkout() -> Option<Vec<String>> {
     if packaging() != Packaging::Plain {
         return None;
@@ -211,18 +273,6 @@ pub fn version_of(program: &[String]) -> Option<String> {
     (out.ok && v.chars().next()?.is_ascii_digit()).then_some(v)
 }
 
-/// The bundled program's version. A package carries the foxreach of its own release, which has this
-/// app's version (the package builds compare the two), so it is not run for it: the first run from
-/// an AppImage reads the whole program through the compressed image, seconds before the window can
-/// show anything (issue #19). Any other copy is asked.
-fn bundled_version(packaged: bool, ask: impl FnOnce() -> Option<String>) -> Option<String> {
-    if packaged {
-        Some(String::from(env!("CARGO_PKG_VERSION")))
-    } else {
-        ask()
-    }
-}
-
 /// -1, 0 or 1 for dotted numeric versions.
 pub fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
     let parse = |s: &str| s.split('.').map(|p| p.parse::<u64>().unwrap_or(0)).collect::<Vec<_>>();
@@ -236,27 +286,126 @@ pub fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
     std::cmp::Ordering::Equal
 }
 
-/// Put the bundled program at ~/.local/bin/foxreach (the old one kept as foxreach.previous), with
+/// The release file of the foxreach program for a processor (`std::env::consts::ARCH`), as the
+/// release names it.
+fn release_asset(arch: &str) -> Option<&'static str> {
+    match arch {
+        "x86_64" => Some("foxreach-linux-x64"),
+        "aarch64" => Some("foxreach-linux-arm64"),
+        _ => None,
+    }
+}
+
+/// The version a release's BUILDINFO.txt names on its `foxreach <version>` line (`latestVersion`
+/// in bridge/update.mjs).
+fn buildinfo_version(text: &str) -> Option<String> {
+    text.lines().find_map(|line| {
+        let v = line.strip_prefix("foxreach ")?.trim_end();
+        (!v.is_empty() && !v.starts_with('.') && !v.ends_with('.') && !v.contains("..") && v.chars().all(|c| c.is_ascii_digit() || c == '.'))
+            .then(|| v.to_string())
+    })
+}
+
+/// The checksum SHA256SUMS lists for a file: its lines are `<sha256>  <name>`.
+fn listed_sha256(sums: &str, asset: &str) -> Option<String> {
+    sums.lines().find_map(|line| {
+        let mut parts = line.split_whitespace();
+        let (hash, name) = (parts.next()?, parts.next()?);
+        (name == asset).then(|| hash.to_string())
+    })
+}
+
+/// Where releases are downloaded from: FOXREACH_RELEASE_URL (tests, a mirror; install.sh and
+/// bridge/update.mjs read it too), else the latest GitHub release. Read here, because host
+/// commands run with a cleaned environment.
+fn release_base() -> String {
+    match std::env::var("FOXREACH_RELEASE_URL") {
+        Ok(url) if !url.trim().is_empty() => url.trim().trim_end_matches('/').to_string(),
+        _ => String::from("https://github.com/nilltadios/foxreach/releases/latest/download"),
+    }
+}
+
+/// A host command that downloads `url` to `to` (`-` for its output), with curl or else wget,
+/// whichever the host has. A stalled download ends by itself, because the window waits for it.
+fn download_command(curl: bool, url: &str, to: &str) -> Vec<String> {
+    let mut argv: Vec<String> = if curl {
+        ["curl", "-fsSL", "--connect-timeout", "20", "--speed-limit", "1024", "--speed-time", "60", "-o"].map(String::from).to_vec()
+    } else {
+        ["wget", "-q", "--tries=1", "--connect-timeout=20", "--read-timeout=60", "-O"].map(String::from).to_vec()
+    };
+    argv.push(to.to_string());
+    argv.push(url.to_string());
+    argv
+}
+
+/// Download the latest release's program for this machine to ~/.local/bin/foxreach (the old one
+/// kept as foxreach.previous), checked against the release's SHA256SUMS and BUILDINFO.txt, with
 /// host tools so it works the same from a Flatpak. Returns what was done, line by line.
-pub fn install_bundled(host_src: &Path) -> Output {
+pub fn install_download() -> Output {
+    let fail = |text: String| Output { ok: false, text: format!("{text}\nNothing was changed.") };
+    let arch = std::env::consts::ARCH;
+    let Some(asset) = release_asset(arch) else {
+        return fail(format!("There is no foxreach build for {arch}."));
+    };
+    let curl = if run(&["sh".into(), "-c".into(), "command -v curl".into()]).ok {
+        true
+    } else if run(&["sh".into(), "-c".into(), "command -v wget".into()]).ok {
+        false
+    } else {
+        return fail(String::from("curl or wget is needed."));
+    };
+    let base = release_base();
+    let fetch = |name: &str| {
+        let out = run(&download_command(curl, &format!("{base}/{name}"), "-"));
+        if out.ok { Ok(out.text) } else { Err(format!("Cannot download {base}/{name}: {}", out.text)) }
+    };
+    let version = match fetch("BUILDINFO.txt").map(|t| buildinfo_version(&t)) {
+        Ok(Some(v)) => v,
+        Ok(None) => return fail(String::from("The latest release does not say its version (BUILDINFO.txt).")),
+        Err(e) => return fail(e),
+    };
+    let sums = match fetch("SHA256SUMS") {
+        Ok(t) => t,
+        Err(e) => return fail(e),
+    };
+
     let dest = install_path();
     let dir = dest.parent().unwrap_or(Path::new("/")).to_string_lossy().into_owned();
     let dest_s = dest.to_string_lossy().into_owned();
     let tmp = format!("{dir}/.foxreach-manager-new");
     let mut log = Vec::new();
-    let steps: Vec<Vec<String>> = {
-        let mut s = vec![vec!["mkdir".into(), "-p".into(), dir.clone()]];
-        s.push(vec!["cp".into(), "-f".into(), host_src.to_string_lossy().into_owned(), tmp.clone()]);
-        s.push(vec!["chmod".into(), "755".into(), tmp.clone()]);
-        s.push(vec![tmp.clone(), "version".into()]);
-        s
+    // Every failure from here on removes the half-made file, and the installed program stays.
+    let fail = |text: String| {
+        run(&["rm".into(), "-f".into(), tmp.clone()]);
+        fail(text)
     };
-    for step in &steps {
-        let out = run(step);
+    for step in [vec!["mkdir".into(), "-p".into(), dir.clone()], download_command(curl, &format!("{base}/{asset}"), &tmp)] {
+        let out = run(&step);
         if !out.ok {
-            run(&["rm".into(), "-f".into(), tmp.clone()]);
-            return Output { ok: false, text: format!("{}: {}\nNothing was changed.", step.join(" "), out.text) };
+            return fail(format!("{}: {}", step.join(" "), out.text));
         }
+    }
+    // Checked before the file is made executable or run.
+    let summed = run(&["sha256sum".into(), tmp.clone()]);
+    let got = summed.text.split_whitespace().next().filter(|_| summed.ok).unwrap_or_default().to_string();
+    let want = listed_sha256(&sums, asset);
+    if !summed.ok || want.as_deref() != Some(got.as_str()) {
+        run(&["rm".into(), "-f".into(), tmp.clone()]);
+        let got = if summed.ok { got } else { format!("no checksum ({})", summed.text) };
+        return Output {
+            ok: false,
+            text: format!("Checksum mismatch for {asset}: expected {}, got {got}. Nothing was changed.", want.as_deref().unwrap_or("nothing listed")),
+        };
+    }
+    log.push(format!("downloaded {base}/{asset}, checksum checked against SHA256SUMS"));
+    let out = run(&["chmod".into(), "755".into(), tmp.clone()]);
+    if !out.ok {
+        return fail(format!("chmod 755 {tmp}: {}", out.text));
+    }
+    match version_of(std::slice::from_ref(&tmp)) {
+        Some(v) if v == version => {}
+        Some(v) => return fail(format!("The downloaded {asset} says it is foxreach {v}, the release says {version}.")),
+        None => return fail(format!("{tmp} version: the downloaded program does not run.")),
     }
     if run(&["test".into(), "-e".into(), dest_s.clone()]).ok {
         let prev = format!("{dest_s}.previous");
@@ -271,7 +420,7 @@ pub fn install_bundled(host_src: &Path) -> Output {
     if !out.ok {
         return Output { ok: false, text: out.text };
     }
-    log.push(format!("installed {dest_s}"));
+    log.push(format!("installed {dest_s} (foxreach {version})"));
     Output { ok: true, text: log.join("\n") }
 }
 
@@ -326,6 +475,9 @@ pub fn remove_self() -> Output {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Status {
+    /// The report's layout (bridge/status.mjs); 1 when absent. A higher one is not read.
+    #[serde(default = "first_format")]
+    pub format: u64,
     pub mcp_command: String,
     /// The foxreach the browsers and agents actually run (absent from programs before 0.3.4).
     #[serde(default)]
@@ -340,6 +492,15 @@ pub struct Status {
     /// The profile agents use when several browsers are connected.
     #[serde(default)]
     pub default_browser: Option<String>,
+}
+
+/// The newest `foxreach status --json` layout this app reads.
+const STATUS_FORMAT: u64 = 1;
+/// How the note about a newer layout starts: `snapshot` tells it from a program that is too old.
+const NEWER_NOTE: &str = "This foxreach is newer than this app reads";
+
+fn first_format() -> u64 {
+    1
 }
 
 /// A browser connected to foxreach now: `foxreach browsers --json`, `connected` in status.
@@ -455,15 +616,17 @@ pub struct ProgramUpdate {
 pub struct Snapshot {
     /// The program at ~/.local/bin/foxreach (or FOXREACH_MANAGER_PROGRAM) and its version, when it runs.
     pub installed: Option<(Vec<String>, String)>,
-    /// The bundled program: host path and version (a package's own copy is not run for it).
-    pub bundled: Option<(PathBuf, String)>,
     /// The foxreach this computer uses, which the app acts through: the installed program, or the
     /// checkout the browsers and agents run. None when nothing is set up.
     pub in_use: Option<InUse>,
-    /// What read the status: the program in use, else the bundled program or this build's checkout.
+    /// What read the status: the program in use, else what the browsers' host runs or this build's
+    /// checkout. None when there is nothing to read with (the Install button downloads the release).
     pub reader: Option<Vec<String>>,
     /// The installed program's version when it is too old for this app (no `status --json`).
     pub too_old: Option<String>,
+    /// The installed program's version when its status is in a newer layout than this app reads:
+    /// the app needs the update, not the program, so no Install or Replace is offered.
+    pub too_new: Option<String>,
     pub status: Option<Status>,
     /// Why there is no status.
     pub note: Option<String>,
@@ -489,17 +652,28 @@ fn read_status(program: &[String]) -> Result<Status, String> {
     if !out.ok {
         return Err(format!("foxreach status --json failed: {}", out.text));
     }
-    serde_json::from_str::<Status>(&out.text).map_err(|e| format!("foxreach status --json: {e}"))
+    parse_status(&out.text)
+}
+
+/// A status report, unless its format is newer than this app reads: that is said instead, also
+/// when the newer layout does not fit `Status` at all (no parse error is shown for it).
+fn parse_status(text: &str) -> Result<Status, String> {
+    let newer = |format: u64| {
+        format!("{NEWER_NOTE} (status format {format}, this app reads {STATUS_FORMAT}). Update foxreach manager.")
+    };
+    match serde_json::from_str::<Status>(text) {
+        Ok(status) if status.format > STATUS_FORMAT => Err(newer(status.format)),
+        Ok(status) => Ok(status),
+        Err(e) => match serde_json::from_str::<serde_json::Value>(text).ok().and_then(|v| v.get("format")?.as_u64()) {
+            Some(format) if format > STATUS_FORMAT => Err(newer(format)),
+            _ => Err(format!("foxreach status --json: {e}")),
+        },
+    }
 }
 
 pub fn snapshot() -> Snapshot {
     let program = program_command();
     let mut snap = Snapshot { installed: version_of(&program).map(|v| (program.clone(), v)), ..Default::default() };
-    // When asked, run by its host path, like every other command: the host sees an AppImage's mount
-    // and a Flatpak's files, and the environment is cleaned the same way.
-    let packaged = bundled_override().is_none();
-    snap.bundled = bundled_program()
-        .and_then(|(host, _)| bundled_version(packaged, || version_of(&[host.to_string_lossy().into_owned()])).map(|v| (host, v)));
 
     // The installed program, when it is current, is what the app uses and reads with.
     if let Some((cmd, v)) = snap.installed.clone() {
@@ -511,14 +685,20 @@ pub fn snapshot() -> Snapshot {
                 return snap;
             }
             Err(e) => {
-                snap.too_old = Some(v);
+                if e.starts_with(NEWER_NOTE) {
+                    snap.too_new = Some(v);
+                } else {
+                    snap.too_old = Some(v);
+                }
                 snap.note = Some(e);
             }
         }
     }
-    // Otherwise read with what this app carries (the bundled program, or the checkout a development
-    // build came from), then look at what the browsers and agents actually run.
-    let readers = snap.bundled.iter().map(|(p, _)| vec![p.to_string_lossy().into_owned()]).chain(dev_checkout());
+    // Otherwise read with what the browsers' host runs (a checkout, or the program at another
+    // path), else the checkout a development build came from, then look at what the browsers and
+    // agents actually run. A host that runs the installed program, which failed above or is gone,
+    // is not tried again.
+    let readers = manifest_reader().filter(|r| *r != program).into_iter().chain(dev_checkout());
     for reader in readers {
         let status = match read_status(&reader) {
             Ok(s) => s,
@@ -545,13 +725,13 @@ pub fn snapshot() -> Snapshot {
         };
         if in_use.is_some() {
             snap.too_old = None;
+            snap.too_new = None;
         }
         snap.in_use = in_use;
         return snap;
     }
-    if snap.note.is_none() {
-        snap.note = Some(String::from("This build carries no foxreach to read with, and none is installed."));
-    }
+    // Nothing installed and nothing to read with is no error: the window offers Install, which
+    // downloads the release.
     snap
 }
 
@@ -577,11 +757,59 @@ mod tests {
     }
 
     #[test]
-    fn packaged_copy_is_not_run_for_its_version() {
-        let v = bundled_version(true, || panic!("the package's own copy was run"));
-        assert_eq!(v.as_deref(), Some(env!("CARGO_PKG_VERSION")));
-        assert_eq!(bundled_version(false, || Some(String::from("9.9.9"))).as_deref(), Some("9.9.9"));
-        assert_eq!(bundled_version(false, || None), None);
+    fn release_files_are_read() {
+        assert_eq!(release_asset("x86_64"), Some("foxreach-linux-x64"));
+        assert_eq!(release_asset("aarch64"), Some("foxreach-linux-arm64"));
+        assert_eq!(release_asset("riscv64"), None);
+        assert_eq!(buildinfo_version("foxreach 0.4.1\ncommit abc\n").as_deref(), Some("0.4.1"));
+        assert_eq!(buildinfo_version("built 2026-11-20\nfoxreach 10.2 \r\n").as_deref(), Some("10.2"));
+        assert_eq!(buildinfo_version("foxreach v0.4.1\nfoxreach 0..1\nfoxreach \n"), None);
+        let a = "a".repeat(64);
+        let b = "b".repeat(64);
+        let sums = format!("{a}  foxreach-linux-x64\n{b}  foxreach-linux-arm64\n{a}  foxreach-linux-x64.sha256\n");
+        assert_eq!(listed_sha256(&sums, "foxreach-linux-arm64"), Some(b));
+        assert_eq!(listed_sha256(&sums, "foxreach-linux-x64"), Some(a));
+        assert_eq!(listed_sha256(&sums, "foxreach-darwin-arm64"), None);
+        let curl = download_command(true, "file:///r/SHA256SUMS", "-");
+        assert_eq!(curl[0], "curl");
+        assert!(curl.windows(2).any(|w| w == ["--speed-time", "60"]) && curl.ends_with(&[String::from("-"), String::from("file:///r/SHA256SUMS")]));
+        let wget = download_command(false, "https://x/a", "/t");
+        assert!(wget[0] == "wget" && wget.contains(&String::from("--tries=1")) && wget.ends_with(&[String::from("/t"), String::from("https://x/a")]));
+    }
+
+    #[test]
+    fn host_wrappers_give_a_command_to_read_with() {
+        let s = |v: &[&str]| v.iter().map(|w| w.to_string()).collect::<Vec<_>>();
+        let release = "#!/bin/sh\nunset LD_PRELOAD\nexec \"/home/u/.local/bin/foxreach\" host\n";
+        let runs = wrapper_runs("/w", release).unwrap();
+        assert_eq!(runs, s(&["/home/u/.local/bin/foxreach", "host"]));
+        assert_eq!(cli_command(&runs), Some(s(&["/home/u/.local/bin/foxreach"])));
+        let checkout = "#!/bin/sh\nunset LD_PRELOAD\nexec \"/home/u/.bun/bin/bun\" \"/home/u/src/foxreach/bridge/host.mjs\"\n";
+        let runs = wrapper_runs("/w", checkout).unwrap();
+        assert_eq!(cli_command(&runs), Some(s(&["/home/u/.bun/bin/bun", "/home/u/src/foxreach/bridge/cli.mjs"])));
+        // Quoted parts stay whole; a checkout run without a runtime word is the script alone.
+        assert_eq!(words(r#"'/a b/foxreach' "" host"#), s(&["/a b/foxreach", "", "host"]));
+        assert_eq!(cli_command(&s(&["/c d/bridge/mcp.mjs"])), Some(s(&["/c d/bridge/cli.mjs"])));
+        // The manifest naming the program itself, not a script.
+        assert_eq!(wrapper_runs("/opt/foxreach-x", "\x7fELF..."), Some(s(&["/opt/foxreach-x"])));
+        // Not a foxreach: another program, a script without an exec line, a lookalike folder.
+        assert_eq!(cli_command(&s(&["/usr/bin/python3", "host.py"])), None);
+        assert_eq!(wrapper_runs("/w", "#!/bin/sh\necho hi\n"), None);
+        assert_eq!(cli_command(&s(&["/x/node", "/c/mybridge/cli.mjs"])), None);
+        assert_eq!(cli_command(&[]), None);
+    }
+
+    #[test]
+    fn a_newer_status_format_asks_for_a_newer_app() {
+        // Shaped so it would not parse as this app's Status: the format must be what is reported.
+        let err = parse_status(r#"{"format":2,"mcp":{"command":"x"}}"#).unwrap_err();
+        assert!(err.contains("newer than this app reads") && err.contains("format 2") && err.contains("Update foxreach manager"), "{err}");
+        let fits = r#"{"format":2,"mcpCommand":"x","agents":[],"host":{"wrapper":null,"wrapperRuns":null,"manifests":[],"flatpaks":[]}}"#;
+        assert!(parse_status(fits).unwrap_err().contains("format 2"), "a newer report that happens to parse is not read either");
+        assert!(err.starts_with(NEWER_NOTE) && parse_status(fits).unwrap_err().starts_with(NEWER_NOTE), "snapshot tells newer from too old by this");
+        let ok = r#"{"mcpCommand":"x","agents":[],"host":{"wrapper":null,"wrapperRuns":null,"manifests":[],"flatpaks":[]}}"#;
+        assert_eq!(parse_status(ok).unwrap().format, 1, "absent means 1");
+        assert!(parse_status(r#"{"format":1}"#).unwrap_err().starts_with("foxreach status --json: "));
     }
 
     #[test]

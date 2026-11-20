@@ -114,7 +114,8 @@ pub enum Message {
     TestAll,
     Tested(Option<String>, TestResult),
     UseThisEverywhere,
-    /// Install the program (bundled copy, else the latest release) and point these agents at it.
+    /// Install the latest release (through the foxreach that read the status, else downloaded by
+    /// this app) and point these agents at it.
     InstallProgram(Vec<String>),
     AskSwitch,
     SetUpBrowsers,
@@ -294,17 +295,18 @@ impl App {
         self.snap.in_use.as_ref().map(|u| u.command.clone())
     }
 
-    /// The program that runs a removal: the one in use, else the one that read the status (the
-    /// bundled program, or this build's checkout; uninstall does not depend on where the program
-    /// lives). An installed program too old for `status` is never used: it does not know --part and
+    /// The program that runs a removal: the one in use, else the one that read the status (what
+    /// the browsers' host runs, or this build's checkout; uninstall does not depend on where the
+    /// program lives). An installed program too old for `status` is never used: it does not know --part and
     /// would remove everything.
     fn remover(&self) -> Option<Vec<String>> {
         self.program().or_else(|| self.snap.reader.clone())
     }
 
-    /// Whether the Install button can work: a bundled copy to copy, or a foxreach to download with.
+    /// Whether the Install button can work: always, unless the app is busy (with no foxreach to
+    /// download with, the app downloads the release itself).
     fn can_install(&self) -> bool {
-        self.busy.is_none() && (self.demo || self.snap.bundled.is_some() || self.snap.reader.is_some())
+        self.busy.is_none()
     }
 
     /// Agents that have foxreach now, by id: re-pointed when the program changes.
@@ -314,10 +316,7 @@ impl App {
 
     /// What Install does, for its tooltip.
     fn install_tip(&self) -> String {
-        match &self.snap.bundled {
-            Some((_, v)) => format!("Installs the foxreach {v} this app carries as {}", host::install_path().display()),
-            None => format!("Downloads the latest foxreach release (checksum checked) to {}", host::install_path().display()),
-        }
+        format!("Downloads the latest foxreach release (checksum checked) to {}", host::install_path().display())
     }
 
     /// Shown when foxreach is not set up: what it means, and the button that fixes it.
@@ -339,18 +338,22 @@ impl App {
             .into()
     }
 
-    /// A tab whose data could not be read: why, and Install when that is the fix.
+    /// A tab whose data could not be read: why, and Install when that is the fix. With nothing
+    /// installed and nothing to read with there is no why (no note), only Install.
     fn unreadable(&self) -> Element<'_, Message> {
         let spacing = cosmic::theme::spacing();
-        let why = self.snap.note.clone().unwrap_or_else(|| String::from("foxreach could not be read."));
-        let mut col = widget::column::with_capacity(2).spacing(spacing.space_s).push(caption(why));
-        if self.snap.in_use.is_none() {
+        let mut col = widget::column::with_capacity(2).spacing(spacing.space_s);
+        if let Some(why) = self.snap.note.clone() {
+            col = col.push(caption(why));
+        }
+        // A foxreach newer than this app reads is installed: Install would only fetch it again.
+        if self.snap.in_use.is_none() && self.snap.too_new.is_none() {
             col = col.push(self.not_set_up("see and manage agents and browsers"));
         }
         col.into()
     }
 
-    /// The program that reads (tests): the installed one, else the bundled one.
+    /// The program that reads (tests): the one in use, else the one that read the status.
     fn reader(&self) -> Option<Vec<String>> {
         self.remover()
     }
@@ -852,7 +855,6 @@ impl App {
             .into()
         };
         let mut program = settings::section().title("Program");
-        let bundled = self.snap.bundled.as_ref().map(|(_, v)| v.clone());
         let title = |v: &str| -> Element<'static, Message> {
             widget::row::with_capacity(2)
                 .spacing(spacing.space_s)
@@ -864,13 +866,8 @@ impl App {
         let checkout = matches!(self.snap.in_use.as_ref().map(|u| &u.source), Some(Source::Checkout(_)));
         match &self.snap.in_use {
             Some(u) if u.source == Source::Release => {
-                let control: Element<'static, Message> = match &bundled {
-                    Some(b) if host::compare_versions(b, &u.version).is_gt() => widget::button::suggested(format!("Install {b}"))
-                        .on_press_maybe(idle.then(|| Message::InstallProgram(self.set_agents())))
-                        .into(),
-                    _ => caption("Installed"),
-                };
-                program = program.add(row(with_tip(title(&u.version), u.command.join(" ")), control));
+                // A newer release is offered by the Updates row below (foxreach update --check).
+                program = program.add(row(with_tip(title(&u.version), u.command.join(" ")), caption("Installed")));
             }
             Some(u) => {
                 let root = match &u.source {
@@ -886,6 +883,11 @@ impl App {
                     format!("Installs the release as {} and points the browsers and agents at it", host::install_path().display()),
                 );
                 program = program.add(row(with_tip(label, u.command.join(" ")), switch));
+            }
+            // Newer than this app reads: the app is what needs updating, so no Install or Replace.
+            None if self.snap.too_new.is_some() => {
+                let v = self.snap.too_new.clone().unwrap_or_default();
+                program = program.add(row(widget::text::body(format!("foxreach {v} · newer than this app reads")).into(), caption("Update foxreach manager")));
             }
             None => {
                 let label = match &self.snap.too_old {
@@ -955,12 +957,16 @@ impl App {
                 widget::checkbox(checked).label(label).on_toggle(move |on| Message::TogglePart(p.clone(), on)).into(),
             ]));
         }
+        // A program too old for `status` cannot remove the browser side or the agents' entries (it
+        // does not know --part), and nothing else reads them: removal waits until Replace. The same
+        // for one newer than this app reads, until the app is updated.
+        let can_remove = idle && !((self.snap.too_old.is_some() || self.snap.too_new.is_some()) && self.remover().is_none());
         remove = remove.add(settings::item_row(vec![
             widget::row::with_capacity(3)
                 .spacing(spacing.space_xs)
                 .push(widget::space().width(Length::Fill))
-                .push(widget::button::destructive("Remove selected").on_press_maybe((idle && !self.parts.is_empty()).then_some(Message::AskRemove { everything: false })))
-                .push(widget::button::text("Remove everything").on_press_maybe(idle.then_some(Message::AskRemove { everything: true })))
+                .push(widget::button::destructive("Remove selected").on_press_maybe((can_remove && !self.parts.is_empty()).then_some(Message::AskRemove { everything: false })))
+                .push(widget::button::text("Remove everything").on_press_maybe(can_remove.then_some(Message::AskRemove { everything: true })))
                 .into(),
         ]));
         widget::column::with_capacity(2).spacing(spacing.space_m).push(program).push(remove).into()
@@ -1285,20 +1291,15 @@ impl Application for App {
                 if self.demo {
                     return self.update(Message::Ran(String::from("Installed"), Output { ok: true, text: String::from("demo: installed") }));
                 }
-                let bundled = self.snap.bundled.clone();
                 let reader = self.snap.reader.clone();
-                if bundled.is_none() && reader.is_none() {
-                    return Task::none();
-                }
-                self.busy = Some(String::from("Installing…"));
+                self.busy = Some(String::from(if reader.is_some() { "Installing…" } else { "Downloading foxreach…" }));
                 let agents = if agents.is_empty() { String::from("none") } else { agents.join(",") };
                 return background(
                     move || {
-                        let mut out = match (&bundled, &reader) {
-                            (Some((src, _)), _) => host::install_bundled(src),
-                            // No copy in this app: the foxreach it reads with downloads the release.
-                            (None, Some(r)) => host::foxreach(r, &["install-program"]),
-                            (None, None) => Output { ok: false, text: String::from("Nothing to install from") },
+                        let mut out = match &reader {
+                            // The foxreach that read the status downloads the release itself.
+                            Some(r) => host::foxreach(r, &["install-program"]),
+                            None => host::install_download(),
                         };
                         if out.ok {
                             // The new program registers itself with the browsers, and with these agents.

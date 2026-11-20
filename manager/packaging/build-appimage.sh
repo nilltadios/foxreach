@@ -14,8 +14,8 @@
 #           the release. quick-sharun's appimagetool (pinned there by SHA-256) writes both: UPINFO
 #           goes into the runtime before packing, the .zsync is made from the finished file. Nothing
 #           may change the AppImage afterwards. Check: packaging/check-update-info.sh OUT_DIR/*.AppImage
-# Carries:  the foxreach program from ../dist/foxreach (FOXREACH_PROGRAM overrides) in
-#           share/foxreach-manager/, which the app installs to ~/.local/bin/foxreach on request.
+# Program:  none packed: the app downloads the foxreach release (checked against its SHA256SUMS)
+#           to ~/.local/bin/foxreach when asked (src/host.rs install_download).
 # Expected: the AppImage path on the last line, exit 0.
 #
 # quick-sharun is pinned to a commit and checked by SHA-256; it pins and checks the sharun and
@@ -37,19 +37,14 @@ RT_URL=https://github.com/VHSgunzo/uruntime/releases/download/$RT_VERSION/urunti
 app=dev.nilltadios.FoxreachManager
 bin="$(realpath "${1:-target/release}")"
 out="$(realpath -m "${2:-dist}")"
-program="$(realpath "${FOXREACH_PROGRAM:-../dist/foxreach}")"
 
 for t in awk cp curl find grep install ldd mktemp patchelf readelf sha256sum strings tar; do
   command -v "$t" >/dev/null || { echo "Missing tool: $t (or build in the container: packaging/container-build.sh)" >&2; exit 1; }
 done
 [[ -x $bin/foxreach-manager ]] || { echo "$bin/foxreach-manager is missing: cargo build --locked --release" >&2; exit 1; }
-[[ -x $program ]] || { echo "$program is missing: uv run --python 3.15 scripts/build_binary.py" >&2; exit 1; }
-# The program must be built for the AppImage's architecture (a release build is foxreach-linux-x64 or
-# foxreach-linux-arm64), and so must the app.
+# The app must be built for the AppImage's architecture.
 want=$(case $arch in x86_64) echo X86-64 ;; aarch64) echo AArch64 ;; esac)
-for f in "$bin/foxreach-manager" "$program"; do
-  [[ $(readelf -h "$f") == *Machine:*"$want"* ]] || { echo "$f is not built for $arch" >&2; exit 1; }
-done
+[[ $(readelf -h "$bin/foxreach-manager") == *Machine:*"$want"* ]] || { echo "$bin/foxreach-manager is not built for $arch" >&2; exit 1; }
 
 # quick-sharun looks for libc in Debian and Arch layouts; elsewhere use the folder the binary loads it from.
 if [[ -z ${LIB_DIR:-} ]]; then
@@ -62,11 +57,6 @@ export LIB_DIR
 
 version=$(awk -F'"' '/^\[/{p=($0=="[package]")} p && /^version *=/{print $2; exit}' Cargo.toml)
 [[ -n $version ]] || { echo "Cannot read the version from Cargo.toml" >&2; exit 1; }
-# The app takes the program it carries to be its own version without running it (src/host.rs
-# bundled_version), so a program of another version must not be packed.
-program_version=$("$program" version) || { echo "$program does not run" >&2; exit 1; }
-[[ $program_version == "$version" ]] \
-  || { echo "$program is foxreach $program_version, Cargo.toml says $version: build the program from this checkout" >&2; exit 1; }
 cache="$PWD/packaging/cache"
 mkdir -p "$cache" "$out"
 qs="$cache/quick-sharun-$QS_COMMIT.sh"
@@ -116,7 +106,6 @@ mkdir -p "$APPDIR/share/fonts"
 install -m755 "$bin/foxreach-manager" "$APPDIR/shared/bin/foxreach-manager"
 rm -f "$APPDIR/bin/01-path-mapping-hardcoded.hook"
 rmdir "$APPDIR/share/fonts" 2>/dev/null || true
-install -Dm755 "$program" "$APPDIR/share/foxreach-manager/foxreach"
 install -Dm644 "resources/$app.metainfo.xml" "$APPDIR/share/metainfo/$app.appdata.xml"
 install -Dm644 "resources/$app.svg" "$APPDIR/share/icons/hicolor/scalable/apps/$app.svg"
 rm -f "$out/$OUTNAME" "$out/$OUTNAME.zsync"

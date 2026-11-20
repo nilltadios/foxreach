@@ -46,10 +46,6 @@ fn check() -> i32 {
         Some((p, v)) => println!("installed: foxreach {v} ({})", p.join(" ")),
         None => println!("installed: none ({})", host::install_path().display()),
     }
-    match &snap.bundled {
-        Some((p, v)) => println!("bundled: foxreach {v} ({})", p.display()),
-        None => println!("bundled: none"),
-    }
     match &snap.in_use {
         Some(u) => println!("in use: foxreach {} ({:?}: {})", u.version, u.source, u.command.join(" ")),
         None => println!("in use: none"),
@@ -84,18 +80,12 @@ fn main() -> cosmic::iced::Result {
         }
         // What the window would show, without a window: for checking a package from a terminal.
         Some("--check") => std::process::exit(check()),
-        // Install the bundled program as the Install button does, without a window.
+        // Install the latest release as the Install button does, without a window: through the
+        // foxreach that reads the status, else downloaded by this app.
         Some("--install-program") => {
-            let out = match host::bundled_program() {
-                Some((src, _)) => host::install_bundled(&src),
-                // No bundled copy: download the release through the foxreach this build reads with.
-                None => match host::snapshot().reader {
-                    Some(reader) => host::foxreach(&reader, &["install-program"]),
-                    None => {
-                        eprintln!("This build carries no foxreach program and has none to download it with.");
-                        std::process::exit(1);
-                    }
-                },
+            let out = match host::snapshot().reader {
+                Some(reader) => host::foxreach(&reader, &["install-program"]),
+                None => host::install_download(),
             };
             println!("{}", out.text);
             std::process::exit(if out.ok { 0 } else { 1 });

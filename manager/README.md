@@ -3,10 +3,11 @@
 A desktop app (Rust, [libcosmic](https://github.com/pop-os/libcosmic)) that manages foxreach end to
 end on Linux:
 
-- **The program.** Installs the foxreach program it carries as `~/.local/bin/foxreach`, the path
-  agents and browsers are given (never a path inside the AppImage or the Flatpak, which would stop
-  working). Checks for a newer release and applies it (`foxreach update`). Sets up the browser
-  side (`foxreach install --agents none`).
+- **The program.** *Install* downloads the latest foxreach release for this machine (about
+  109 MB), checks it against the release's `SHA256SUMS` and installs it as `~/.local/bin/foxreach`,
+  the path agents and browsers are given (never a path inside the AppImage or the Flatpak, which
+  would stop working). The packages carry no copy of the program. Checks for a newer release and
+  applies it (`foxreach update`). Sets up the browser side (`foxreach install --agents none`).
 - **The add-on in each browser profile.** Lists every Firefox-based browser (Firefox, LibreWolf,
   Floorp, Waterfox, Zen; native, AppImage or Flatpak) and each of its profiles, with the add-on's
   version there. *Install* and *Update* open the Mozilla-signed build in that profile; the browser
@@ -72,11 +73,9 @@ package"). The AppImage updates itself from the release after 0.4.0 ("AppImage u
 | Flatpak | `manager/flatpak/build.sh` | `manager/flatpak/repo`, `manager/flatpak/foxreach-manager-VERSION-ARCH.flatpak` |
 
 ARCH is the building machine's, `x86_64` or `aarch64`: each package is built natively, never
-cross-built. Both packages carry the foxreach program built from the same checkout for that
-architecture, as `dist/foxreach`: `uv run --python 3.15 scripts/build_binary.py` builds it for this
-machine, `--target foxreach-linux-x64` or `--target foxreach-linux-arm64` the release's file
-(`dist/release/`, copy it to `dist/foxreach`). The AppImage build refuses a program or app built
-for another architecture. Rust is 1.100.0, pinned in `rust-toolchain.toml`, the AppImage's
+cross-built. Neither package carries the foxreach program, so nothing outside `manager/` is built
+first: the app downloads the release when asked (see "Check a build"). The AppImage build refuses
+an app built for another architecture. Rust is 1.100.0, pinned in `rust-toolchain.toml`, the AppImage's
 `packaging/Containerfile` and the Flatpak manifest (one archive per architecture); libcosmic's commit
 is pinned in `Cargo.lock`. The AppImage's quick-sharun and uruntime (per architecture) are pinned by
 commit or release and SHA-256 in `packaging/build-appimage.sh`.
@@ -89,16 +88,16 @@ the host.
 ### In CI
 
 `.github/workflows/manager.yml` builds all four files on GitHub's native runners (`ubuntu-26.04`
-and `ubuntu-26.04-arm`) when `manager/` (or the workflow, `scripts/build_binary.py`,
-`.bun-version`, or `bridge/agents.mjs`, `addon.mjs`, `browsers.mjs`, which the tests read) changes
+and `ubuntu-26.04-arm`) when `manager/` (or the workflow, or `bridge/agents.mjs`, `addon.mjs`,
+`browsers.mjs`, which the tests read) changes
 on a branch or in a pull request, or by hand (*Run workflow*). Its `test` job runs `cargo test
 --locked` first (among the tests: every agent, linked app and browser foxreach knows has a bundled
 icon); the package jobs wait for it, so a failing test builds and attaches nothing:
 
 | File | Built by | Checked by |
 |---|---|---|
-| `foxreach-manager-VERSION-x86_64.AppImage`, `-aarch64.AppImage`, each with its `.zsync` | `packaging/container-build.sh` (docker) | `packaging/smoke-appimage.sh`: extracts it (no FUSE needed), runs `AppRun --version`, checks the packaged foxreach is the same file, runs and has the app's version; `packaging/check-update-info.sh`: the update information below is embedded, and the `.zsync` is that file's (name, length, SHA-1) |
-| `foxreach-manager-VERSION-x86_64.flatpak`, `-aarch64.flatpak` | `flatpak/build.sh` in the `ghcr.io/flathub-infra/flatpak-github-actions:freedesktop-26.08` container, with crates vendored by an earlier job (`VENDOR=0 BUILD_SCOPE=0`) | `flatpak/build.sh`'s own check (packaged foxreach is the same file, runs and has the app's version), then `flatpak/smoke.sh`: `flatpak install --user`, `flatpak run ... --version`, the bundled foxreach run in the sandbox |
+| `foxreach-manager-VERSION-x86_64.AppImage`, `-aarch64.AppImage`, each with its `.zsync` | `packaging/container-build.sh` (docker) | `packaging/smoke-appimage.sh`: extracts it (no FUSE needed), runs `AppRun --version`, checks that no foxreach program is packed; `packaging/check-update-info.sh`: the update information below is embedded, and the `.zsync` is that file's (name, length, SHA-1) |
+| `foxreach-manager-VERSION-x86_64.flatpak`, `-aarch64.flatpak` | `flatpak/build.sh` in the `ghcr.io/flathub-infra/flatpak-github-actions:freedesktop-26.08` container, with crates vendored by an earlier job (`VENDOR=0 BUILD_SCOPE=0`) | `flatpak/smoke.sh`: `flatpak install --user`, `flatpak run ... --version`, no foxreach program packed |
 
 Each package comes with a `.sha256`; they are the run's artifacts `manager-appimage-ARCH` and
 `manager-flatpak-ARCH`. On a `v*` tag, `release.yml` runs this workflow too and attaches the files
@@ -161,7 +160,7 @@ which updaters check after downloading.
 
 A 16 KiB-page kernel cannot load an ELF file whose LOAD segments are aligned to less than 16 KiB.
 The aarch64 CI jobs fail if any ELF file shipped in either package (the AppImage runtime, sharun,
-every bundled library, the app, the foxreach program) is aligned below 0x4000
+every bundled library, the app) is aligned below 0x4000
 (`packaging/check-elf-alignment.sh`). As found on 2026-11-18: the uruntime (v0.8.1), and
 quick-sharun's sharun, helper libraries and appimagetool for aarch64 are aligned to 64 KiB, and the DwarFS inside the uruntime is jemalloc built
 for pages up to 64 KiB (`--with-lg-page=16` in DwarFS's static build script for non-x86 targets),
@@ -194,7 +193,7 @@ this: after a change of `.bun-version`, check again on an Asahi machine with `ge
 
 ```bash
 foxreach-manager --check            # what the window would show, as text; exit 0 if it read foxreach
-foxreach-manager --install-program  # install the bundled program, as the Install button does
+foxreach-manager --install-program  # install the latest release, as the Install button does
 ```
 
 For the packages: `./foxreach-manager-*.AppImage --check` and
@@ -202,17 +201,26 @@ For the packages: `./foxreach-manager-*.AppImage --check` and
 detected (`Plain`, `AppImage(...)`, `Flatpak { ... }`).
 
 For testing against a throwaway home: `HOME=<folder> FOXREACH_AGENT_CLI=0`, and
-`FOXREACH_MANAGER_BUNDLED=<path to a foxreach build>` to give a plain build a program to install,
-or `FOXREACH_MANAGER_PROGRAM="bun /path/to/bridge/cli.mjs"` to run a checkout. The program's side
+`FOXREACH_MANAGER_PROGRAM="bun /path/to/bridge/cli.mjs"` to run a checkout. The program's side
 is tested by `test/status_json.py`.
 
-A package's own foxreach is taken to have the app's version and is not run at start (its first run
-from an AppImage reads the whole program through the compressed image, issue #19); it runs only
-when it reads the status, because no usable program is installed. `packaging/build-appimage.sh`,
-`flatpak/build.sh` and `packaging/smoke-appimage.sh` fail when the two versions differ.
-`packaging/check-bundled-not-run.sh` shows this with a debug build in a fake AppDir whose foxreach
-logs each run and sleeps 3 s (not run in CI; needs a foxreach program, `~/.local/bin/foxreach` by
-default).
+Install, when no foxreach reads the status, is the app's own download (`src/host.rs`
+`install_download`): `BUILDINFO.txt`, `SHA256SUMS` and `foxreach-linux-x64` or
+`foxreach-linux-arm64` from `FOXREACH_RELEASE_URL` (as for `install.sh` and `foxreach update`),
+else `https://github.com/nilltadios/foxreach/releases/latest/download`, with the host's curl (or
+wget). The file must match its line in `SHA256SUMS` and print the version `BUILDINFO.txt` names;
+otherwise nothing is changed. When a foxreach does read the status, it runs `foxreach
+install-program` itself. With nothing at `~/.local/bin/foxreach` (or a program too old for
+`status --json`), the app reads with what the browsers' host manifest
+(`~/.mozilla/native-messaging-hosts/foxreach.json`, then `~/.librewolf/...`) runs: a checkout, or
+the program at another path. A setup only agents run, with no browser manifest, shows as not
+installed. A `foxreach status --json` with a higher `format` than this app reads is not read; the
+app says to update it.
+
+`packaging/check-install-download.sh` shows the download and the reading with a debug build in a
+fake AppDir, a throwaway home and a local release folder (`file://`), with `--install-program` and
+`--check` only (not run in CI; needs curl; the wget path is not covered, as wget does not read
+`file://`).
 
 ## The Flatpak's permissions
 

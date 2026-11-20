@@ -2,8 +2,6 @@
 //! `--demo`: the window with built-in sample data and no foxreach program, for working on the UI
 //! (manager/dev.sh rebuilds and reopens it on every save). Actions change the sample in memory.
 
-use std::path::PathBuf;
-
 use crate::host;
 use crate::host::{Addon, Agent, Browser, FlatpakBrowser, HostSide, InUse, Output, Profile, Setup, Snapshot, Source, Status, TestResult};
 
@@ -78,8 +76,8 @@ pub fn snapshot() -> Snapshot {
     };
     Snapshot {
         installed: Some((vec![String::from("/home/you/.local/bin/foxreach")], String::from("0.3.3"))),
-        bundled: Some((PathBuf::from("/app/share/foxreach-manager/foxreach"), String::from("0.3.3"))),
         status: Some(Status {
+            format: 1,
             mcp_command: MCP.into(),
             setup: Some(Setup {
                 kind: String::from("release"),
@@ -141,6 +139,7 @@ pub fn snapshot() -> Snapshot {
         in_use: Some(InUse { command: vec![String::from("/home/you/.local/bin/foxreach")], version: String::from("0.3.3"), source: Source::Release }),
         reader: Some(vec![String::from("/home/you/.local/bin/foxreach")]),
         too_old: None,
+        too_new: None,
     }
 }
 
