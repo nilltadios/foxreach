@@ -49,7 +49,8 @@ Open items, newest first. Remove an item when it is done.
      reboot or logout; SIGTERM to the browser (logout, `kill`) is recorded as `lost`, since
      Firefox does not treat it as a quit.
    - `browser_open` runs without the browser's approval prompt (the browser is not running to ask
-     in); it can only start profiles in the record, with their recorded browser. Say if it should
+     in); it can only start profiles foxreach found itself (the record, and profiles holding the
+     add-on that `foxreach status` finds), each in the browser found for it. Say if it should
      ask, for example through MCP elicitation.
 
 0. **Manager: add-on update issues seen 2026-11-14** (release build of `manager/` from main, Browsers

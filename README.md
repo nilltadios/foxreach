@@ -419,12 +419,15 @@ connected, the error ends with the last one. Each native host writes this to `hi
 the socket folder (`$XDG_RUNTIME_DIR/foxreach`), so it is cleared at logout or reboot;
 [test/history.py](test/history.py) checks each case on a throwaway profile.
 
-`browser_open` starts the browser when none is connected, on a profile in foxreach's record (the
-one `setup_profile.py` keeps, which the not-connected error lists), with the browser recorded for
-it, and waits up to 45 s for the add-on to connect. An agent cannot pass a command or a profile
-that is not recorded; a profile that a running browser already holds is refused, so a second copy
-is never started on it. With several recorded profiles it takes `profile`, else the user's default
-(`foxreach browsers default`).
+`browser_open` starts the browser when none is connected, on a profile foxreach found itself, and
+waits up to 45 s for the add-on to connect. Those are the profiles in foxreach's record (the one
+`setup_profile.py` keeps), each with the browser recorded for it, and the profiles `foxreach
+status` finds with the add-on installed (as after an install from addons.mozilla.org, the release
+link or the manager), each with the browser whose profiles they are; the not-connected error lists
+the same ones. Left out: a profile where the add-on is disabled or agents are stopped, and Tor
+Browser's. An agent cannot pass a command or any other profile; a profile that a running browser
+already holds is refused, so a second copy is never started on it. With several profiles it takes
+`profile`, else the user's default (`foxreach browsers default`).
 
 Tabs an agent opens stay in the user's browser until closed. `tabs_list` marks the ones this
 session opened, `tabs_create` reminds the agent once it has five or more open, and
@@ -641,7 +644,7 @@ The tests use `FOXREACH_BROWSER` (a path or a command), else the only browser in
 | `test/restart_loop.py` | The add-on returns after every restart |
 | `test/real_site.py` | Search and read a real site (Wikipedia, needs internet) |
 | `test/real_agents.py` | Claude Code and Codex each finish a task; uses a little quota |
-| `test/browser_open.py` | `browser_open` starts a recorded throwaway profile and waits for it; refuses unrecorded, open and missing ones |
+| `test/browser_open.py` | `browser_open` starts a recorded throwaway profile, or one only detected with the add-on, and waits for it; refuses unknown, open and missing ones, and leaves out profiles without the add-on and Tor Browser's |
 | `test/history.py` | How connections ended (quit, killed, add-on restarted) reaches `status` and the not-connected error |
 | `test/security.py` | The bridge refuses hidden-file uploads, non-image `save_to`, and a socket folder others can write; starts no browser |
 | `test/request_window.py [--full] [--rfp]` | The request window, where both builds ask, in a real window: its cards and, in the build without privileged code, the browser's own permission prompt (Allow and Deny) fit, and a size or maximize the user gives it is kept; `--full` for the full build; needs a desktop session |

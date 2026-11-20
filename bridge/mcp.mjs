@@ -11,7 +11,7 @@ import readline from "node:readline";
 import { notConnectedMessage } from "./browsers.mjs";
 import { lastEndNote, recentSessions } from "./history.mjs";
 import { SERVER_ICONS } from "./icon.mjs";
-import { chooseProfile, launch, profileInUse } from "./open.mjs";
+import { chooseProfile, launch, openableProfiles, profileInUse } from "./open.mjs";
 import { connectedBrowsers, describe, fixedSocket, folder, isDefault, proofMatches, readDefault } from "./connected.mjs";
 import { assertPrivate, socketPath } from "./socket.mjs";
 import { WIN } from "./win.mjs";
@@ -65,7 +65,7 @@ async function target() {
     }
   }
   // Windows has no fixed pipe to fall back on (bridge/socket.mjs): explain what to open instead.
-  if (!list.length && !SOCKET) throw new Error(notConnectedMessage("ENOENT", `no browser listed in ${folder()}`));
+  if (!list.length && !SOCKET) throw new Error(notConnectedMessage("ENOENT", `no browser listed in ${folder()}`, undefined, openableProfiles()));
   if (!list.length) return SOCKET;
   if (list.length === 1) {
     chosen = { socket: list[0].socket, token: list[0].token, label: label(list[0]), by: "auto" };
@@ -157,7 +157,8 @@ async function connect() {
     c.on("error", (e) => {
       if (!conn) {
         clearTimeout(proofTimer);
-        reject(new Error(notConnectedMessage(e.code, SOCKET) + lastEndNote()));
+        // The profiles the hint offers are the ones browser_open can start.
+        reject(new Error(notConnectedMessage(e.code, SOCKET, undefined, openableProfiles()) + lastEndNote()));
       }
     });
     c.on("close", () => {
@@ -502,7 +503,7 @@ async function profileConnected(profile) {
   return (await connectedBrowsers()).some((b) => b.profile && path.resolve(b.profile) === path.resolve(profile));
 }
 
-/** browser_open: start a recorded profile's browser and wait until foxreach in it connects. */
+/** browser_open: start the browser of a profile foxreach found and wait until foxreach in it connects. */
 async function openBrowser(args) {
   const rec = chooseProfile(args.profile);
   const text = (t) => ({ content: [{ type: "text", text: t }] });

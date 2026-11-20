@@ -123,7 +123,7 @@ export function recordedProfiles(file = process.env.FOXREACH_PROFILES ||
 
 const shellQuote = (s) => (/^[\w@%+=:,./-]+$/.test(s) ? s : `'${s.replace(/'/g, "'\\''")}'`);
 
-/** The command that opens a recorded profile in its browser, or null when the browser is unknown. */
+/** The command that opens a profile in its browser, or null when the browser is unknown. */
 export function openCommand({ profile, browser }) {
   if (!browser) return null;
   if (browser.startsWith("flatpak:")) return `flatpak run ${shellQuote(browser.slice(8))} --profile ${shellQuote(profile)}`;

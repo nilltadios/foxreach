@@ -1,56 +1,72 @@
-// browser_open: start a browser profile foxreach is set up in, for an agent that finds no browser
-// connected. Only profiles in foxreach's own record (setup_profile.py writes it, one line per
-// profile: path, version, browser) can be opened, each with the browser recorded for it; an agent
-// cannot pass a command or a program.
-import { spawn, spawnSync } from "node:child_process";
-import fs from "node:fs";
+// browser_open: start a browser profile foxreach is in, for an agent that finds no browser
+// connected. It opens only profiles foxreach itself found: those in its own record (setup_profile.py
+// writes it, one line per profile: path, version, browser), each with the browser recorded for it,
+// and those `foxreach status` finds with the add-on installed (an install from addons.mozilla.org,
+// the release link or the manager writes no record), each with the browser whose profiles it is in.
+// An agent cannot pass a command or a program, only choose one of these profiles.
+import { spawn } from "node:child_process";
 import path from "node:path";
+import { browserStatus, inUse } from "./addon.mjs";
 import { recordedProfiles } from "./browsers.mjs";
 import { readDefault } from "./connected.mjs";
 
-/** The recorded profile an agent means: by path or folder name; else the default, else the only one. */
-export function chooseProfile(want, profiles = recordedProfiles()) {
+/**
+ * The profiles browser_open can start, as {profile, browser}: the record's first (its browser is
+ * the one the user set up), then every other profile holding the add-on, with the browser it was
+ * found under. Left out: profiles where the add-on is disabled or the user stopped agents (foxreach
+ * does not connect there), and Tor Browser's, whose start script picks its own profile and which
+ * reads its own native-messaging manifests. A record line from before the record named browsers
+ * gets the browser found for its profile.
+ */
+export function openableProfiles(recorded = recordedProfiles(), rows = detectedBrowsers()) {
+  const found = new Map();
+  for (const row of rows) {
+    if (row.packaging === "tor" || row.connect) continue;
+    for (const p of row.profiles) {
+      const a = p.addon;
+      const key = path.resolve(p.path);
+      if (a && a.active !== false && !a.stopped && !found.has(key)) found.set(key, { profile: p.path, browser: row.spec });
+    }
+  }
+  const out = recorded.map((r) => (r.browser ? r : { ...r, browser: found.get(path.resolve(r.profile))?.browser ?? "" }));
+  for (const r of recorded) found.delete(path.resolve(r.profile));
+  return [...out, ...found.values()];
+}
+
+// Detection runs on the not-connected error's path too: a failure there must not hide that error.
+function detectedBrowsers() {
+  try {
+    return browserStatus();
+  } catch {
+    return [];
+  }
+}
+
+/** The profile an agent means: by path or folder name; else the default, else the only one. */
+export function chooseProfile(want, profiles = openableProfiles()) {
   const list = profiles.map((p) => `- ${p.profile}${p.browser ? ` (${p.browser})` : ""}`).join("\n");
   if (!profiles.length) {
-    throw new Error("foxreach has no record of a profile it is set up in, so it cannot open one. Ask the user to open the browser.");
+    throw new Error("foxreach found no browser profile with its add-on that it can open. Ask the user to open the browser.");
   }
   if (want) {
     const w = String(want).trim();
     const hit = profiles.filter((p) => p.profile === path.resolve(w) || path.basename(p.profile) === w);
     if (hit.length === 1) return hit[0];
-    throw new Error(`No single recorded profile matches "${w}". Recorded:\n${list}`);
+    throw new Error(`No single profile foxreach can open matches "${w}". It can open:\n${list}`);
   }
   const preferred = readDefault();
   const fallback = profiles.find((p) => preferred && path.resolve(p.profile) === preferred) ?? (profiles.length === 1 ? profiles[0] : null);
   if (fallback) return fallback;
-  throw new Error(`foxreach is set up in several profiles; pass profile (its path) to choose one, or ask the user which:\n${list}`);
+  throw new Error(`foxreach is in several profiles; pass profile (its path) to choose one, or ask the user which:\n${list}`);
 }
 
-const pidAlive = (pid) => {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (e) {
-    return e.code === "EPERM";
-  }
-};
-
 /**
- * Whether a browser holds this profile open now: Firefox keeps a `lock` link to "host:+pid" there
- * while it runs (Linux). A Flatpak browser's pid is in its sandbox's numbering, so for one of those
- * the question is whether that Flatpak runs at all.
+ * Whether a browser holds this profile open now (the lock on Linux, .parentlock on macOS, the
+ * locked file on Windows). A Flatpak browser's pid is in its sandbox's numbering, so for one of
+ * those the question is whether that Flatpak runs at all.
  */
 export function profileInUse({ profile, browser }) {
-  if (browser.startsWith("flatpak:")) {
-    const ps = spawnSync("flatpak", ["ps", "--columns=application"], { encoding: "utf8" });
-    return ps.status === 0 && ps.stdout.split("\n").some((l) => l.trim() === browser.slice(8));
-  }
-  try {
-    const pid = Number(/\+(\d+)$/.exec(fs.readlinkSync(path.join(profile, "lock")))?.[1]);
-    return pid > 0 && pidAlive(pid);
-  } catch {
-    return false; // no lock: not running (or not Linux; macOS keeps .parentlock only)
-  }
+  return inUse(profile, browser.startsWith("flatpak:") ? browser.slice(8) : null);
 }
 
 // Variables an AppImage sets for its own program. An agent started from one (Claude desktop's and

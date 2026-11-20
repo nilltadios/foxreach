@@ -20,8 +20,8 @@ export const TOOLS = [
     ask: { type: "boolean", description: "Ask the user now if this agent is not yet allowed. Default true; false only reports it (agentAccess \"unasked\")." },
     tabId: { type: "integer", description: "Also report whether this tab's page is being painted (page.framesPerSecond, page.note), measured over 1.5 s: a background tab gets about one frame a second, and none means the display may be off." },
   }),
-  tool("browser_open", "Start the browser when none is connected (tools say \"not connected\"), on a profile foxreach is set up in, and wait until it connects. Only profiles in foxreach's record can be opened, each with its recorded browser. Refuses a profile that is already open. With several recorded profiles, pass profile, or the user's default is used.", {
-    profile: { type: "string", description: "The profile's folder (a path from the not-connected error), or its folder name. Optional with one recorded profile or a default." },
+  tool("browser_open", "Start the browser when none is connected (tools say \"not connected\"), on a profile with foxreach, and wait until it connects. Only profiles foxreach itself found with its add-on can be opened, each in the browser found for it. Refuses a profile that is already open. With several, pass profile, or the user's default is used.", {
+    profile: { type: "string", description: "The profile's folder (a path from the not-connected error), or its folder name. Optional with one such profile or a default." },
   }),
   tool("browsers_list", "List the browsers connected to foxreach (the user may run several: Firefox, LibreWolf, Flatpak and AppImage builds, profiles), with the id to pass to browser_select, which one this session uses, and the user's default."),
   tool("browser_select", "Work in this browser for the rest of the session. Needed only when several browsers are connected and the user set no default: tools then say so and list them. Tabs belong to one browser.", {
