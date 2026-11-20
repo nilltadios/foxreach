@@ -7,45 +7,15 @@ mod bundled_icons;
 mod demo;
 mod host;
 mod icons;
-
-use std::path::{Path, PathBuf};
+mod window_icons;
 
 pub const APP_ID: &str = "dev.nilltadios.FoxreachManager";
 
-/// The app's own icons are compiled in, but a few that libcosmic's widgets draw are looked up by
-/// name in the icon theme, with no way for the app to pass its own: the header bar's minimize,
-/// maximize, restore and close buttons, the close button of an error banner (widget::warning) and
-/// of a toast (window-close-symbolic), and the tab bar's scroll arrows when the window is too
-/// narrow for the tabs (go-previous/go-next-symbolic). libcosmic asks the COSMIC theme; outside
-/// COSMIC it is usually missing and those come out blank, so use the desktop's own theme (KDE's,
-/// GTK's, Breeze, Adwaita).
-fn fallback_icon_theme() -> Option<String> {
-    let home = host::home();
-    let data_home = std::env::var_os("XDG_DATA_HOME").map_or_else(|| home.join(".local/share"), PathBuf::from);
-    let config_home = std::env::var_os("XDG_CONFIG_HOME").map_or_else(|| home.join(".config"), PathBuf::from);
-    let data_dirs = std::env::var("XDG_DATA_DIRS").unwrap_or_else(|_| String::from("/usr/local/share:/usr/share"));
-    let mut dirs = vec![data_home.join("icons"), home.join(".icons")];
-    dirs.extend(data_dirs.split(':').filter(|d| !d.is_empty()).map(|d| Path::new(d).join("icons")));
-    let installed = |name: &str| dirs.iter().any(|d| d.join(name).join("index.theme").is_file());
-    if installed("Cosmic") {
-        return None;
-    }
-    let read = |file: PathBuf, section: &str, key: &str| {
-        std::fs::read_to_string(file).ok().and_then(|t| host::ini_value(&t, section, key))
-    };
-    [
-        read(config_home.join("kdeglobals"), "Icons", "Theme"),
-        read(config_home.join("gtk-3.0/settings.ini"), "Settings", "gtk-icon-theme-name"),
-        Some(String::from("breeze")),
-        Some(String::from("Adwaita")),
-    ]
-    .into_iter()
-    .flatten()
-    .find(|n| installed(n))
-}
-
-fn check() -> i32 {
+fn check(icons: Option<&window_icons::Prepared>) -> i32 {
     println!("packaging: {:?}", host::packaging());
+    if let Some(icons) = icons {
+        println!("window icons: {}", icons.summary);
+    }
     let snap = host::snapshot();
     match &snap.installed {
         Some((p, v)) => println!("installed: foxreach {v} ({})", p.join(" ")),
@@ -78,13 +48,21 @@ fn check() -> i32 {
 }
 
 fn main() -> cosmic::iced::Result {
-    match std::env::args().nth(1).as_deref() {
+    let first = std::env::args().nth(1);
+    // First, while this process has no other thread: the private icon theme for the six icons
+    // libcosmic looks up by name (src/window_icons.rs) changes XDG_DATA_DIRS for a moment. Only for
+    // the window and --check, which says what the window would show; the other modes draw nothing.
+    let icons = match first.as_deref() {
+        Some("--version" | "--install-program" | "--remove") => None,
+        _ => Some(window_icons::prepare()),
+    };
+    match first.as_deref() {
         Some("--version") => {
             println!("foxreach-manager {}", env!("CARGO_PKG_VERSION"));
             return Ok(());
         }
         // What the window would show, without a window: for checking a package from a terminal.
-        Some("--check") => std::process::exit(check()),
+        Some("--check") => std::process::exit(check(icons.as_ref())),
         // Install the latest release as the Install button does, without a window: through the
         // foxreach that reads the status, else downloaded by this app.
         Some("--install-program") => {
@@ -114,7 +92,7 @@ fn main() -> cosmic::iced::Result {
     let mut settings = cosmic::app::Settings::default()
         .size(cosmic::iced::Size::new(860.0, 760.0))
         .size_limits(cosmic::iced::Limits::NONE.min_width(420.0).min_height(320.0));
-    if let Some(theme) = fallback_icon_theme() {
+    if let Some(theme) = icons.and_then(|i| i.theme) {
         settings = settings.default_icon_theme(theme);
     }
     let demo = std::env::args().any(|a| a == "--demo");

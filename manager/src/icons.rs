@@ -162,10 +162,16 @@ mod tests {
         .iter()
         .map(|(a, b)| format!("{a}{b}"))
         .collect();
-        // The one exception: main.rs's fallback_icon_theme() finds the desktop's icon theme for the
-        // few icons libcosmic's own widgets look up by name (window buttons, banner and toast close
-        // buttons, tab scroll arrows), which the app has no way to replace.
-        let allowed = |file: &str, pattern: &str| file == "main.rs" && (pattern.starts_with("default_icon") || pattern.starts_with("join("));
+        // The one exception: the six icons libcosmic's own widgets look up by name (window buttons,
+        // banner and toast close buttons, tab scroll arrows), for which the app cannot pass its own
+        // picture. window_icons.rs writes the app's drawings of them as a private icon theme,
+        // reads the desktop theme's folders to inherit from it, and looks the six names up once to
+        // check that its theme answers; main.rs hands that theme to libcosmic.
+        let allowed = |file: &str, pattern: &str| match file {
+            "main.rs" => pattern.starts_with("default_icon"),
+            "window_icons.rs" => pattern.starts_with("join(") || pattern.starts_with("from_name"),
+            _ => false,
+        };
         let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         let mut found = Vec::new();
         for entry in std::fs::read_dir(&src).unwrap() {
@@ -174,9 +180,17 @@ mod tests {
             if !file.ends_with(".rs") {
                 continue;
             }
-            for (n, line) in std::fs::read_to_string(&path).unwrap().lines().enumerate() {
+            let text = std::fs::read_to_string(&path).unwrap();
+            for (n, line) in text.lines().enumerate() {
                 for p in forbidden.iter().filter(|p| line.contains(p.as_str()) && !allowed(&file, p)) {
                     found.push(format!("src/{file}:{}: {p}", n + 1));
+                }
+            }
+            // The exception's lookup by name stays a single call, the check of the six names.
+            if file == "window_icons.rs" {
+                let by_name = text.matches(&forbidden[0][..]).count();
+                if by_name != 1 {
+                    found.push(format!("src/{file}: {} looks up by name {by_name} times, not once", forbidden[0]));
                 }
             }
         }

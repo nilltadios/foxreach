@@ -214,6 +214,13 @@ for another tab) saves the window's own picture as a binary PPM about 2 s after 
 then exits: a screenshot of a test window kept behind your other windows, which a screen capture
 cannot see.
 
+Every icon the window shows is built in, so it looks the same on every desktop. The six that
+libcosmic's own widgets look up by name in the icon theme (the window buttons, the close button of
+a banner or toast, the tab bar's scroll arrows) are written at start as a private icon theme in
+`$XDG_DATA_HOME/dev.nilltadios.FoxreachManager/icons/` (in the Flatpak under
+`~/.var/app/dev.nilltadios.FoxreachManager/data/`), only when they changed; `--check` says where on
+its `window icons:` line, or why the desktop's theme is used instead (the folder cannot be written).
+
 Install, when no foxreach reads the status, is the app's own download (`src/host.rs`
 `install_download`): `BUILDINFO.txt`, `SHA256SUMS` and `foxreach-linux-x64` or
 `foxreach-linux-arm64` from `FOXREACH_RELEASE_URL` (as for `install.sh` and `foxreach update`),
