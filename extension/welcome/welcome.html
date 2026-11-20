@@ -14,24 +14,30 @@
     <h1 id="title">foxreach is installed</h1>
   </header>
   <p class="intro">Agents on this computer, like Claude Code or Codex, can now ask to use this browser.
-    When one does, this appears under the address bar:</p>
+    When one does, a small foxreach window opens in front of whatever you are doing:</p>
 
-  <figure class="prompt" aria-label="The foxreach prompt">
+  <figure class="prompt" aria-label="The foxreach request window">
     <div class="prompt-body">
       <img src="../icons/icon.svg" alt="">
-      <p>An agent named <b>claude-code</b> wants to use this browser through foxreach. It could open tabs
-        and read and act on pages it opens or you share.</p>
+      <div>
+        <p class="prompt-kicker">An agent wants to use your browser</p>
+        <p class="prompt-name">claude-code</p>
+        <p class="prompt-explain">It could open tabs, read and act on pages it opens or you share, on the sites you allow.</p>
+      </div>
     </div>
-    <label class="prompt-box"><input type="checkbox" disabled> Always allow agents with this name</label>
-    <div class="prompt-buttons"><span class="btn">Refuse</span><span class="btn main">Allow</span></div>
+    <div class="prompt-buttons"><span class="btn">Refuse</span><span class="btn">Always allow</span><span class="btn main">Allow</span></div>
   </figure>
 
   <dl>
     <dt>Allow</dt>
-    <dd>It can work in this browser until it disconnects. Tick the box and it won't ask again.</dd>
+    <dd>It can work in this browser until it disconnects.</dd>
+    <dt>Always allow</dt>
+    <dd>Agents with this name won't have to ask again.</dd>
     <dt>Refuse</dt>
     <dd>It gets nothing.</dd>
   </dl>
+
+  <p>When an agent wants a site that is not on your list yet, the same window asks about the site.</p>
 
   <p>Agents only see the tabs they open themselves and the ones you share with them.
     To pause them or change what they can do, click the foxreach button in the toolbar.</p>

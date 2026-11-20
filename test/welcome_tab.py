@@ -13,12 +13,13 @@ if os.name == "nt":
                      "would act on the real foxreach setup. The Windows test is test/windows_hosts.py.")
 
 import base64
+import json
 import pathlib
 import sys
 import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-from harness import ROOT, Browser, Marionette  # noqa: E402
+from harness import ROOT, Browser, McpClient, Marionette  # noqa: E402
 
 fails = 0
 
@@ -53,7 +54,12 @@ try:
     m.command("Marionette:SetContext", {"value": "content"})
     m.command("WebDriver:Navigate", {"url": url})  # the welcome page itself, to read and photograph it
     text = m.command("WebDriver:ExecuteScript", {"script": "return document.body.innerText", "args": []})["value"]
-    check("it says foxreach is installed and shows the prompt", "foxreach is installed" in text and "Always allow agents with this name" in text, text[:200])
+    check("it says foxreach is installed and shows the prompt", "foxreach is installed" in text and "small foxreach window" in text and "Always allow" in text, text[:200])
+    # Installed as a user would (no test helper answering for them): both builds start with a list.
+    browser.wait_for_socket()
+    status = json.loads(McpClient(browser.socket).call("status"))
+    check("the full build starts with an empty list of sites, like the signed build",
+          status.get("siteAccess") == "listed", status.get("siteAccess"))
     if shot:
         time.sleep(1.5)  # the arrival animation
         for scheme, value in (("light", 1), ("dark", 0)):

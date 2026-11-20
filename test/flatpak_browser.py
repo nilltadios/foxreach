@@ -137,9 +137,11 @@ def main():
         check("the host's socket appears outside the sandbox", sock.exists(), log)
         if not sock.exists():
             return 1
-        # Answer for the user: agents need no approval, and (for the build that holds no site) every site.
+        # Answer for the user: agents need no approval, and every site (both builds start with a list).
         popup_message(marionette, {"popup": "setAsk", "value": False})
-        if build != "full":
+        if build == "full":
+            popup_message(marionette, {"popup": "wantSite", "host": "*"})
+        else:
             open_popup(marionette)
             click(marionette, "#access-all")
             time.sleep(1)

@@ -81,8 +81,10 @@ const hostBlocked = (url) => inList(hostOf(url), settings.blockedHosts);
    away in the browser's extensions menu, where a badge on it is never seen. One window at most. */
 let requestWindow = null;
 
-async function showRequests() {
-  if (trusted) return syncPrompts(); // the browser's own prompt; the window is the fallback below
+/** Both builds ask the same way: the request window, which comes to the front even while the user
+ * is in another app. (The full build once asked in the browser's own prompt below the address bar,
+ * which is seen only inside the browser window: a request went unseen while the user was elsewhere.) */
+function showRequests() {
   return showRequestWindow();
 }
 
@@ -129,7 +131,7 @@ async function assertSiteAllowed(url) {
   siteRequests.set(host, Date.now());
   if (siteRequests.size > SITE_REQUEST_LIMIT) siteRequests.delete(siteRequests.keys().next().value);
   updateBadge();
-  throw new Error(`Agents are not allowed on ${host} yet. The user is being asked in the browser (a foxreach prompt below the address bar, or a small foxreach window; the request is also under the foxreach toolbar button): ask the user to allow it there, then try again.`);
+  throw new Error(`Agents are not allowed on ${host} yet. The user is being asked in a small foxreach window (the request is also under the foxreach toolbar button): ask the user to allow it there, then try again.`);
 }
 
 /** Move what the user asked for into the settings, once the browser has granted it. */
@@ -183,7 +185,7 @@ function agentAccess(conn, name, ask = true) {
 }
 
 /** Where the user answers, as an agent should tell them: the browser by its own name. */
-const askedWhere = () => `in ${hostApp ?? "the browser"} (a foxreach prompt below the address bar, or a small foxreach window; the request is also under the foxreach toolbar button)`;
+const askedWhere = () => `in ${hostApp ?? "the browser"} (a small foxreach window; the request is also under the foxreach toolbar button)`;
 
 async function assertAgentAllowed(conn, name) {
   if (!settings.askApproval || allowedConns.has(conn) || settings.approvedAgents.includes(name)) return;
@@ -301,59 +303,7 @@ async function adoptTab(tab) {
   }
 }
 
-/* With the privileged code, each request is the browser's own permission prompt, in the browser
-   window; it is kept in step with the requests here, whichever way they are answered or withdrawn. */
-const shownPrompts = new Set();
-
-function wantedPrompts() {
-  const want = new Map();
-  for (const [conn, r] of agentRequests) want.set(`agent-${conn}`, { kind: "agent", conn, name: r.name });
-  for (const host of siteRequests.keys()) want.set(`site-${host}`, { kind: "site", host });
-  return want;
-}
-
-function syncPrompts() {
-  if (!trusted) return;
-  const want = wantedPrompts();
-  for (const id of [...shownPrompts]) {
-    if (want.has(id)) continue;
-    shownPrompts.delete(id);
-    browser.foxreachInput.call({ method: "removePrompt", args: { id } }).catch(() => {});
-  }
-  for (const [id, req] of want) if (!shownPrompts.has(id)) showPrompt(id, req);
-}
-
-async function showPrompt(id, req) {
-  shownPrompts.add(id);
-  const args = req.kind === "agent"
-    ? { id, name: req.name, message: "An agent named <> wants to use this browser through foxreach. It could open tabs and read and act on pages it opens or you share.",
-        allow: "Allow", deny: "Refuse", remember: "Always allow agents with this name" }
-    : { id, name: req.host, message: "An agent wants to use <>, which is not on your list of sites for agents.",
-        allow: "Allow site", deny: "Dismiss" };
-  let answer;
-  try {
-    answer = await browser.foxreachInput.call({ method: "prompt", args });
-  } catch (e) {
-    shownPrompts.delete(id);
-    console.warn("foxreach: no browser prompt, opening the request window", e);
-    return showRequestWindow();
-  }
-  shownPrompts.delete(id);
-  if (answer.action === "allow" || answer.action === "deny") {
-    if (req.kind === "agent") answerAgent(req.conn, answer.action === "deny" ? "deny" : answer.remember ? "always" : "once");
-    else if (answer.action === "deny") siteRequests.delete(req.host);
-    else {
-      wantedSites.add(req.host);
-      await applyWanted();
-    }
-    await browser.storage.local.set({ settings });
-  }
-  // A closed window leaves the request unanswered: show it again where the user is now.
-  updateBadge();
-}
-
 function updateBadge() {
-  syncPrompts();
   browser.browserAction.setBadgeBackgroundColor({ color: settings.paused ? "#c92a2a" : "#d9480f" });
   const asking = agentRequests.size || siteRequests.size;
   browser.browserAction.setBadgeText({ text: settings.paused ? "||" : asking ? "?" : agentTabs.size ? String(agentTabs.size) : "" });
@@ -1706,8 +1656,9 @@ browser.webRequest.onErrorOccurred.addListener((d) => {
   settings = { ...settings, ...stored.settings };
   settings.hiddenFields = { ...HIDDEN_DEFAULT, ...(stored.settings?.hiddenFields ?? {}) };
   settings.blockedHosts = parseBlocked((settings.blockedHosts ?? []).join(" ")); // entries saved by older versions
-  // First start: every site if the browser already grants that (the full build), else a list to fill.
-  settings.siteAccess ??= (await browserGrants("*")) ? "all" : "listed";
+  // First start: a list to fill, in both builds. (The full build, which holds every site anyway,
+  // used to start with every site; settings saved then keep their choice.)
+  settings.siteAccess ??= "listed";
   updateBadge();
   connectHost();
   watchQuit();

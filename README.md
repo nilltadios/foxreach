@@ -498,7 +498,8 @@ The toolbar button shows the bridge's status and recent agent activity, and it h
   may keep the button in its extensions menu; the button also shows `?`. The name is what
   the program calls itself, so this keeps out an agent you did not mean to let in, not a program
   that lies about its name. You can switch asking off.
-- **Sites agents may use:** every site, or only the ones you list (with their subdomains). On any
+- **Sites agents may use:** every site, or only the ones you list (with their subdomains). Both builds
+  start with an empty list, so each new site is a request to you. On any
   other site an agent can neither open a page nor read or act on one, and a frame from such a site
   is skipped (and blacked out whole in screenshots), as are blank frames inside it. A refused site
   shows as a request you can allow with one click. Sharing a tab allows
@@ -643,7 +644,7 @@ The tests use `FOXREACH_BROWSER` (a path or a command), else the only browser in
 | `test/browser_open.py` | `browser_open` starts a recorded throwaway profile and waits for it; refuses unrecorded, open and missing ones |
 | `test/history.py` | How connections ended (quit, killed, add-on restarted) reaches `status` and the not-connected error |
 | `test/security.py` | The bridge refuses hidden-file uploads, non-image `save_to`, and a socket folder others can write; starts no browser |
-| `test/request_window.py [--rfp]` | The request window of the build without privileged code, in a real window: its cards and the browser's own permission prompt (Allow and Deny) fit, and a size or maximize the user gives it is kept; needs a desktop session |
+| `test/request_window.py [--full] [--rfp]` | The request window, where both builds ask, in a real window: its cards and, in the build without privileged code, the browser's own permission prompt (Allow and Deny) fit, and a size or maximize the user gives it is kept; `--full` for the full build; needs a desktop session |
 | `test/first_run_prompt.py` | `tabs_select` says when a browser prompt keeps the tab from the front |
 | `test/browsers.py` | Browsers are found however installed, and the native host goes where each looks; starts no browser |
 | `test/flatpak_sandbox.py` | The Flatpak copy of the host works inside a real Flatpak sandbox |

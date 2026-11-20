@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import zipfile
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -77,9 +78,19 @@ class Browser:
         addon = self.marionette.command("Addon:Install", {"path": str(self.xpi), "temporary": False, "allowPrivateBrowsing": True})["value"]
         if not ask_approval:
             self.popup_message({"popup": "setAsk", "value": False})
+        if self.full_build():
+            # Both builds start with an empty list of sites. The tests of the tools want every site,
+            # which the full build holds already; the tests of the list switch it back.
+            self.popup_message({"popup": "wantSite", "host": "*"})
+        if not ask_approval or self.full_build():
             # Leave the add-on's page: it closes when the add-on is updated or reloaded.
             self.marionette.command("WebDriver:Navigate", {"url": "about:blank"})
         return addon
+
+    def full_build(self):
+        """Whether self.xpi is the full build (with the privileged Experiment)."""
+        with zipfile.ZipFile(self.xpi) as z:
+            return "experiment_apis" in json.loads(z.read("manifest.json"))
 
     def open_popup(self):
         return open_popup(self.marionette)

@@ -960,6 +960,11 @@ def t_navigation(mcp):
     check("about:config is refused", expect_error(lambda: mcp.call("navigate", tabId=tab, url="about:config"), "only open"))
     check("file: is refused", expect_error(lambda: mcp.call("navigate", tabId=tab, url="file:///etc/passwd"), "only open"))
     check("javascript: is refused", expect_error(lambda: mcp.call("navigate", tabId=tab, url="javascript:alert(1)"), "only open"))
+    # foxreach's own pages (the request window, the popup) answer the user's questions: an agent must
+    # never open one, or it could press Allow for itself.
+    check("moz-extension: is refused, in a new tab and in its own",
+          expect_error(lambda: mcp.call("tabs_create", url="moz-extension://foxreach/popup/popup.html?requests"), "only open")
+          and expect_error(lambda: mcp.call("navigate", tabId=tab, url="moz-extension://foxreach/popup/popup.html?requests"), "only open"))
 
     mcp.call("navigate", tabId=tab, url=f"{MAIN}/late")
     check("wait_for finds late content", "Found" in mcp.call("wait_for", tabId=tab, selector="#late"))
@@ -1407,28 +1412,47 @@ def popup_tests(browser, mcp):
     check("a new agent's call waits", "one" not in answers and "newcomer asks to use the browser" in text_of("agent-requests"), answers)
     request_windows = lambda: run("browser.windows.getAll({ populate: true }).then((all) => arguments[0](all.filter((w) => w.tabs.some((t) => t.url.endsWith('?requests'))).length))")  # noqa: E731
 
-    def chrome(script):
-        m.command("Marionette:SetContext", {"value": "chrome"})
+    def wait_for(ok, timeout):
+        """ok()'s value once it is truthy, or its last value after timeout."""
+        deadline = time.time() + timeout
+        while not (value := ok()) and time.time() < deadline:
+            time.sleep(0.2)
+        return value
+
+    def request_cards():
+        """The request window's cards, as the user sees them; [] with no window open."""
+        home = m.command("WebDriver:GetWindowHandle", {})["value"]
         try:
-            return m.command("WebDriver:ExecuteScript", {"script": script, "args": []})["value"]
+            for h in m.command("WebDriver:GetWindowHandles", {}):
+                m.command("WebDriver:SwitchToWindow", {"handle": h, "focus": False})
+                if m.command("WebDriver:GetCurrentURL", {})["value"].endswith("?requests"):
+                    return m.command("WebDriver:ExecuteScript", {"args": [], "script":
+                        "return [...document.querySelectorAll('.card .subject')].map((e) => e.textContent)"})["value"]
+            return []
         finally:
-            m.command("Marionette:SetContext", {"value": "content"})
+            m.command("WebDriver:SwitchToWindow", {"handle": home, "focus": False})
 
-    # The browser's own permission prompts that foxreach shows, on the tab in front.
-    prompts_js = "return PopupNotifications._currentNotifications.filter((n) => n.id.startsWith('foxreach-') && n.browser === gBrowser.selectedBrowser)"
-    prompts = lambda: chrome(f"{prompts_js.replace('return ', 'return (')}).map((n) => n.id + ' ' + n.options.name)")  # noqa: E731
-
-    def answer_prompt(action, remember=False):
+    def answer_window(name, action):
+        """Press a button on the request window's card for this agent: primary (Allow), quiet
+        (Always allow) or ghost (Refuse). An agent's answer needs no user gesture."""
+        home = m.command("WebDriver:GetWindowHandle", {})["value"]
+        press_js = ("const card = [...document.querySelectorAll('.card')].find((c) => c.querySelector('.subject')?.textContent === arguments[0]);"
+                    "if (!card) return false; card.querySelector('.action.' + arguments[1]).click(); return true;")
         deadline = time.time() + 10
-        while not prompts() and time.time() < deadline:
-            time.sleep(0.1)
-        chrome(prompts_js.replace("return ", "const n = (") + f")[0]; "
-               + ("n.mainAction.callback({ checkboxChecked: %s, source: 'button' });" % ("true" if remember else "false")
-                  if action == "allow" else "n.secondaryActions[0].callback({ source: 'button' });"))
+        try:
+            while time.time() < deadline:
+                for h in m.command("WebDriver:GetWindowHandles", {}):
+                    m.command("WebDriver:SwitchToWindow", {"handle": h, "focus": False})
+                    if m.command("WebDriver:GetCurrentURL", {})["value"].endswith("?requests") and \
+                            m.command("WebDriver:ExecuteScript", {"script": press_js, "args": [name, action]})["value"]:
+                        return
+                time.sleep(0.2)
+            raise RuntimeError(f"no request card for {name}")
+        finally:
+            m.command("WebDriver:SwitchToWindow", {"handle": home, "focus": False})
 
-    shown = prompts()
-    check("the request is the browser's own prompt, in the browser window", len(shown) == 1 and "newcomer" in shown[0], shown)
-    check("...and opens no window of its own", request_windows() == 0, request_windows())
+    shown = wait_for(lambda: request_cards(), 10)
+    check("the request opens foxreach's request window, the same in both builds", shown == ["newcomer"], shown)
     quiet = McpClient(mcp_socket, name="quiet-prober")
     probed = json.loads(quiet.call("status", ask=False))
     time.sleep(0.5)  # a request that should never appear: give it the time it would take
@@ -1450,28 +1474,28 @@ def popup_tests(browser, mcp):
     thread.join(10)
     check("Allow lets the waiting call through", "other tabs" in answers.get("one", ""), answers)
     time.sleep(0.5)
-    check("answering in the toolbar popup removes the prompt", prompts() == [], prompts())
+    check("answering in the toolbar popup closes the request window", wait_for(lambda: request_windows() == 0, 10), request_windows())
     check("...and the agent's later calls", "other tabs" in one.call("tabs_list"))
     check("status then says the agent is allowed", json.loads(one.call("status")).get("agentAccess") == "allowed")
     one.close()
 
     viaprompt, thread = asking("prompted", "five")
-    answer_prompt("allow")
+    answer_window("prompted", "primary")
     thread.join(10)
-    check("Allow in the browser prompt lets the call through", "other tabs" in answers.get("five", ""), answers)
+    check("Allow in the request window lets the call through", "other tabs" in answers.get("five", ""), answers)
     shown = until("agent-requests", lambda t: "prompted" not in t)
     check("...and the popup no longer lists the request", "prompted" not in shown, shown)
     viaprompt.close()
     viaprompt, thread = asking("prompted", "six")
-    answer_prompt("deny")
+    answer_window("prompted", "ghost")
     thread.join(10)
-    check("Refuse in the browser prompt fails the call", "refused" in answers.get("six", ""), answers)
+    check("Refuse in the request window fails the call", "refused" in answers.get("six", ""), answers)
     viaprompt.close()
     viaprompt, thread = asking("remembered", "seven")
-    answer_prompt("allow", remember=True)
+    answer_window("remembered", "quiet")
     thread.join(10)
     shown = until("agents", lambda t: "remembered: always allowed" in t)
-    check("the prompt's checkbox means Always", "remembered: always allowed" in shown, shown)
+    check("Always allow in the request window remembers the agent", "remembered: always allowed" in shown, shown)
     press("agents", "Remove")
     viaprompt.close()
     two, thread = asking("newcomer", "two")

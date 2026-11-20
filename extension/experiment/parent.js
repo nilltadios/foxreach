@@ -149,80 +149,6 @@ function dialogRespond(browser, { action, text }) {
   return state;
 }
 
-/*
- * Requests the user must answer, shown as the browser's own permission prompt (the panel a site's
- * camera or location request uses). It belongs to the browser window, not to any page, so no page
- * can see or press it. It follows the user from tab to tab until answered or withdrawn.
- */
-const prompts = new Map(); // id -> { finish, remove }
-
-const mainWindow = () => Services.wm.getMostRecentWindow("navigator:browser");
-
-function showPrompt(extension, { id, message, name, allow, deny, remember }) {
-  if (prompts.has(id)) throw new ExtensionError(`Request ${id} is already shown.`);
-  const win = mainWindow();
-  if (!win?.PopupNotifications || !win.gBrowser) throw new ExtensionError("No browser window to show the request in.");
-  return new Promise((resolve) => {
-    let notification = null;
-    let moving = false;
-    let done = false;
-    const tabs = win.gBrowser.tabContainer;
-    const finish = (action, rememberChosen = false) => {
-      if (done) return;
-      done = true;
-      prompts.delete(id);
-      tabs.removeEventListener("TabSelect", follow);
-      win.removeEventListener("unload", closed);
-      moving = true;
-      notification?.remove();
-      resolve({ action, remember: rememberChosen });
-    };
-    const place = () => {
-      if (done) return;
-      moving = true;
-      notification?.remove();
-      moving = false;
-      notification = win.PopupNotifications.show(
-        win.gBrowser.selectedBrowser, `foxreach-${id}`, message, null,
-        { label: allow, accessKey: allow[0], callback: (state) => finish("allow", !!state?.checkboxChecked) },
-        [{ label: deny, accessKey: deny[0], callback: () => finish("deny") }],
-        {
-          name,
-          persistent: true,
-          hideClose: true,
-          popupIconURL: extension.baseURI.resolve("icons/icon.svg"),
-          checkbox: remember ? { label: remember, checked: false } : undefined,
-          // Closing the tab it sits on removes it: show it again on the tab now in front.
-          eventCallback: (event) => {
-            if (event === "removed" && !moving && !done) win.setTimeout(place, 0);
-          },
-        }
-      );
-    };
-    const follow = () => place();
-    const closed = () => finish("closed");
-    tabs.addEventListener("TabSelect", follow);
-    win.addEventListener("unload", closed);
-    prompts.set(id, { finish });
-    place();
-    if (Services.focus.activeWindow !== win) win.getAttention();
-  });
-}
-
-function removePrompt({ id }) {
-  prompts.get(id)?.finish("withdrawn");
-  return { removed: true };
-}
-
-/** For tests: the requests on screen, and a way to answer one as the user would. */
-function promptState() {
-  const win = mainWindow();
-  return [...prompts.keys()].map((id) => {
-    const n = win?.PopupNotifications?.getNotification(`foxreach-${id}`, win.gBrowser.selectedBrowser);
-    return { id, onSelectedTab: !!n };
-  });
-}
-
 // The request comes before windows close, early enough for the add-on's message to reach its host
 // (at "granted" it lost the race about one quit in six); a request a page cancels is handled by
 // the host, which counts it only if the connection ends soon after.
@@ -239,7 +165,6 @@ function untilQuit() {
 
 this.foxreachInput = class extends ExtensionAPI {
   onShutdown() {
-    for (const { finish } of [...prompts.values()]) finish("withdrawn");
     if (!registered) return;
     ChromeUtils.unregisterWindowActor(ACTOR);
     resHandler().setSubstitution(RES_HOST, null);
@@ -318,9 +243,6 @@ this.foxreachInput = class extends ExtensionAPI {
       foxreachInput: {
         async call({ tabId, method, args }) {
           // Window-level requests, tied to no tab.
-          if (method === "prompt") return showPrompt(extension, args ?? {});
-          if (method === "removePrompt") return removePrompt(args ?? {});
-          if (method === "promptState") return promptState();
           // Resolves when the user quits the browser, so the add-on can tell its native host that
           // the connection is ending because of a normal quit rather than a crash.
           if (method === "untilQuit") return untilQuit();

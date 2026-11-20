@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""The request window of the no-privilege build, on a real screen: the card and the browser's own
-permission prompt both fit, and the window keeps the size the user gives it.
+"""The request window, on a real screen: the card and the browser's own permission prompt both fit,
+and the window keeps the size the user gives it. Both builds ask in this window.
 
-Run: FOXREACH_BROWSER=/usr/bin/librewolf uv run --python 3.15 test/request_window.py [--rfp] [OUT_DIR]
+Run: FOXREACH_BROWSER=/usr/bin/librewolf uv run --python 3.15 test/request_window.py [--full] [--rfp] [OUT_DIR]
+The build without privileged code (the one Mozilla signs) unless --full. The full build holds every
+site already, so Allow site asks the browser nothing there; every other check is the same.
 Expected: all PASS, exit 0. privacy.resistFingerprinting is off unless --rfp (LibreWolf turns it on
 by default; it gives new windows a standard size and spoofs window.outerHeight). Needs a desktop session (the prompt is never drawn headless). With
 OUT_DIR, also saves the measurements (request-window.json) and, where the linux-computer-use `lcu`
@@ -26,7 +28,8 @@ if sys.platform.startswith("linux") and not (os.environ.get("WAYLAND_DISPLAY") o
 PORT = 47856
 PAGE = b"<!doctype html><title>R</title><p>request window test page"
 RFP = "--rfp" in sys.argv[1:]
-_paths = [a for a in sys.argv[1:] if a != "--rfp"]
+FULL = "--full" in sys.argv[1:]
+_paths = [a for a in sys.argv[1:] if a not in ("--rfp", "--full")]
 OUT = pathlib.Path(_paths[0]) if _paths else None
 
 
@@ -47,17 +50,22 @@ def check(name, ok, detail=""):
 subprocess.run(["uv", "run", "--python", "3.15", str(ROOT / "scripts/build_install.py")], check=True, capture_output=True)
 srv = http.server.ThreadingHTTPServer(("127.0.0.1", PORT), H)
 threading.Thread(target=srv.serve_forever, daemon=True).start()
-b = Browser(ROOT / "dist/foxreach-untrusted.xpi", headless=False)
+b = Browser(ROOT / ("dist/foxreach.xpi" if FULL else "dist/foxreach-untrusted.xpi"), headless=False)
 try:
     prefs = (b.profile / "user.js").read_text()
-    prefs = prefs.replace('user_pref("extensions.experiments.enabled", true);\n', "")
+    if not FULL:
+        prefs = prefs.replace('user_pref("extensions.experiments.enabled", true);\n', "")
     prefs = prefs.replace('user_pref("extensions.webextOptionalPermissionPrompts", false);',
                           'user_pref("extensions.webextOptionalPermissionPrompts", true);')
     prefs += f'user_pref("privacy.resistFingerprinting", {str(RFP).lower()});\n'
     (b.profile / "user.js").write_text(prefs)
     report["resistFingerprinting"] = RFP
+    report["build"] = "full" if FULL else "signed"
     b.start(marionette=True); b.install(); b.wait_for_socket()
     mar = b.marionette
+    if FULL:  # it starts with every site, as it holds them all; the checks below are about asking
+        b.popup_message({"popup": "listedOnly"})
+        mar.command("WebDriver:Navigate", {"url": "about:blank"})
     m = McpClient(b.socket)
     main = mar.command("WebDriver:GetWindowHandle", {})["value"]  # chrome scripts run from here
 
@@ -128,7 +136,10 @@ try:
             if "stale element" not in str(e) or attempt == 4:
                 raise
     mar.command("WebDriver:SwitchToWindow", {"handle": main, "focus": False})  # the request window closes later
-    prompt = wait(lambda: chrome(FIND + 'if (!w) return null;'
+    if FULL:  # every site is the add-on's already: nothing to ask the browser
+        check("the window closes once the site is allowed", wait(lambda: window_state() is None))
+        check("the site is then allowed", ask_for("127.0.0.1") == "no error")
+    prompt = None if FULL else wait(lambda: chrome(FIND + 'if (!w) return null;'
         'const n = w.document.getElementById("addon-webext-permissions-notification");'
         'const p = w.PopupNotifications.panel;'
         'if (!n || n.hidden || !n.button || p.state !== "open") return null;'
@@ -137,7 +148,8 @@ try:
         'return {panel: {left: s.left - w.mozInnerScreenX, top: s.top - w.mozInnerScreenY, width: s.width, height: s.height},'
         ' allow: r(n.button), deny: r(n.secondaryButton), innerWidth: w.innerWidth, innerHeight: w.innerHeight};'))
     report["prompt"] = prompt
-    check("the browser asks in the request window", prompt is not None)
+    if not FULL:
+        check("the browser asks in the request window", prompt is not None)
     if prompt:
         time.sleep(0.8)  # let it finish drawing for the picture
         lcu = os.environ.get("LCU") or shutil.which("lcu")
