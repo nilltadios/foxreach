@@ -1462,41 +1462,53 @@ function watchQuit() {
 
 /* ---------- after install ---------- */
 
-// Installed or updated from the release link, the browser leaves the tab that showed the .xpi
-// behind, blank. Turn that tab into a short page saying foxreach is ready (welcome/welcome.html).
-// That tab never loaded anything: its address is about:blank, and only its label (the API's title)
-// still shows the link, without the scheme. A release page that did load is found by its address.
-const RELEASE_ADDRESS = /^(https?:\/\/)?(nilltadios\.github\.io\/foxreach\/[^?#]*\.xpi|github\.com\/nilltadios\/foxreach\/releases\/)/;
-const releaseTab = (t) => RELEASE_ADDRESS.test(t.url ?? "") || (t.url === "about:blank" && RELEASE_ADDRESS.test(t.title ?? ""));
-// Decided by version rather than by the install event alone: allowing the add-on in private
-// windows (the box in the install prompt; Tor Browser needs it) restarts it at once, and an event
-// or a timer from before the restart is lost. A version not welcomed yet is welcomed once.
-browser.runtime.onInstalled.addListener(({ reason }) => {
-  if (reason === "install" || reason === "update") setTimeout(welcomeTab, 1000);
+// Installed from the release link, the browser leaves the tab that showed the .xpi behind, blank.
+// Turn that tab into a short page saying foxreach is ready (welcome/welcome.html). That tab never
+// loaded anything: its address is about:blank, and only its label (the API's title) still shows
+// the link, without the scheme. A page that did load is the user's, even a release page, and an
+// update changes no tab at all: it can arrive on its own while the user works.
+const RELEASE_XPI = /^(https?:\/\/)?(nilltadios\.github\.io\/foxreach\/|github\.com\/nilltadios\/foxreach\/releases\/download\/)[^?#]*\.xpi/;
+const leftoverTab = (t) => t.url === "about:blank" && RELEASE_XPI.test(t.title ?? "");
+// Only the install event says "first install", so it leaves a note in storage for the start code:
+// allowing the add-on in private windows (the box in the install prompt; Tor Browser needs it)
+// restarts it at once, and a timer from before the restart is lost. The note is cleared once the
+// tab has been looked for. With no note (an update, or an install event lost before the note was
+// written) nothing is opened.
+browser.runtime.onInstalled.addListener(async ({ reason }) => {
+  if (reason !== "install") return;
+  await browser.storage.local.set({ welcomePending: true });
+  setTimeout(welcomeTab, 1000);
 });
 
-/** Turn the leftover release tab into the welcome page, once per version. */
-let welcoming = false;
-async function welcomeTab() {
-  if (welcoming) return;
-  const { version } = browser.runtime.getManifest();
-  const { welcomed } = await browser.storage.local.get("welcomed");
-  if (welcomed === version) return;
-  welcoming = true;
-  const url = browser.runtime.getURL(`welcome/welcome.html${welcomed ? "?update" : ""}`);
-  // The tab may not be listed at once: look for a few seconds, then stop either way.
+/** Turn the tab left by installing from the release link into the welcome page, once. The start
+ * code and the install event both call this at about the same time: one call at a time, so the
+ * second sees what the first did with the note. */
+let welcoming = Promise.resolve();
+function welcomeTab() {
+  welcoming = welcoming.then(lookForLeftoverTab).catch(() => {});
+  return welcoming;
+}
+
+async function lookForLeftoverTab() {
+  const { welcomePending } = await browser.storage.local.get("welcomePending").catch(() => ({}));
+  if (!welcomePending) return;
   try {
+    // The tab may not be listed at once: look for a few seconds, then stop either way. Two such
+    // tabs cannot be told apart, so then neither is changed.
     for (let i = 0; i < 10; i++) {
-      const tabs = (await browser.tabs.query({}).catch(() => [])).filter(releaseTab);
-      if (tabs.length) {
-        for (const t of tabs) browser.tabs.update(t.id, { url }).catch((e) => console.warn("foxreach: welcome page", e));
+      const tabs = (await browser.tabs.query({}).catch(() => [])).filter(leftoverTab);
+      if (tabs.length === 1) {
+        const url = browser.runtime.getURL("welcome/welcome.html");
+        // Still blank? The user may have started loading something in it meanwhile.
+        const t = await browser.tabs.get(tabs[0].id).catch(() => null);
+        if (t && leftoverTab(t)) await browser.tabs.update(t.id, { url }).catch((e) => console.warn("foxreach: welcome page", e));
         return;
       }
+      if (tabs.length > 1) return;
       await sleep(500);
     }
   } finally {
-    welcoming = false;
-    await browser.storage.local.set({ welcomed: version });
+    await browser.storage.local.remove("welcomePending").catch(() => {});
   }
 }
 
@@ -1662,5 +1674,5 @@ browser.webRequest.onErrorOccurred.addListener((d) => {
   updateBadge();
   connectHost();
   watchQuit();
-  setTimeout(welcomeTab, 1000); // a new version, also after a restart that cut the install event short
+  setTimeout(welcomeTab, 1000); // a first install whose welcome a restart cut short
 })();
