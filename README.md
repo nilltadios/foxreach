@@ -643,6 +643,7 @@ The tests use `FOXREACH_BROWSER` (a path or a command), else the only browser in
 | `test/browser_open.py` | `browser_open` starts a recorded throwaway profile and waits for it; refuses unrecorded, open and missing ones |
 | `test/history.py` | How connections ended (quit, killed, add-on restarted) reaches `status` and the not-connected error |
 | `test/security.py` | The bridge refuses hidden-file uploads, non-image `save_to`, and a socket folder others can write; starts no browser |
+| `test/request_window.py [--rfp]` | The request window of the build without privileged code, in a real window: its cards and the browser's own permission prompt (Allow and Deny) fit, and a size or maximize the user gives it is kept; needs a desktop session |
 | `test/first_run_prompt.py` | `tabs_select` says when a browser prompt keeps the tab from the front |
 | `test/browsers.py` | Browsers are found however installed, and the native host goes where each looks; starts no browser |
 | `test/flatpak_sandbox.py` | The Flatpak copy of the host works inside a real Flatpak sandbox |

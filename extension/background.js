@@ -93,7 +93,11 @@ async function showRequestWindow() {
       return;
     }
     requestWindow = -1; // being opened: a second request in the same moment must not open another
-    requestWindow = (await browser.windows.create({ type: "popup", url: "/popup/popup.html?requests", width: 460, height: 380 })).id;
+    // Wide enough for the browser's own permission prompt, which opens over this window when the
+    // user allows a site (about 470 px, starting up to 45 px from its left edge): narrower, its Allow
+    // button is cut off.
+    // popup.js fits the height to the cards.
+    requestWindow = (await browser.windows.create({ type: "popup", url: "/popup/popup.html?requests", width: 640, height: 420 })).id;
   } catch (e) {
     requestWindow = null;
     console.error("foxreach: could not show the request window", e);

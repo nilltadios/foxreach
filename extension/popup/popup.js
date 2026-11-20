@@ -207,16 +207,26 @@ function renderRequests() {
 }
 
 /* The browser may open the window larger than asked (LibreWolf rounds window sizes), so size it
-   to the card once it is drawn. */
-let fittedTo = 0;
+   to the cards once they are drawn. Only when the cards shown change, not on every refresh: the
+   user may have maximized or resized the window, and a fit then would undo that (the text reflows
+   at a new width, so the height the page measures changes with it). Never narrower than the
+   browser's permission prompt needs (background.js, showRequestWindow), nor lower. */
+const REQUEST_WIDTH = 640;
+const PROMPT_HEIGHT = 260; // the browser's prompt (about 180 px) and the window's title bar
+let fittedFor = "";
 async function fitWindow() {
+  const shown = [...state.agentRequests.map((r) => `a${r.conn}`), ...state.siteRequests.map((h) => `s${h}`)].join(" ");
+  if (shown === fittedFor) return;
+  fittedFor = shown;
   await new Promise(requestAnimationFrame);
-  const content = document.getElementById("request-view").scrollHeight;
-  if (Math.abs(content - fittedTo) < 4) return; // only when the cards change, not on every refresh
-  fittedTo = content;
   const w = await browser.windows.getCurrent();
-  const frame = window.outerHeight - window.innerHeight;
-  await browser.windows.update(w.id, { width: 460, height: Math.ceil(content + frame) }).catch(() => {});
+  if (w.state !== "normal") return; // maximized or full screen by the user: theirs
+  const content = document.getElementById("request-view").scrollHeight;
+  // The window's frame from the browser's own numbers: with privacy.resistFingerprinting on (as in
+  // LibreWolf by default) window.outerHeight reports the inner height, and the frame would count 0.
+  const frame = Math.max(0, w.height - window.innerHeight);
+  const height = Math.max(Math.ceil(content + frame), PROMPT_HEIGHT);
+  await browser.windows.update(w.id, { width: Math.max(w.width, REQUEST_WIDTH), height }).catch(() => {});
 }
 
 function render(next) {
