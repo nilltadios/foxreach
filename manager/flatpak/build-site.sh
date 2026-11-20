@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Lays out the GitHub Pages site: docs/ as it is (the add-on's update lists and .xpi files, which
-# installed add-ons poll) plus a signed Flatpak repository of the manager, with a .flatpakref and a
-# .flatpakrepo. Only writes SITE; deploying it is the pages workflow's job.
+# Lays out the GitHub Pages site: docs/ (the start page, the 404 page, and the add-on's update lists
+# and .xpi files, which installed add-ons poll) plus a signed Flatpak repository of the manager, with
+# a .flatpakref and a .flatpakrepo. Only writes SITE; deploying it is the pages workflow's job.
 #
 # Run:      manager/flatpak/build-site.sh SITE BASE_URL BUNDLE...
 #           manager/flatpak/build-site.sh --docs-only SITE
@@ -16,8 +16,17 @@
 #             dev.nilltadios.FoxreachManager.flatpakref   one-click install (RuntimeRepo: Flathub)
 #             foxreach.flatpakrepo                   the remote, for `flatpak remote-add`
 #             icon.svg
-#           --docs-only writes docs/ alone (the fallback when the Flatpak part cannot be built).
-# Expected: one "stable <arch> <commit>" line per bundle, then "Site: SITE", exit 0.
+#           and index.html with its Flatpak part switched on. docs/index.html carries that part as
+#           a comment, from a line "<!-- flatpak:begin" to a line "flatpak:end -->", so the page
+#           served from main:/docs links to no Flatpak file. Here, after the files above are
+#           written, those two lines are dropped and @BASE@ (BASE_URL) and @FINGERPRINT@ (the
+#           signing key's) are filled in; anything else in that layout stops the build. Every
+#           other docs/ file is copied unchanged.
+#           --docs-only writes docs/ alone, index.html as it is (the fallback when the Flatpak part
+#           cannot be built).
+# Expected: one "stable <arch> <commit>" line per bundle, "Start page: Flatpak part on, key
+#           <fingerprint>", then "Site: SITE", exit 0 (--docs-only: the "Site:" line alone).
+#           manager/flatpak/check-site-pages.sh checks the result.
 #
 # Same bundles, same repository: each bundle's commit (branch master, as the bundle has it) is
 # recommitted to stable with its own timestamp and no parent, and the appstream commits take the
@@ -103,4 +112,25 @@ printf '[Flatpak Repo]\nTitle=foxreach\nComment=The foxreach manager\nDescriptio
 printf '[Flatpak Ref]\nTitle=foxreach manager\nName=%s\nBranch=stable\nIsRuntime=false\nSuggestRemoteName=%s\nRuntimeRepo=https://dl.flathub.org/repo/flathub.flatpakrepo\n%s' \
   "$app" "$remote" "$common" > "$site/$app.flatpakref"
 cp -- "$root/manager/resources/$app.svg" "$site/icon.svg"
+
+# The start page's Flatpak part links to the files written above: switch it on only now. BASE_URL
+# goes into the page and into awk's gsub as it is, so it may hold only plain URL characters.
+[[ $base =~ ^https?://[A-Za-z0-9._~:/%-]+/$ ]] || fail "BASE_URL $base has characters that cannot go into the start page as they are"
+shown_fpr=$(awk -v f="$fpr" 'BEGIN { for (i = 0; i < 10; i++) printf "%s%s", (i == 0 ? "" : i == 5 ? "  " : " "), substr(f, 4 * i + 1, 4) }')
+awk -v base="$base" -v fpr="$shown_fpr" '
+  $0 == "<!-- flatpak:begin" { if (state != 0) bad = bad "; a second begin line at " NR; state = 1; next }
+  $0 == "flatpak:end -->" { if (state != 1) bad = bad "; an end line without a begin line at " NR; state = 2; next }
+  state == 1 && (index($0, "<!--") || index($0, "-->")) { bad = bad "; a comment marker inside the part at " NR }
+  state == 1 { nb += gsub(/@BASE@/, base); nf += gsub(/@FINGERPRINT@/, fpr) }
+  state != 1 && /@BASE@|@FINGERPRINT@/ { bad = bad "; a placeholder outside the part at " NR }
+  { print }
+  END {
+    if (state != 2) bad = bad "; no begin line followed by an end line"
+    if (!nb) bad = bad "; no @BASE@ in the part"
+    if (!nf) bad = bad "; no @FINGERPRINT@ in the part"
+    if (bad) { print substr(bad, 3) > "/dev/stderr"; exit 3 }
+  }' "$site/index.html" > "$work/index.html" \
+  || fail "docs/index.html: its Flatpak part is not laid out as this script expects (see above)"
+cat -- "$work/index.html" > "$site/index.html"
+echo "Start page: Flatpak part on, key $shown_fpr"
 echo "Site: $site"

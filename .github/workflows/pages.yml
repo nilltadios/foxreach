@@ -1,18 +1,27 @@
 # Publishes https://nilltadios.github.io/foxreach/: docs/ unchanged (updates.json,
-# updates-signed.json and the .xpi files installed add-ons poll) plus the manager's signed Flatpak
-# repository, .flatpakref and .flatpakrepo, laid out by manager/flatpak/build-site.sh.
+# updates-signed.json and the .xpi files installed add-ons poll, the start page index.html and
+# 404.html) plus the manager's signed Flatpak repository, .flatpakref and .flatpakrepo, laid out by
+# manager/flatpak/build-site.sh. The one file that differs from docs/ is index.html in a site with
+# the repository: build-site.sh switches on its Flatpak part, which is a comment in docs/.
+#
+# The site root answered 404 from the start, as docs/ had no index.html (issue #15). Before upload,
+# manager/flatpak/check-site-pages.sh checks that both pages are there and that everything they
+# link to is in the site; after the deployment, the deploy job fetches the site's root and a
+# missing address and fails the run unless they answer with these two pages.
 #
 # Stateless: the Flatpak content is the x86_64 and aarch64 bundles of the release marked latest
 # (every release carries them: release.yml, manager-release.yml), else of the newest release that
 # has both, checked against their .sha256 and build attestation before import. Unchanged bundles give
 # the same commits, so a redeploy is no update for clients.
 #
-# Does nothing (one notice) until Pages is set to deploy from GitHub Actions: while Pages builds
-# from main /docs ("legacy"), that keeps serving docs/ as before.
+# Does nothing but check docs/ (check-site-pages.sh --docs-only) until Pages is set to deploy from
+# GitHub Actions: while Pages builds from main /docs ("legacy"), that keeps serving docs/ as before,
+# and this workflow cannot see what it serves.
 #
 # If the Flatpak part fails (no GPG_PRIVATE_KEY secret, a key other than
 # manager/flatpak/signing-key.asc, no release with bundles, a checksum or attestation mismatch),
-# docs/ is deployed alone, so the add-on update lists always go out, and the run fails afterwards.
+# docs/ is deployed alone, so the add-on update lists still go out, and the run fails afterwards (a
+# start page or 404 page that fails check-site-pages.sh stops every deployment, this one too).
 # That deployment has no Flatpak repository: installed copies report an error on update until the
 # next good run.
 #
@@ -28,6 +37,7 @@ on:
     paths:
       - docs/**
       - manager/flatpak/build-site.sh
+      - manager/flatpak/check-site-pages.sh
       - manager/flatpak/signing-key.asc
       - .github/workflows/pages.yml
 
@@ -42,6 +52,7 @@ jobs:
   gate:
     runs-on: ubuntu-26.04
     permissions:
+      contents: read
       pages: read
     outputs:
       enabled: ${{ steps.mode.outputs.enabled }}
@@ -54,9 +65,15 @@ jobs:
           if [[ $mode == workflow ]]; then
             echo "enabled=true" >> "$GITHUB_OUTPUT"
           else
-            echo "::notice::Pages builds from a branch ($mode), not from this workflow: nothing to do."
+            echo "::notice::Pages builds from a branch ($mode), not from this workflow: only docs/ is checked."
             echo "enabled=false" >> "$GITHUB_OUTPUT"
           fi
+      # Pages then serves docs/ itself, so docs/ must pass as a site without the Flatpak repository.
+      - uses: actions/checkout@v4
+        if: steps.mode.outputs.enabled != 'true'
+      - name: docs/ as Pages serves it from the branch, start page, 404 page and their links
+        if: steps.mode.outputs.enabled != 'true'
+        run: manager/flatpak/check-site-pages.sh --docs-only docs "/${GITHUB_REPOSITORY#*/}/"
 
   flatpak:
     needs: gate
@@ -119,6 +136,9 @@ jobs:
     needs: [gate, flatpak]
     if: always() && needs.gate.outputs.enabled == 'true'
     runs-on: ubuntu-26.04
+    outputs:
+      index_sha256: ${{ steps.pages.outputs.index_sha256 }}
+      notfound_sha256: ${{ steps.pages.outputs.notfound_sha256 }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -131,10 +151,28 @@ jobs:
         run: |
           echo "::warning::The Flatpak part failed: deploying docs/ alone. The Flatpak repository is offline until the next good run."
           manager/flatpak/build-site.sh --docs-only site
-      - name: Every file in docs/ is in the site, unchanged
+      - name: Every file in docs/ is in the site, unchanged (index.html too, in a site without the repository)
+        env:
+          FULL: ${{ needs.flatpak.result == 'success' }}
         run: |
+          # The update lists and .xpi files are what installed add-ons poll: byte for byte. Only
+          # the start page of a site with the repository differs (its Flatpak part switched on); the
+          # next step checks that page.
           cd docs
-          find . -type f -print0 | while IFS= read -r -d '' f; do cmp -- "$f" "../site/$f"; done
+          find . -type f -print0 | while IFS= read -r -d '' f; do
+            if [[ $FULL == true && $f == ./index.html ]]; then continue; fi
+            cmp -- "$f" "../site/$f"
+          done
+      - name: Start page, 404 page and their links
+        id: pages
+        env:
+          FULL: ${{ needs.flatpak.result == 'success' }}
+        run: |
+          if [[ $FULL == true ]]; then mode=--full; else mode=--docs-only; fi
+          manager/flatpak/check-site-pages.sh "$mode" site "/${GITHUB_REPOSITORY#*/}/"
+          # The deploy job compares what Pages serves with these.
+          echo "index_sha256=$(sha256sum < site/index.html | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "notfound_sha256=$(sha256sum < site/404.html | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-pages-artifact@v5
         with:
           path: site
@@ -153,6 +191,42 @@ jobs:
     steps:
       - id: deployment
         uses: actions/deploy-pages@v5
+      # Before the next step, which ends the job in the docs/-only fallback.
+      - name: The deployed site answers its root and a missing address with its two pages
+        env:
+          PAGE_URL: ${{ steps.deployment.outputs.page_url }}
+          INDEX_SHA256: ${{ needs.site.outputs.index_sha256 }}
+          NOTFOUND_SHA256: ${{ needs.site.outputs.notfound_sha256 }}
+        run: |
+          [[ -n $PAGE_URL && -n $INDEX_SHA256 && -n $NOTFOUND_SHA256 ]] \
+            || { echo "::error::No page URL from the deployment, or no page checksums from the site job."; exit 1; }
+          base=${PAGE_URL%/}/
+          missing="${base}no-such-page-$GITHUB_RUN_ID/a/b/c"
+          # A new deployment takes a little while to be served. Each try asks with a query no one
+          # asked before, so Pages' cache (which keeps an answer for up to 10 minutes) cannot
+          # answer with the old site. Every 20 s, for at most 10 minutes.
+          deadline=$((SECONDS + 600))
+          try=0
+          while :; do
+            try=$((try + 1))
+            q="?deploy-check=$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$try"
+            : > root.html; : > missing.html
+            root=$(curl -sS -o root.html -w '%{http_code}' --max-time 20 "$base$q") || true
+            miss=$(curl -sS -o missing.html -w '%{http_code}' --max-time 20 "$missing$q") || true
+            root_ok=no; miss_ok=no
+            [[ $(sha256sum < root.html | cut -d' ' -f1) == "$INDEX_SHA256" ]] && root_ok=yes
+            [[ $(sha256sum < missing.html | cut -d' ' -f1) == "$NOTFOUND_SHA256" ]] && miss_ok=yes
+            echo "try $try: $base answered ${root:-nothing} (the start page: $root_ok), $missing answered ${miss:-nothing} (the 404 page: $miss_ok)"
+            if [[ $root == 200 && $root_ok == yes && $miss == 404 && $miss_ok == yes ]]; then
+              echo "The site serves its start page at its root and its 404 page for a missing address."
+              exit 0
+            fi
+            if (( SECONDS + 20 >= deadline )); then
+              echo "::error::After 10 minutes, $base does not answer 200 with the start page and a missing address 404 with the 404 page (last: $root, $miss)."
+              exit 1
+            fi
+            sleep 20
+          done
       - name: Fail the run if the Flatpak part failed (docs/ went out alone)
         if: needs.flatpak.result != 'success'
         run: |

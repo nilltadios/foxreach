@@ -111,10 +111,19 @@ files of the latest release unchanged, so that whichever release is latest has b
 
 ### Flatpak repository
 
-`.github/workflows/pages.yml` publishes the GitHub Pages site: `docs/` unchanged (the add-on's
-update lists and `.xpi` files) plus a signed OSTree repository (`repo/`, branch `stable`, both
-architectures), `dev.nilltadios.FoxreachManager.flatpakref` and `foxreach.flatpakrepo`, laid out by
-`flatpak/build-site.sh`. Nothing of it is committed: each run takes the bundles of the release
+`.github/workflows/pages.yml` publishes the GitHub Pages site: `docs/` (the add-on's update lists
+and `.xpi` files, the start page `index.html` with its logo `foxreach.svg`, and `404.html`) plus a
+signed OSTree repository (`repo/`, branch `stable`, both architectures),
+`dev.nilltadios.FoxreachManager.flatpakref`, `foxreach.flatpakrepo` and `icon.svg`, laid out by
+`flatpak/build-site.sh`. Every `docs/` file reaches the site unchanged except `index.html`: its
+Flatpak part is a comment in `docs/` (from a `<!-- flatpak:begin` line to a `flatpak:end -->`
+line), and `build-site.sh` switches it on, with the site address and the key fingerprint filled in,
+only after it wrote the repository. So the page links to no Flatpak file when Pages serves
+`main:/docs` or the fallback below deploys `docs/` alone. `flatpak/check-site-pages.sh --full|--docs-only SITE`
+checks a built site before upload (both pages present, every link and asset on them in the site,
+the Flatpak part on exactly when the repository is there), and after deploying, the workflow
+fetches the site's root and a missing address and fails unless they answer 200 with the start page
+and 404 with `404.html`. Nothing of the repository is committed: each run takes the bundles of the release
 marked latest (every release carries both; else of the newest release that has both), checks their
 `.sha256` and build attestation, and signs with the
 `GPG_PRIVATE_KEY` secret, which must be the key in `flatpak/signing-key.asc` (refused otherwise).
@@ -123,12 +132,15 @@ publishes a release (not after a rehearsal), and by hand. Unchanged bundles give
 with its own timestamp; the appstream commits take the newest app commit's time), so a redeploy is
 not an update for clients. The bundles themselves stay on branch `master`, as before.
 
-If the Flatpak part fails, `docs/` is deployed alone, so the add-on update lists always go out, and
-the run fails; the repository is then missing until the next good run. Until Pages is set to deploy
-from GitHub Actions the workflow does nothing, and Pages keeps serving `main:/docs`.
+If the Flatpak part fails, `docs/` is deployed alone, so the add-on update lists still go out, and
+the run fails (a start page or 404 page that fails its check stops any deployment, this one too); the repository is then missing until the next good run. Until Pages is set to deploy
+from GitHub Actions the workflow only checks `docs/` as a site without the repository, and Pages
+keeps serving `main:/docs`.
 
 Locally (needs the signing key in `GNUPGHOME`):
-`manager/flatpak/build-site.sh SITE http://127.0.0.1:PORT/ manager/flatpak/foxreach-manager-*.flatpak`.
+`manager/flatpak/build-site.sh SITE http://127.0.0.1:PORT/foxreach/ manager/flatpak/foxreach-manager-*.flatpak`,
+then `manager/flatpak/check-site-pages.sh --full SITE`; serve SITE's parent folder with SITE named
+`foxreach`, so the pages' `/foxreach/...` paths resolve as on GitHub.
 
 ### AppImage updates
 

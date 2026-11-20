@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="description" content="foxreach lets any local agent that speaks MCP operate the tabs of a Firefox-based browser. How to install the program, the add-on and the manager app.">
+<title>foxreach: browser tabs for local MCP agents</title>
+<link rel="icon" href="foxreach.svg" type="image/svg+xml">
+<!--
+  The start page of https://nilltadios.github.io/foxreach/. Served as it is when Pages serves
+  main:/docs, and by the docs-only fallback of .github/workflows/pages.yml. When that workflow also
+  publishes the signed Flatpak repository, manager/flatpak/build-site.sh uncomments the Flatpak
+  part of the manager section below and fills in the site address and the key fingerprint, so this
+  page never links to a Flatpak file the site does not have. No version numbers on purpose: every
+  download goes to the latest release.
+-->
+<style>
+  :root {
+    --bg: #ffffff;
+    --text: #1b1b1b;
+    --muted: #5a5a5a;
+    --line: #dcdcdc;
+    --code-bg: #f5f5f5;
+    --red: #c8102e;
+    --on-red: #ffffff;
+    --mono: ui-monospace, "SFMono-Regular", "DejaVu Sans Mono", "Liberation Mono", Menlo, Consolas, monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", Cantarell, "Helvetica Neue", Arial, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #161616;
+      --text: #ececec;
+      --muted: #a9a9a9;
+      --line: #343434;
+      --code-bg: #202020;
+      --red: #ff5a5f;
+      --on-red: #161616;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { background: var(--bg); }
+  body {
+    margin: 0;
+    color: var(--text);
+    background: var(--bg);
+    font: 1rem/1.6 var(--sans);
+    border-top: 6px solid var(--red);
+  }
+  .page { max-width: 50rem; margin: 0 auto; padding: 0 16px 48px; }
+  a { color: var(--red); text-underline-offset: 2px; }
+  a:hover { text-decoration-thickness: 2px; }
+  :focus-visible { outline: 3px solid var(--red); outline-offset: 2px; }
+
+  header { padding: 36px 0 28px; border-bottom: 1px solid var(--line); }
+  .name { display: flex; align-items: center; gap: 14px; }
+  .name img { width: 52px; height: 52px; flex: none; }
+  h1 { margin: 0; font-size: 2.2rem; line-height: 1.1; }
+  .intro { margin: 18px 0 0; font-size: 1.08rem; }
+  .links { display: flex; flex-wrap: wrap; gap: 10px 20px; align-items: center; margin: 22px 0 0; padding: 0; list-style: none; }
+  .button {
+    display: inline-block;
+    padding: .55rem 1rem;
+    background: var(--red);
+    color: var(--on-red);
+    font-weight: 600;
+    text-decoration: none;
+    border-radius: 4px;
+    overflow-wrap: anywhere;
+  }
+  .button:hover { text-decoration: underline; }
+
+  section { padding: 30px 0 6px; border-bottom: 1px solid var(--line); }
+  section:last-of-type { border-bottom: 0; }
+  h2 { margin: 0 0 10px; font-size: 1.45rem; line-height: 1.25; border-left: 5px solid var(--red); padding-left: 12px; }
+  h3 { margin: 26px 0 6px; font-size: 1.08rem; }
+  p, ul { margin: 10px 0; }
+  ul { padding-left: 1.3rem; }
+  li { margin: 4px 0; }
+  .note { color: var(--muted); }
+
+  code { font-family: var(--mono); font-size: .9em; overflow-wrap: anywhere; }
+  pre {
+    margin: 12px 0;
+    padding: 12px 14px;
+    background: var(--code-bg);
+    border-left: 3px solid var(--red);
+    font: .85rem/1.55 var(--mono);
+    /* Commands keep their real lines: a long one scrolls inside its block instead of wrapping
+       into what would look like two commands. */
+    white-space: pre;
+    overflow-x: auto;
+  }
+  pre code { font-size: 1em; }
+
+  table { width: 100%; border-collapse: collapse; margin: 12px 0; }
+  th, td { text-align: left; vertical-align: top; padding: 10px 12px 10px 0; border-bottom: 1px solid var(--line); }
+  thead th { font-size: .92rem; color: var(--muted); font-weight: 600; }
+  tbody th { width: 38%; font-weight: 600; }
+
+  footer { margin-top: 30px; padding-top: 18px; border-top: 1px solid var(--line); color: var(--muted); font-size: .92rem; }
+  footer p { margin: 6px 0; }
+
+  @media (max-width: 560px) {
+    h1 { font-size: 1.9rem; }
+    thead { display: none; }
+    tbody tr { display: block; padding: 10px 0; border-bottom: 1px solid var(--line); }
+    tbody th, tbody td { display: block; width: auto; padding: 2px 0; border: 0; }
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+<header>
+  <div class="name">
+    <img src="foxreach.svg" width="52" height="52" alt="">
+    <h1>foxreach</h1>
+  </div>
+  <p class="intro">Lets any local agent that speaks MCP operate the tabs of a Firefox-based browser, with real input. It has no telemetry, no account, no vendor lock-in and no open network port.</p>
+  <p>It has two parts: the <code>foxreach</code> program, one file that is the MCP server agents run and the native host the browser starts, and the foxreach add-on in the browser. On Linux, the manager app sets both up from a window.</p>
+  <ul class="links">
+    <li><a class="button" href="https://github.com/nilltadios/foxreach/releases/latest">Latest release</a></li>
+    <li><a href="https://github.com/nilltadios/foxreach">Source on GitHub</a></li>
+    <li><a href="https://github.com/nilltadios/foxreach#readme">README</a></li>
+  </ul>
+</header>
+
+<main>
+
+<section id="program">
+  <h2>The program</h2>
+  <p>For Linux and macOS, x86-64 or arm64. Download <code>install.sh</code> from the latest release, read it, and run it:</p>
+  <pre tabindex="0"><code>curl -fLO https://github.com/nilltadios/foxreach/releases/latest/download/install.sh
+sh install.sh</code></pre>
+  <p><code>install.sh</code> downloads the <code>foxreach</code> build for this machine from the latest release into <code>~/.local/bin</code>, checks it against the release's <code>SHA256SUMS</code>, and runs <code>foxreach install</code>, which writes the native messaging manifest that lets the browser start it. Installed Flatpak browsers are prepared too.</p>
+  <p>Later versions: <code>foxreach update</code>. To remove it: <code>foxreach uninstall</code>, then delete <code>~/.local/bin/foxreach</code>.</p>
+  <p>Or download the file yourself from the <a href="https://github.com/nilltadios/foxreach/releases/latest">latest release</a> (<code>foxreach-linux-x64</code>, <code>foxreach-linux-arm64</code>, <code>foxreach-darwin-arm64</code>, <code>foxreach-darwin-x64</code>), make it executable, and run <code>./foxreach install</code>. macOS needs one more step for a file downloaded with a web browser: see <a href="https://github.com/nilltadios/foxreach#install">Install</a> in the README.</p>
+  <p>Windows: <code>install.ps1</code> from the same release does the same (<code>powershell -ExecutionPolicy Bypass -File install.ps1</code>). What has been tested there and what differs: <a href="https://github.com/nilltadios/foxreach#windows">Windows</a> in the README.</p>
+</section>
+
+<section id="add-on">
+  <h2>The add-on</h2>
+  <p>There are two builds. Which one depends on the browser:</p>
+  <table>
+    <thead><tr><th scope="col">Browser</th><th scope="col">Build</th></tr></thead>
+    <tbody>
+      <tr>
+        <th scope="row">Firefox release and beta, distro <code>firefox</code> packages, the Firefox Flatpak</th>
+        <td>The signed build, from <a href="https://addons.mozilla.org/firefox/addon/fe1f53e268044b529443/">addons.mozilla.org</a>. Clicks and keys are script events, which a few sites ignore, and a few tools are missing (<code>drag</code>, <code>read_console</code>, <code>handle_dialog</code>, file drops).</td>
+      </tr>
+      <tr>
+        <th scope="row">LibreWolf, Firefox Developer Edition, Nightly</th>
+        <td>The full build, with real input and all tools. Mozilla does not sign it, so it is installed with a setup script: <a href="https://github.com/nilltadios/foxreach#setup-from-a-checkout">Setup from a checkout</a>.</td>
+      </tr>
+      <tr>
+        <th scope="row">Firefox ESR, Floorp, Waterfox, Zen</th>
+        <td>Either. The full build is expected to work, but has not been tested.</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>Then click the foxreach toolbar button and choose the sites agents may use. Both builds update themselves: the signed one from addons.mozilla.org, the full one from <a href="updates.json">updates.json</a> on this site.</p>
+</section>
+
+<section id="agent">
+  <h2>Connecting an agent</h2>
+  <p><code>foxreach install</code> also adds the MCP server, <code>foxreach mcp</code>, to every agent it finds on the machine: Claude Code and Claude desktop, Codex, opencode, Cursor, GitHub Copilot CLI, Qwen Code and <a href="https://github.com/nilltadios/foxreach#install">the others listed in the README</a>. It adds only the <code>foxreach</code> entry to each agent's settings file and backs the file up first.</p>
+  <pre tabindex="0"><code>foxreach agents                       # what it found
+foxreach install --agents codex,pi    # name the agents instead
+foxreach install --agents none        # skip this step</code></pre>
+  <p>For any other agent, give it this command as an MCP server:</p>
+  <pre tabindex="0"><code>~/.local/bin/foxreach mcp</code></pre>
+  <p>The first time an agent calls, the browser asks whether to allow it. <code>foxreach uninstall</code> removes the agents' entries again (<code>--keep-agents</code> keeps them).</p>
+</section>
+
+<section id="manager">
+  <h2>The manager app (Linux)</h2>
+  <p>A desktop app that does all of the above from a window: it installs and updates the <code>foxreach</code> program (downloaded from the latest release and checked against <code>SHA256SUMS</code>, as <code>install.sh</code> does), lists every Firefox-based browser profile and opens the signed add-on there for the browser to confirm, adds or removes each agent's entry, and removes any part again. Every change is made by running <code>foxreach</code> itself. More in the <a href="https://github.com/nilltadios/foxreach/blob/main/manager/README.md">manager README</a>.</p>
+<!-- flatpak:begin
+  <h3>Flatpak</h3>
+  <p>The install file, <code>dev.nilltadios.FoxreachManager.flatpakref</code>, opens in Discover, GNOME Software or COSMIC Store:</p>
+  <p><a class="button" href="dev.nilltadios.FoxreachManager.flatpakref">Install with Flatpak</a></p>
+  <p>Or from a terminal:</p>
+  <pre tabindex="0"><code>flatpak remote-add --user --if-not-exists flathub \
+  https://dl.flathub.org/repo/flathub.flatpakrepo
+flatpak remote-add --user --if-not-exists foxreach \
+  @BASE@foxreach.flatpakrepo
+flatpak install --user foxreach dev.nilltadios.FoxreachManager</code></pre>
+  <p>Updates then come through <code>flatpak update</code> or the software store. The repository holds the x86_64 and aarch64 builds of the latest release, on branch <code>stable</code>.</p>
+  <p>Installed from a downloaded <code>.flatpak</code> file? That copy never updates. Add the remote (second command above), install from it, then remove the file's copy. Settings and data are kept.</p>
+  <pre tabindex="0"><code>flatpak install --user foxreach dev.nilltadios.FoxreachManager
+flatpak uninstall --user dev.nilltadios.FoxreachManager//master</code></pre>
+  <p>The repository is signed with the key <code>@FINGERPRINT@</code>. To compare it with the key this site serves:</p>
+  <pre tabindex="0"><code>curl -s @BASE@foxreach.flatpakrepo \
+  | sed -n 's/^GPGKey=//p' | base64 -d | gpg --show-keys</code></pre>
+flatpak:end -->
+  <h3>AppImage</h3>
+  <p>The <a href="https://github.com/nilltadios/foxreach/releases/latest">latest release</a> has <code>foxreach-manager-&lt;version&gt;-x86_64.AppImage</code> and <code>foxreach-manager-&lt;version&gt;-aarch64.AppImage</code>, which run on any distribution:</p>
+  <pre tabindex="0"><code>chmod +x foxreach-manager-*.AppImage
+./foxreach-manager-*.AppImage</code></pre>
+  <p>Without FUSE, add <code>--appimage-extract-and-run</code>. AppImage updaters (Gear Lever, <code>appimageupdatetool</code>, AppImageUpdate) find newer releases from the update information inside the file.</p>
+  <p class="note">The same release also has <code>foxreach-manager-&lt;version&gt;-&lt;arch&gt;.flatpak</code> for installing without a network (<code>flatpak install --user FILE</code>). A copy installed that way does not update.</p>
+</section>
+
+</main>
+
+<footer>
+  <p><a href="https://github.com/nilltadios/foxreach">nilltadios/foxreach</a> on GitHub, MIT licence. <a href="https://github.com/nilltadios/foxreach/releases">All releases</a>.</p>
+  <p>This site also serves the add-on's update lists, <a href="updates.json">updates.json</a> and <a href="updates-signed.json">updates-signed.json</a>.</p>
+</footer>
+
+</div>
+</body>
+</html>
