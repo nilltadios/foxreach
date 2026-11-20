@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Check a built AppImage without a display and without FUSE: extract it, run the app's --version
 # through AppRun (the path a launch takes: sharun and the bundled libraries), and check that the
-# foxreach program inside is the same file as the one it was built from and still runs (a strip pass
-# once broke a packaged copy).
+# foxreach program inside is the same file as the one it was built from, still runs (a strip pass
+# once broke a packaged copy) and has the app's version (the app takes it as the program's version
+# without running the copy, src/host.rs bundled_version).
 #
 # Run:      manager/packaging/smoke-appimage.sh APPIMAGE PROGRAM [WORK_DIR]
 #           PROGRAM: the foxreach program the AppImage was built with (dist/foxreach).
@@ -29,5 +30,8 @@ echo "$out"
 
 packaged=$appdir/share/foxreach-manager/foxreach
 cmp -- "$packaged" "$program" || { echo "The packaged foxreach differs from $program" >&2; exit 1; }
-run "$packaged" version || { echo "The packaged foxreach does not run" >&2; exit 1; }
+packaged_version=$(run "$packaged" version) || { echo "The packaged foxreach does not run" >&2; exit 1; }
+echo "$packaged_version"
+[[ $packaged_version == "${out#foxreach-manager }" ]] \
+    || { echo "The packaged foxreach is $packaged_version, the app ${out#foxreach-manager }: they must be the same" >&2; exit 1; }
 echo "AppDir: $appdir"

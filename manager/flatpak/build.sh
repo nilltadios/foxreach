@@ -45,10 +45,14 @@ fi
 "${scope[@]}" "${builder[@]}" --jobs="${BUILD_JOBS:-6}" --force-clean --disable-rofiles-fuse \
     --state-dir="$flatpak_dir/.flatpak-builder" --repo="$flatpak_dir/repo" \
     "$flatpak_dir/build-dir" "$flatpak_dir/$app_id.yml"
-# The packaged program must be the same file, still runnable (a strip pass once broke it).
+# The packaged program must be the same file, still runnable (a strip pass once broke it), and of
+# this app's version, which the app takes as the program's without running it (src/host.rs
+# bundled_version).
 packaged="$flatpak_dir/build-dir/files/share/foxreach-manager/foxreach"
 cmp "$packaged" "$project_dir/../dist/foxreach" || { echo "The packaged foxreach differs from dist/foxreach" >&2; exit 1; }
-"$packaged" version >/dev/null || { echo "The packaged foxreach does not run" >&2; exit 1; }
+packaged_version=$("$packaged" version) || { echo "The packaged foxreach does not run" >&2; exit 1; }
+[[ $packaged_version == "$version" ]] \
+    || { echo "The packaged foxreach is $packaged_version, Cargo.toml says $version: build dist/foxreach from this checkout" >&2; exit 1; }
 bundle="$flatpak_dir/foxreach-manager-$version-$arch.flatpak"
 # --runtime-repo: installing the bundle fetches org.freedesktop.Platform from Flathub if needed.
 flatpak build-bundle --runtime-repo=https://dl.flathub.org/repo/flathub.flatpakrepo \

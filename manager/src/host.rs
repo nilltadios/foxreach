@@ -153,10 +153,14 @@ pub fn program_command() -> Vec<String> {
     }
 }
 
+/// FOXREACH_MANAGER_BUNDLED: a program to use as the bundled one (development, tests), of any version.
+fn bundled_override() -> Option<PathBuf> {
+    std::env::var_os("FOXREACH_MANAGER_BUNDLED").map(PathBuf::from)
+}
+
 /// The foxreach program shipped inside this app: (path the host sees, path this process sees).
 pub fn bundled_program() -> Option<(PathBuf, PathBuf)> {
-    if let Some(p) = std::env::var_os("FOXREACH_MANAGER_BUNDLED") {
-        let p = PathBuf::from(p);
+    if let Some(p) = bundled_override() {
         return p.is_file().then(|| (p.clone(), p));
     }
     const REL: &str = "share/foxreach-manager/foxreach";
@@ -205,6 +209,18 @@ pub fn version_of(program: &[String]) -> Option<String> {
     let out = foxreach(program, &["version"]);
     let v = out.text.lines().last()?.trim().to_string();
     (out.ok && v.chars().next()?.is_ascii_digit()).then_some(v)
+}
+
+/// The bundled program's version. A package carries the foxreach of its own release, which has this
+/// app's version (the package builds compare the two), so it is not run for it: the first run from
+/// an AppImage reads the whole program through the compressed image, seconds before the window can
+/// show anything (issue #19). Any other copy is asked.
+fn bundled_version(packaged: bool, ask: impl FnOnce() -> Option<String>) -> Option<String> {
+    if packaged {
+        Some(String::from(env!("CARGO_PKG_VERSION")))
+    } else {
+        ask()
+    }
 }
 
 /// -1, 0 or 1 for dotted numeric versions.
@@ -439,7 +455,7 @@ pub struct ProgramUpdate {
 pub struct Snapshot {
     /// The program at ~/.local/bin/foxreach (or FOXREACH_MANAGER_PROGRAM) and its version, when it runs.
     pub installed: Option<(Vec<String>, String)>,
-    /// The bundled program: host path and version.
+    /// The bundled program: host path and version (a package's own copy is not run for it).
     pub bundled: Option<(PathBuf, String)>,
     /// The foxreach this computer uses, which the app acts through: the installed program, or the
     /// checkout the browsers and agents run. None when nothing is set up.
@@ -479,9 +495,11 @@ fn read_status(program: &[String]) -> Result<Status, String> {
 pub fn snapshot() -> Snapshot {
     let program = program_command();
     let mut snap = Snapshot { installed: version_of(&program).map(|v| (program.clone(), v)), ..Default::default() };
-    // Run by its host path, like every other command: the host sees an AppImage's mount and a
-    // Flatpak's files, and the environment is cleaned the same way.
-    snap.bundled = bundled_program().and_then(|(host, _)| version_of(&[host.to_string_lossy().into_owned()]).map(|v| (host, v)));
+    // When asked, run by its host path, like every other command: the host sees an AppImage's mount
+    // and a Flatpak's files, and the environment is cleaned the same way.
+    let packaged = bundled_override().is_none();
+    snap.bundled = bundled_program()
+        .and_then(|(host, _)| bundled_version(packaged, || version_of(&[host.to_string_lossy().into_owned()])).map(|v| (host, v)));
 
     // The installed program, when it is current, is what the app uses and reads with.
     if let Some((cmd, v)) = snap.installed.clone() {
@@ -556,6 +574,14 @@ mod tests {
         assert!(compare_versions("0.3.10", "0.3.9").is_gt());
         assert!(compare_versions("0.3", "0.3.0").is_eq());
         assert!(compare_versions("0.2.9", "0.3").is_lt());
+    }
+
+    #[test]
+    fn packaged_copy_is_not_run_for_its_version() {
+        let v = bundled_version(true, || panic!("the package's own copy was run"));
+        assert_eq!(v.as_deref(), Some(env!("CARGO_PKG_VERSION")));
+        assert_eq!(bundled_version(false, || Some(String::from("9.9.9"))).as_deref(), Some("9.9.9"));
+        assert_eq!(bundled_version(false, || None), None);
     }
 
     #[test]

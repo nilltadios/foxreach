@@ -62,6 +62,11 @@ export LIB_DIR
 
 version=$(awk -F'"' '/^\[/{p=($0=="[package]")} p && /^version *=/{print $2; exit}' Cargo.toml)
 [[ -n $version ]] || { echo "Cannot read the version from Cargo.toml" >&2; exit 1; }
+# The app takes the program it carries to be its own version without running it (src/host.rs
+# bundled_version), so a program of another version must not be packed.
+program_version=$("$program" version) || { echo "$program does not run" >&2; exit 1; }
+[[ $program_version == "$version" ]] \
+  || { echo "$program is foxreach $program_version, Cargo.toml says $version: build the program from this checkout" >&2; exit 1; }
 cache="$PWD/packaging/cache"
 mkdir -p "$cache" "$out"
 qs="$cache/quick-sharun-$QS_COMMIT.sh"

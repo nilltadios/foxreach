@@ -97,8 +97,8 @@ icon); the package jobs wait for it, so a failing test builds and attaches nothi
 
 | File | Built by | Checked by |
 |---|---|---|
-| `foxreach-manager-VERSION-x86_64.AppImage`, `-aarch64.AppImage`, each with its `.zsync` | `packaging/container-build.sh` (docker) | `packaging/smoke-appimage.sh`: extracts it (no FUSE needed), runs `AppRun --version`, checks the packaged foxreach is the same file and runs; `packaging/check-update-info.sh`: the update information below is embedded, and the `.zsync` is that file's (name, length, SHA-1) |
-| `foxreach-manager-VERSION-x86_64.flatpak`, `-aarch64.flatpak` | `flatpak/build.sh` in the `ghcr.io/flathub-infra/flatpak-github-actions:freedesktop-26.08` container, with crates vendored by an earlier job (`VENDOR=0 BUILD_SCOPE=0`) | `flatpak/build.sh`'s own check (packaged foxreach is the same file and runs), then `flatpak/smoke.sh`: `flatpak install --user`, `flatpak run ... --version`, the bundled foxreach run in the sandbox |
+| `foxreach-manager-VERSION-x86_64.AppImage`, `-aarch64.AppImage`, each with its `.zsync` | `packaging/container-build.sh` (docker) | `packaging/smoke-appimage.sh`: extracts it (no FUSE needed), runs `AppRun --version`, checks the packaged foxreach is the same file, runs and has the app's version; `packaging/check-update-info.sh`: the update information below is embedded, and the `.zsync` is that file's (name, length, SHA-1) |
+| `foxreach-manager-VERSION-x86_64.flatpak`, `-aarch64.flatpak` | `flatpak/build.sh` in the `ghcr.io/flathub-infra/flatpak-github-actions:freedesktop-26.08` container, with crates vendored by an earlier job (`VENDOR=0 BUILD_SCOPE=0`) | `flatpak/build.sh`'s own check (packaged foxreach is the same file, runs and has the app's version), then `flatpak/smoke.sh`: `flatpak install --user`, `flatpak run ... --version`, the bundled foxreach run in the sandbox |
 
 Each package comes with a `.sha256`; they are the run's artifacts `manager-appimage-ARCH` and
 `manager-flatpak-ARCH`. On a `v*` tag, `release.yml` runs this workflow too and attaches the files
@@ -205,6 +205,14 @@ For testing against a throwaway home: `HOME=<folder> FOXREACH_AGENT_CLI=0`, and
 `FOXREACH_MANAGER_BUNDLED=<path to a foxreach build>` to give a plain build a program to install,
 or `FOXREACH_MANAGER_PROGRAM="bun /path/to/bridge/cli.mjs"` to run a checkout. The program's side
 is tested by `test/status_json.py`.
+
+A package's own foxreach is taken to have the app's version and is not run at start (its first run
+from an AppImage reads the whole program through the compressed image, issue #19); it runs only
+when it reads the status, because no usable program is installed. `packaging/build-appimage.sh`,
+`flatpak/build.sh` and `packaging/smoke-appimage.sh` fail when the two versions differ.
+`packaging/check-bundled-not-run.sh` shows this with a debug build in a fake AppDir whose foxreach
+logs each run and sleeps 3 s (not run in CI; needs a foxreach program, `~/.local/bin/foxreach` by
+default).
 
 ## The Flatpak's permissions
 
