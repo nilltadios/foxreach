@@ -6,7 +6,7 @@ const y = { type: "number", description: "Y in CSS pixels from the viewport's to
 const modifiers = {
   type: "array",
   items: { type: "string", enum: ["ctrl", "shift", "alt", "meta", "mod"] },
-  description: "Modifier keys held during the action. mod is Cmd (meta) on macOS and Ctrl elsewhere.",
+  description: "Modifier keys held during the action (with trustedInput). mod is Cmd (meta) on macOS and Ctrl elsewhere.",
 };
 
 const tool = (name, description, properties = {}, required = []) => ({
@@ -16,7 +16,7 @@ const tool = (name, description, properties = {}, required = []) => ({
 });
 
 export const TOOLS = [
-  tool("status", "Report whether the browser is connected, the add-on and bridge versions (with a warning if they differ), whether input is trusted (isTrusted=true), and whether the user allows agents on every site (siteAccess \"all\") or only on listed ones. Works before the user has allowed this agent, and asks the user at once for one that would have to wait (agentAccess \"waiting\"); other tools then wait for the user's answer.", {
+  tool("status", "Report whether the browser is connected, the add-on and bridge versions (with a warning if they differ), whether input is trusted (trustedInput; false: script events, isTrusted=false, which some sites ignore), and whether the user allows agents on every site (siteAccess \"all\") or only on listed ones. Works before the user has allowed this agent, and asks the user at once for one that would have to wait (agentAccess \"waiting\"); other tools then wait for the user's answer.", {
     ask: { type: "boolean", description: "Ask the user now if this agent is not yet allowed. Default true; false only reports it (agentAccess \"unasked\")." },
     tabId: { type: "integer", description: "Also report whether this tab's page is being painted (page.framesPerSecond, page.note), measured over 1.5 s: a background tab gets about one frame a second, and none means the display may be off." },
   }),
@@ -61,19 +61,19 @@ export const TOOLS = [
     tabId,
     max_chars: { type: "integer", description: "Default 50000." },
   }, ["tabId"]),
-  tool("click", "Click an element or a viewport point with real input (isTrusted=true), including inside cross-site iframes. The press is confirmed delivered before this returns.", {
+  tool("click", "Click an element or a viewport point. With trustedInput (see status): real input (isTrusted=true), also inside cross-site iframes, confirmed delivered before this returns.", {
     tabId, ref, x, y,
     button: { type: "string", enum: ["left", "middle", "right"], description: "Default left." },
     count: { type: "integer", description: "2 for a double click, 3 for a triple click. Default 1." },
     modifiers,
   }, ["tabId"]),
   tool("hover", "Move the pointer over an element or point.", { tabId, ref, x, y }, ["tabId"]),
-  tool("drag", "Press at one viewport point, move, and release at another. Works for sliders, pointer-driven dragging and HTML5 drag-and-drop.", {
+  tool("drag", "Press at one viewport point, move, and release at another. Works for sliders, pointer-driven dragging and HTML5 drag-and-drop. Needs trustedInput.", {
     tabId,
     from_x: x, from_y: y, to_x: x, to_y: y,
     modifiers,
   }, ["tabId", "from_x", "from_y", "to_x", "to_y"]),
-  tool("type_text", "Type text with real key events into the focused element, or click ref first. Use \\n for Enter. Non-Latin text and emoji are supported. " +
+  tool("type_text", "Type text into the focused element, or click ref first. Non-Latin text and emoji are supported. Real key events (\\n is Enter) with trustedInput (see status), else inserted without key events. " +
     "The reply names the element that received the text and warns when its value did not change. Refuses when focus is not on a text field.", {
     tabId,
     text: { type: "string" },
@@ -81,7 +81,7 @@ export const TOOLS = [
     allow_non_text: { type: "boolean", description: "Type even though focus is not on a text field, for keyboard-driven pages. Default false." },
     delay_ms: { type: "integer", description: "Pause between keys, up to 2000. For PIN and code boxes that move focus to the next box after each digit and lose faster keys: 250-400 in the tab in front; in a background tab the page's own timers run at most once a second, so use 1200 there, or tabs_select first. Default 0." },
   }, ["tabId", "text"]),
-  tool("press_key", 'Press keys with real events. Space-separated sequence, + for combos: "Enter", "mod+a Delete", "shift+Tab". ' +
+  tool("press_key", 'Press keys: space-separated, + for combos: "Enter", "mod+a Delete", "shift+Tab". Real key events need trustedInput (see status); without it, script events with no default action or combos. ' +
     "mod is Cmd on macOS and Ctrl elsewhere, for shortcuts such as select all; ctrl is always Control. " +
     "The reply names the focused element. Refuses Delete and Backspace when focus is not on a text field.", {
     tabId,
@@ -100,7 +100,7 @@ export const TOOLS = [
     tabId, ref,
     value: { description: "String, or boolean for a checkbox or radio. For a select, the option's value or text." },
   }, ["tabId", "ref", "value"]),
-  tool("file_upload", "Attach local files to a file input (ref), or drop them on a drop zone (x and y). The agent's machine reads the files. Hidden files and folders (a name starting with a dot) are refused.", {
+  tool("file_upload", "Attach local files to a file input (ref), or drop them on a drop zone (x and y; needs trustedInput). The agent's machine reads the files. Hidden files and folders (a name starting with a dot) are refused.", {
     tabId, ref, x, y,
     paths: { type: "array", items: { type: "string" }, description: "Absolute file paths." },
   }, ["tabId", "paths"]),
@@ -125,7 +125,7 @@ export const TOOLS = [
     text: { type: "string" },
     timeout: { type: "number", description: "Seconds. Default 15, at most 120." },
   }, ["tabId"]),
-  tool("javascript", "Run JavaScript in the page's own world and return the last expression as JSON. Top-level await works, and page CSP does not block it. let/const are local to the call; a bare assignment or var sets a global on the page's window, which later calls can read. " +
+  tool("javascript", "Run JavaScript in the page's own world and return the last expression as JSON. With trustedInput, top-level await works and page CSP does not block it. let/const are local to the call; a bare assignment or var sets a global on the page's window, which later calls can read. " +
     "Refused while a password or another field the user keeps from agents (cards, ID numbers...) holds a value in the tab.", {
     tabId,
     code: { type: "string", description: "The code. Needs code, file, or both." },
@@ -135,7 +135,7 @@ export const TOOLS = [
     timeout: { type: "number", description: "Seconds to wait for the result. Default 30, at most 600." },
     frame_id: { type: "integer", description: "Frame id from read_page. Default: the top frame." },
   }, ["tabId"]),
-  tool("read_console", "Read console messages and script errors from all frames. Works without injecting anything into the page.", {
+  tool("read_console", "Read console messages and script errors from all frames, without injecting anything into the page. Needs trustedInput.", {
     tabId,
     pattern: { type: "string", description: "Keep messages matching this regular expression." },
     only_errors: { type: "boolean" },
@@ -170,7 +170,7 @@ export const TOOLS = [
     },
     stop_on_error: { type: "boolean", description: "Default true." },
   }, ["actions"]),
-  tool("handle_dialog", "Read, accept or dismiss a page's alert, confirm, prompt or beforeunload dialog.", {
+  tool("handle_dialog", "Read, accept or dismiss a page's alert, confirm, prompt or beforeunload dialog. Needs trustedInput.", {
     tabId,
     action: { type: "string", enum: ["status", "accept", "dismiss"], description: "Default status." },
     text: { type: "string", description: "Text to enter into a prompt before accepting." },
