@@ -84,6 +84,16 @@ fn logo(size: u16) -> icon::Icon {
     icon::icon(icon::from_svg_bytes(LOGO)).size(size)
 }
 
+/// The Agents and Browsers tabs' icons, drawn for this app and compiled in: icon themes name them
+/// differently (COSMIC's has no internet-web-browser-symbolic, so the tab showed a blank circle).
+/// Symbolic, so they take the tab's text colour.
+const TAB_AGENTS: &[u8] = include_bytes!("../resources/tabs/agents-symbolic.svg");
+const TAB_BROWSERS: &[u8] = include_bytes!("../resources/tabs/browsers-symbolic.svg");
+
+fn tab_icon(svg: &'static [u8]) -> icon::Icon {
+    icon::icon(icon::from_svg_bytes(svg).symbolic(true)).size(16)
+}
+
 #[derive(Clone, Debug)]
 enum TestState {
     Running,
@@ -1050,8 +1060,8 @@ impl Application for App {
 
     fn init(core: cosmic::Core, demo: bool) -> (Self, Task<cosmic::Action<Message>>) {
         let mut tabs = segmented_button::SingleSelectModel::default();
-        let agents = tabs.insert().text("Agents").icon(icon::from_name("system-users-symbolic")).data(Tab::Agents).id();
-        let browsers = tabs.insert().text("Browsers").icon(icon::from_name("internet-web-browser-symbolic")).data(Tab::Browsers).id();
+        let agents = tabs.insert().text("Agents").icon(tab_icon(TAB_AGENTS)).data(Tab::Agents).id();
+        let browsers = tabs.insert().text("Browsers").icon(tab_icon(TAB_BROWSERS)).data(Tab::Browsers).id();
         let foxreach = tabs.insert().text("foxreach").icon(logo(16)).data(Tab::Foxreach).id();
         // FOXREACH_MANAGER_TAB=browsers|foxreach opens on that tab: for screenshots and dev.sh, so a
         // test needs no click on the user's desktop.
