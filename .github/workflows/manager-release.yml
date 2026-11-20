@@ -131,7 +131,12 @@ jobs:
           # A rehearsal is a prerelease from the start, so not even a stray edit can make it latest.
           prerelease=()
           [[ $FINAL == true ]] || prerelease=(--prerelease)
+          # The .flatpakref is on the Pages site, beside the repository it points at (pages.yml), not
+          # among the release's files: the notes link it, so it can be had from the release page.
+          ref="https://${GITHUB_REPOSITORY_OWNER,,}.github.io/${GITHUB_REPOSITORY#*/}/dev.nilltadios.FoxreachManager.flatpakref"
           { echo "foxreach manager $VERSION (AppImage and Flatpak bundle for x86_64 and aarch64)."
+            echo
+            echo "The manager's Flatpak that updates itself: [dev.nilltadios.FoxreachManager.flatpakref]($ref). The .flatpak files below are single-file bundles, which do not update."
             echo
             echo "The foxreach program, add-on and installers (every file not named foxreach-manager-*) are carried unchanged from $LATEST."
           } > "$RUNNER_TEMP/notes.txt"

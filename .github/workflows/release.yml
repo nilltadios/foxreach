@@ -82,7 +82,12 @@ jobs:
           fi
           # A draft from an earlier run may carry another release's files: start again.
           if [[ $draft == true ]]; then gh release delete "$TAG" --yes; fi
+          # The .flatpakref is on the Pages site, beside the repository it points at (pages.yml), not
+          # among the release's files: the notes link it, so it can be had from the release page.
+          ref="https://${GITHUB_REPOSITORY_OWNER,,}.github.io/${GITHUB_REPOSITORY#*/}/dev.nilltadios.FoxreachManager.flatpakref"
           { cat dist/release/BUILDINFO.txt
+            echo
+            echo "The manager's Flatpak that updates itself: [dev.nilltadios.FoxreachManager.flatpakref]($ref). The .flatpak files below are single-file bundles, which do not update."
             echo
             echo "The foxreach manager files (foxreach-manager-*) are carried unchanged from $LATEST."
           } > "$RUNNER_TEMP/notes.txt"
