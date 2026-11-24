@@ -99,7 +99,13 @@ export RUNTIME="$work/uruntime"
 # The font library mentions /usr/share/fonts, which makes quick-sharun copy every system font; the
 # app reads the host's fonts, so an empty folder stops the copy.
 mkdir -p "$APPDIR/share/fonts"
-( cd "$work" && HOME="$qs_home" XDG_CONFIG_HOME="$qs_home/.config" XDG_DATA_HOME="$qs_home/.local/share" "$qs" "$bin/foxreach-manager" )
+# The binary links libxkbcommon.so.0 (bundled by quick-sharun), while winit dlopens
+# libxkbcommon-x11.so.0 on X11. libxkbcommon-x11 populates libxkbcommon's internal xkb_keymap struct
+# directly, so mixing the bundled libxkbcommon with a host libxkbcommon-x11 of another version
+# segfaults in xkb_state_update_mask; bundle the matching copy alongside it.
+xkb_x11="$LIB_DIR/libxkbcommon-x11.so.0"
+[[ -e $xkb_x11 ]] || { echo "Missing $xkb_x11 (install libxkbcommon-x11-0)" >&2; exit 1; }
+( cd "$work" && HOME="$qs_home" XDG_CONFIG_HOME="$qs_home/.config" XDG_DATA_HOME="$qs_home/.local/share" "$qs" "$bin/foxreach-manager" "$xkb_x11" )
 # quick-sharun rewrites /usr/share strings in the binary to point into the AppImage. The app reads
 # the host's icon themes and config, so the unmodified binary goes back; bundled libraries are
 # still found through sharun.

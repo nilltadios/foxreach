@@ -26,4 +26,15 @@ echo "$out"
 
 [[ ! -e $appdir/share/foxreach-manager/foxreach ]] \
     || { echo "The AppImage packs share/foxreach-manager/foxreach: the app downloads the program instead" >&2; exit 1; }
+# libxkbcommon.so.0 is bundled (DT_NEEDED); winit dlopens libxkbcommon-x11.so.0 on X11. Both share
+# private xkb_keymap struct layouts, so shipping libxkbcommon without a matching libxkbcommon-x11
+# crashes on X11 hosts with a different libxkbcommon version.
+if [[ -e $appdir/lib/libxkbcommon.so.0 ]]; then
+  [[ -e $appdir/lib/libxkbcommon-x11.so.0 ]] \
+      || { echo "The AppImage bundles lib/libxkbcommon.so.0 without lib/libxkbcommon-x11.so.0 (crashes on X11)" >&2; exit 1; }
+  xkb_ver=$(basename -- "$(realpath -- "$appdir/lib/libxkbcommon.so.0")")
+  xkb_x11_ver=$(basename -- "$(realpath -- "$appdir/lib/libxkbcommon-x11.so.0")")
+  [[ ${xkb_ver#libxkbcommon.so.} == "${xkb_x11_ver#libxkbcommon-x11.so.}" ]] \
+      || { echo "Mismatched libxkbcommon ($xkb_ver) and libxkbcommon-x11 ($xkb_x11_ver) in AppDir/lib" >&2; exit 1; }
+fi
 echo "AppDir: $appdir"
