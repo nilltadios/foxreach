@@ -183,6 +183,7 @@ pub enum Message {
     Removed(Output, bool),
     DismissError,
     CloseToast(widget::ToastId),
+    WindowOpened(cosmic::iced::window::Id),
     Quit,
     /// FOXREACH_MANAGER_CAPTURE: take the window's own picture, then save it and exit.
     Capture,
@@ -1170,6 +1171,13 @@ impl Application for App {
         Some(Message::Quit)
     }
 
+    fn subscription(&self) -> cosmic::iced::Subscription<Message> {
+        cosmic::iced::window::events().filter_map(|(id, event)| match event {
+            cosmic::iced::window::Event::Opened { .. } => Some(Message::WindowOpened(id)),
+            _ => None,
+        })
+    }
+
     fn header_end(&self) -> Vec<Element<'_, Message>> {
         vec![
             widget::button::icon(ui_icon(UI_REFRESH))
@@ -1273,6 +1281,12 @@ impl Application for App {
             }
             Message::DismissError => self.error = None,
             Message::CloseToast(id) => self.toasts.remove(id),
+            Message::WindowOpened(id) => {
+                return cosmic::iced::window::run(id, |window| {
+                    crate::x11_window::apply_icon_and_class(window, Self::APP_ID);
+                })
+                .discard();
+            }
             Message::ToggleAgent(id, on) => {
                 self.tests.remove(&Some(id.clone()));
                 if self.demo {

@@ -8,6 +8,7 @@ mod demo;
 mod host;
 mod icons;
 mod window_icons;
+mod x11_window;
 
 pub const APP_ID: &str = "dev.nilltadios.FoxreachManager";
 

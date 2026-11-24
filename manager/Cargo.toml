@@ -1,6 +1,6 @@
 [package]
 name = "foxreach-manager"
-version = "0.5.1"
+version = "0.5.2"
 edition = "2024"
 license = "MIT"
 description = "Desktop app that manages foxreach: agents, updates, uninstall"
@@ -13,6 +13,7 @@ default = ["wgpu"]
 wgpu = ["libcosmic/wgpu"]
 
 [dependencies]
+resvg = { version = "0.45", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
