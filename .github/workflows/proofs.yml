@@ -1,0 +1,47 @@
+# Checks the Lean proofs in proofs/ (test/proofs.py): they build from scratch with the Lean that
+# proofs/lean-toolchain names, nothing is left unproved, every theorem is in proofs/Audit.lean and
+# rests on Lean's own three axioms only, the proofs' table of tools names every tool the code
+# offers, and a gap planted in a copy is reported.
+#
+# This keeps the proofs sound as they change. It does not show that the model in proofs/Foxreach
+# behaves as the JavaScript does: the browser tests (test/e2e.py and others, run by hand) do that.
+name: proofs
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["**"]
+    paths:
+      - proofs/**
+      - test/proofs.py
+      # The proofs' table of tools is compared with the tools the code has.
+      - bridge/tools.mjs
+      - extension/background.js
+      - .github/workflows/proofs.yml
+  pull_request:
+    paths:
+      - proofs/**
+      - test/proofs.py
+      # The proofs' table of tools is compared with the tools the code has.
+      - bridge/tools.mjs
+      - extension/background.js
+      - .github/workflows/proofs.yml
+
+permissions:
+  contents: read
+
+jobs:
+  proofs:
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@v4
+      # Installs elan and the toolchain in proofs/lean-toolchain, and builds the package once.
+      # The proofs use no Mathlib and build in seconds, so nothing is cached.
+      - uses: leanprover/lean-action@v1
+        with:
+          lake-package-directory: proofs
+          use-mathlib-cache: false
+          use-github-cache: false
+      - uses: astral-sh/setup-uv@v6
+      - name: The proofs build, are complete and audited, and a planted gap is caught
+        run: uv run --python 3.15 test/proofs.py

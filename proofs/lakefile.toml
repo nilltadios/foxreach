@@ -1,0 +1,6 @@
+name = "foxreach_proofs"
+version = "0.1.0"
+defaultTargets = ["Foxreach"]
+
+[[lean_lib]]
+name = "Foxreach"
