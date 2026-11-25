@@ -64,13 +64,16 @@ pub fn prepare() -> Prepared {
     if let Err(e) = write_theme(&theme_dir, &theme_files(&inherits)) {
         return fall_back(format!("cannot write {}: {e}", theme_dir.display()));
     }
-    // A thread started before this point could read the environment while it changes.
-    let threads = std::fs::read_dir("/proc/self/task").map(Iterator::count).unwrap_or(0);
-    if threads != 1 {
-        return fall_back(format!("{threads} threads running at start"));
-    }
-    cosmic::icon_theme::set_default(THEME);
-    let missed: Vec<String> = with_data_dir(&base, probe)
+    // The theme becomes libcosmic's default only once with_data_dir has seen that this process has
+    // one thread: when it has more, the desktop's theme stays, as it does for every other failure.
+    let probed = match with_data_dir(&base, || {
+        cosmic::icon_theme::set_default(THEME);
+        probe()
+    }) {
+        Ok(found) => found,
+        Err(threads) => return fall_back(format!("{threads} threads running at start")),
+    };
+    let missed: Vec<String> = probed
         .into_iter()
         .filter(|(_, path)| !path.as_deref().is_some_and(|p| p.starts_with(&theme_dir)))
         .map(|(name, path)| format!("{name} -> {}", path.map_or_else(|| String::from("nothing"), |p| p.display().to_string())))
@@ -99,13 +102,18 @@ fn probe() -> Vec<(String, Option<PathBuf>)> {
 }
 
 /// Runs `f` with `base` in front of XDG_DATA_DIRS, then puts the variable back as it was (also
-/// when `f` panics). The caller makes sure no other thread is running.
-fn with_data_dir<T>(base: &Path, f: impl FnOnce() -> T) -> T {
+/// when `f` panics). Enforces the single-thread precondition internally so callers cannot mutate
+/// the environment while another thread may read it.
+fn with_data_dir<T>(base: &Path, f: impl FnOnce() -> T) -> Result<T, usize> {
+    let threads = std::fs::read_dir("/proc/self/task").map(Iterator::count).unwrap_or(0);
+    if threads != 1 {
+        return Err(threads);
+    }
     struct Restore(Option<OsString>);
     impl Drop for Restore {
         fn drop(&mut self) {
-            // SAFETY: as below, no other thread exists yet, so nothing reads the environment while
-            // it changes.
+            // SAFETY: checked `threads == 1` above before mutating the environment, and `f`
+            // (icon lookup) does not spawn threads.
             unsafe {
                 match &self.0 {
                     Some(v) => std::env::set_var("XDG_DATA_DIRS", v),
@@ -119,14 +127,13 @@ fn with_data_dir<T>(base: &Path, f: impl FnOnce() -> T) -> T {
     dirs.extend(data_dirs(original.as_deref()));
     // A folder with a colon in its path cannot be listed; the lookup then just misses the theme.
     let Ok(joined) = std::env::join_paths(dirs) else {
-        return f();
+        return Ok(f());
     };
     let _restore = Restore(original);
-    // SAFETY: setting a variable is only unsound while another thread may read the environment.
-    // prepare() checked that this process has one thread, and runs before libcosmic or anything
-    // else starts one; the value is put back before this function returns.
+    // SAFETY: setting a variable is only unsound while another thread may read the environment;
+    // verified `threads == 1` directly above, and `Restore` puts the original value back on exit.
     unsafe { std::env::set_var("XDG_DATA_DIRS", &joined) };
-    f()
+    Ok(f())
 }
 
 /// XDG_DATA_DIRS as the lookup reads it (the xdg crate): its absolute entries, or

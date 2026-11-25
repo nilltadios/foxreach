@@ -60,7 +60,10 @@ pub fn ewmh_icon_cardinals(sizes: &[u32]) -> Option<Vec<c_ulong>> {
         let transform = resvg::tiny_skia::Transform::from_scale(scale, scale).post_translate(tx, ty);
         resvg::render(&tree, transform, &mut pixmap.as_mut());
 
-        out.reserve(2 + (side as usize) * (side as usize));
+        let side_usize = usize::try_from(side).ok()?;
+        let pixels = side_usize.checked_mul(side_usize)?;
+        let needed = pixels.checked_add(2)?;
+        out.try_reserve(needed).ok()?;
         out.push(c_ulong::from(side));
         out.push(c_ulong::from(side));
         for px in pixmap.pixels() {
@@ -80,8 +83,44 @@ pub fn ewmh_icon_cardinals(sizes: &[u32]) -> Option<Vec<c_ulong>> {
 }
 
 unsafe fn load_sym<T: Copy>(lib: *mut c_void, name: &CStr) -> Option<T> {
+    // Compile-time check so transmute_copy can never read past the raw pointer size or violate alignment.
+    const {
+        assert!(std::mem::size_of::<T>() == std::mem::size_of::<*mut c_void>());
+        assert!(std::mem::align_of::<T>() == std::mem::align_of::<*mut c_void>());
+    }
     let ptr = unsafe { dlsym(lib, name.as_ptr()) };
     if ptr.is_null() { None } else { Some(unsafe { std::mem::transmute_copy(&ptr) }) }
+}
+
+/// RAII guard for a `dlopen` handle so `dlclose` runs on every exit path, including unwind.
+struct DlHandle(*mut c_void);
+
+impl Drop for DlHandle {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            // SAFETY: `self.0` came from a successful `dlopen` and has not been closed yet.
+            unsafe {
+                dlclose(self.0);
+            }
+        }
+    }
+}
+
+/// RAII guard for an owned `XOpenDisplay` connection (dropped before `DlHandle` in reverse decl order).
+struct OwnedDisplay {
+    display: *mut c_void,
+    close: XCloseDisplayFn,
+}
+
+impl Drop for OwnedDisplay {
+    fn drop(&mut self) {
+        if !self.display.is_null() {
+            // SAFETY: `self.display` came from `XOpenDisplay` and `libX11` is still held by `DlHandle`.
+            unsafe {
+                (self.close)(self.display);
+            }
+        }
+    }
 }
 
 /// Apply `_NET_WM_ICON` and `WM_CLASS` when `window` is backed by X11.
@@ -101,26 +140,33 @@ where
     };
 
     // SAFETY: Looks up symbols only in an already-loaded libX11.so.6 (RTLD_NOLOAD) and passes
-    // valid X11 handles on the winit event-loop thread.
+    // valid X11 handles on the winit event-loop thread. `lib` is dropped after `_owned_display`.
     unsafe {
-        let lib = dlopen(c"libX11.so.6".as_ptr(), RTLD_LAZY | RTLD_NOLOAD);
-        if lib.is_null() {
+        let raw_lib = dlopen(c"libX11.so.6".as_ptr(), RTLD_LAZY | RTLD_NOLOAD);
+        if raw_lib.is_null() {
             return;
         }
-        let result = (|| -> Option<()> {
-            let x_intern_atom: XInternAtomFn = load_sym(lib, c"XInternAtom")?;
-            let x_change_property: XChangePropertyFn = load_sym(lib, c"XChangeProperty")?;
-            let x_flush: XFlushFn = load_sym(lib, c"XFlush")?;
+        let lib = DlHandle(raw_lib);
+        let _ = (|| -> Option<()> {
+            let x_intern_atom: XInternAtomFn = load_sym(lib.0, c"XInternAtom")?;
+            let x_change_property: XChangePropertyFn = load_sym(lib.0, c"XChangeProperty")?;
+            let x_flush: XFlushFn = load_sym(lib.0, c"XFlush")?;
 
-            let (display, owned) = match borrowed_display {
-                Some(d) => (d, false),
+            let _owned_display: Option<OwnedDisplay>;
+            let display = match borrowed_display {
+                Some(d) => {
+                    _owned_display = None;
+                    d
+                }
                 None => {
-                    let x_open: XOpenDisplayFn = load_sym(lib, c"XOpenDisplay")?;
+                    let x_open: XOpenDisplayFn = load_sym(lib.0, c"XOpenDisplay")?;
+                    let x_close: XCloseDisplayFn = load_sym(lib.0, c"XCloseDisplay")?;
                     let d = x_open(ptr::null());
                     if d.is_null() {
                         return None;
                     }
-                    (d, true)
+                    _owned_display = Some(OwnedDisplay { display: d, close: x_close });
+                    d
                 }
             };
 
@@ -143,7 +189,9 @@ where
             }
 
             // ICCCM WM_CLASS: two NUL-terminated strings: instance\0class\0.
-            let mut wm_class = Vec::with_capacity(app_id.len() * 2 + 2);
+            let wm_cap = app_id.len().checked_mul(2)?.checked_add(2)?;
+            let mut wm_class = Vec::new();
+            wm_class.try_reserve_exact(wm_cap).ok()?;
             wm_class.extend_from_slice(app_id.as_bytes());
             wm_class.push(0);
             wm_class.extend_from_slice(app_id.as_bytes());
@@ -162,13 +210,8 @@ where
             }
 
             x_flush(display);
-            if owned && let Some(x_close) = load_sym::<XCloseDisplayFn>(lib, c"XCloseDisplay") {
-                x_close(display);
-            }
             Some(())
         })();
-        let _ = result;
-        dlclose(lib);
     }
 }
 
