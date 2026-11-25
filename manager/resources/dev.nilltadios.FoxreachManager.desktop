@@ -9,4 +9,4 @@ Terminal=false
 Categories=Utility;
 Keywords=foxreach;MCP;agent;Firefox;LibreWolf;add-on;
 StartupWMClass=dev.nilltadios.FoxreachManager
-X-AppImage-Version=0.5.2
+X-AppImage-Version=0.5.3
