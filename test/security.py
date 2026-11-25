@@ -14,8 +14,10 @@ if os.name == "nt":
                      "would act on the real foxreach setup. The Windows test is test/windows_hosts.py.")
 
 import json
+import mmap
 import os
 import pathlib
+import select
 import socket
 import struct
 import subprocess
@@ -51,6 +53,34 @@ def start_host(sock, log=None, profile=None):
 def from_host(host):
     size = struct.unpack("<I", host.stdout.read(4))[0]
     return json.loads(host.stdout.read(size))
+
+
+def one_call(sock, **env):
+    """Start a host with env (and no profile named), send it one tabs_list as an agent, and say what
+    became of it: "refused: <error>" when the host answered it itself, "passed on" when it reached
+    the add-on, "nothing" when neither happened in 10 s."""
+    full = dict(os.environ, FOXREACH_SOCKET=str(sock), **env)
+    full.pop("FOXREACH_HOST_PROFILE", None)
+    host = subprocess.Popen([RUNTIME, str(ROOT / "bridge/host.mjs")], env=full, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+    try:
+        deadline = time.time() + 10
+        while not sock.exists() and time.time() < deadline:
+            time.sleep(0.05)
+        client = socket.socket(socket.AF_UNIX)
+        client.connect(str(sock))
+        client.sendall(json.dumps({"id": 9, "client": "agent", "tool": "tabs_list", "args": {}}).encode() + b"\n")
+        ready, _, _ = select.select([client, host.stdout], [], [], 10)
+        if client in ready:
+            out = "refused: " + json.loads(client.makefile("r").readline()).get("error", "")
+        elif host.stdout in ready:
+            out = "passed on" if from_host(host).get("tool") == "tabs_list" else "something else"
+        else:
+            out = "nothing"
+        client.close()
+        return out
+    finally:
+        host.stdin.close()
+        host.wait(timeout=10)
 
 
 def with_home(home, fn):
@@ -284,6 +314,41 @@ def main():
         client.close()
         host.stdin.close()
         host.wait(timeout=10)
+
+        # macOS (no /proc): the host asks lsof which .parentlock its parent holds. Here the file is
+        # mapped and its descriptor closed (trackfd, Python 3.13 or later), so only lsof finds it
+        # (lsof lists mapped files, /proc/<pid>/fd does not): a host that read /proc alone would know
+        # no profile and pass the call on.
+        mac_prof = work / "mac-profile"
+        mac_prof.mkdir()
+        (mac_prof / "foxreach-agents-stopped").write_text("x")
+        (mac_prof / ".parentlock").write_text("held by the test\n")
+        empty_home = work / "empty-home"
+        empty_home.mkdir()
+        with open(mac_prof / ".parentlock", "rb") as f:
+            held = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ, trackfd=False)
+        said = one_call(private / "s3.sock", FOXREACH_PLATFORM="darwin", HOME=str(empty_home))
+        check("as on macOS (no /proc), the host finds its profile with lsof and refuses agents stopped there",
+              said.startswith("refused") and "stopped agents in this browser profile" in said, said)
+        (mac_prof / "foxreach-agents-stopped").unlink()
+        said = one_call(private / "s4.sock", FOXREACH_PLATFORM="darwin", HOME=str(empty_home))
+        check("...and passes calls on in that profile when they are not stopped", said == "passed on", said)
+        held.close()
+
+        # The host cannot tell its profile (its parent holds none), and no profile is open: a stop in
+        # any profile foxreach knows of then refuses agents, rather than letting them into it unseen.
+        known_home = work / "known-home"
+        root = known_home / ("Library/Application Support/Firefox" if sys.platform == "darwin" else ".mozilla/firefox")
+        (root / "abc.default").mkdir(parents=True)
+        (root / "profiles.ini").write_text("[Profile0]\nName=default\nIsRelative=1\nPath=abc.default\n")
+        (root / "abc.default/foxreach-agents-stopped").write_text("x")
+        said = one_call(private / "s5.sock", HOME=str(known_home))
+        check("a host that cannot tell its profile refuses agents while any known profile is stopped, and says which",
+              said.startswith("refused") and "cannot tell which profile this browser is using" in said
+              and str(root / "abc.default") in said and "foxreach addon start" in said, said)
+        (root / "abc.default/foxreach-agents-stopped").unlink()
+        said = one_call(private / "s6.sock", HOME=str(known_home))
+        check("...and passes calls on when none is", said == "passed on", said)
 
     failed = results.count(False)
     print(f"\n{len(results) - failed} passed, {failed} failed")

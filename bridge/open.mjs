@@ -5,8 +5,9 @@
 // the release link or the manager writes no record), each with the browser whose profiles it is in.
 // An agent cannot pass a command or a program, only choose one of these profiles.
 import { spawn } from "node:child_process";
+import fs from "node:fs";
 import path from "node:path";
-import { browserStatus, inUse } from "./addon.mjs";
+import { STOP_MARK, browserStatus, inUse } from "./addon.mjs";
 import { recordedProfiles } from "./browsers.mjs";
 import { readDefault } from "./connected.mjs";
 
@@ -28,7 +29,9 @@ export function openableProfiles(recorded = recordedProfiles(), rows = detectedB
       if (a && a.active !== false && !a.stopped && !found.has(key)) found.set(key, { profile: p.path, browser: row.spec });
     }
   }
-  const out = recorded.map((r) => (r.browser ? r : { ...r, browser: found.get(path.resolve(r.profile))?.browser ?? "" }));
+  const out = recorded
+    .filter((r) => !fs.existsSync(path.join(r.profile, STOP_MARK)))
+    .map((r) => (r.browser ? r : { ...r, browser: found.get(path.resolve(r.profile))?.browser ?? "" }));
   for (const r of recorded) found.delete(path.resolve(r.profile));
   return [...out, ...found.values()];
 }

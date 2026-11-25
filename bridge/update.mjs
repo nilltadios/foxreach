@@ -16,6 +16,11 @@ import { WIN, localAppData } from "./win.mjs";
 const RELEASES = process.env.FOXREACH_RELEASE_URL || "https://github.com/nilltadios/foxreach/releases/latest/download";
 const PLATFORMS = { linux: "linux", darwin: "darwin", win32: "windows" };
 const ARCHES = { x64: "x64", arm64: "arm64" };
+const MAX_ASSET_BYTES = 256 * 1024 * 1024;
+const MAX_META_BYTES = 1 * 1024 * 1024;
+// How long a download may deliver nothing before it is given up; a slow one that keeps coming is
+// not cut off, whatever its size.
+const STALL_TIMEOUT_MS = 60_000;
 
 /** The release file built for this machine, or null. */
 export function assetName(platform = process.platform, arch = process.arch) {
@@ -61,35 +66,119 @@ export function compareVersions(a, b) {
   return 0;
 }
 
-async function download(name) {
+/** A release file as chunks, read from the network: each chunk that arrives resets the stall timer. */
+async function fetchChunks(name) {
   const url = `${RELEASES}/${name}`;
-  // A local release folder (tests, an offline mirror): Node's fetch does not read file: URLs.
+  const stall = new AbortController();
+  let timer;
+  const alive = () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => stall.abort(new Error(`nothing arrived for ${STALL_TIMEOUT_MS / 1000} seconds`)), STALL_TIMEOUT_MS);
+  };
+  alive();
+  let r;
+  try {
+    r = await fetch(url, { redirect: "follow", signal: stall.signal });
+  } catch (e) {
+    clearTimeout(timer);
+    throw new Error(`Cannot reach ${url}: ${stall.signal.aborted ? stall.signal.reason.message : e.message ?? e}`);
+  }
+  if (!r.ok) {
+    clearTimeout(timer);
+    throw new Error(`${url}: HTTP ${r.status}`);
+  }
+  return (async function* chunks() {
+    try {
+      // Never the whole file at once (arrayBuffer): the caller counts the pieces against its limit.
+      if (!r.body) throw new Error("the response has no body to read in pieces");
+      for await (const chunk of r.body) {
+        alive();
+        yield Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength);
+      }
+    } catch (e) {
+      throw new Error(`Download of ${url} failed: ${stall.signal.aborted ? stall.signal.reason.message : e.message ?? e}`);
+    } finally {
+      clearTimeout(timer);
+    }
+  })();
+}
+
+/** Write all of buf: one write may take only part of it. */
+function writeAll(fd, buf) {
+  for (let done = 0; done < buf.length;) done += fs.writeSync(fd, buf, done, buf.length - done);
+}
+
+/** Read a small release metadata file (BUILDINFO.txt, SHA256SUMS) with a strict byte cap. */
+async function downloadText(name, maxBytes = MAX_META_BYTES) {
+  const url = `${RELEASES}/${name}`;
   if (url.startsWith("file:")) {
     try {
-      return fs.readFileSync(new URL(url));
+      const filePath = new URL(url);
+      if (fs.statSync(filePath).size > maxBytes) throw new Error(`${url} exceeds ${maxBytes} bytes.`);
+      return fs.readFileSync(filePath, "utf8");
     } catch (e) {
       throw new Error(`Cannot read ${url}: ${e.message ?? e}`);
     }
   }
-  let r;
-  try {
-    r = await fetch(url, { redirect: "follow" });
-  } catch (e) {
-    throw new Error(`Cannot reach ${url}: ${e.message ?? e}`);
+  const parts = [];
+  let total = 0;
+  for await (const chunk of await fetchChunks(name)) {
+    total += chunk.length;
+    if (total > maxBytes) throw new Error(`${url} exceeds ${maxBytes} bytes.`);
+    parts.push(Buffer.from(chunk));
   }
-  if (!r.ok) throw new Error(`${url}: HTTP ${r.status}`);
-  return Buffer.from(await r.arrayBuffer());
+  return Buffer.concat(parts, total).toString("utf8");
 }
 
-/** The release file for this machine and SHA256SUMS, checked against each other. */
-async function verifiedAsset(asset) {
-  const [file, sums] = await Promise.all([download(asset), download("SHA256SUMS")]);
-  const want = sums.toString("utf8").split("\n").map((l) => l.trim().split(/\s+/)).find((p) => p[1] === asset)?.[0];
-  const got = crypto.createHash("sha256").update(file).digest("hex");
+/**
+ * Download `asset` to `destPath` and check it against SHA256SUMS, a chunk at a time, so the program
+ * (over 100 MB) is never held in memory. The file is not executable until the caller makes it so,
+ * and is removed here when the checksum does not match.
+ */
+async function streamVerifiedAsset(asset, destPath) {
+  const sums = await downloadText("SHA256SUMS");
+  const want = sums.split("\n").map((l) => l.trim().split(/\s+/)).find((p) => p[1] === asset)?.[0];
+  const url = `${RELEASES}/${asset}`;
+  const hash = crypto.createHash("sha256");
+  const fd = fs.openSync(destPath, "w", 0o600);
+  let total = 0;
+  try {
+    if (url.startsWith("file:")) {
+      let srcFd;
+      try {
+        srcFd = fs.openSync(new URL(url), "r");
+      } catch (e) {
+        throw new Error(`Cannot read ${url}: ${e.message ?? e}`);
+      }
+      try {
+        const buf = Buffer.alloc(65_536);
+        let n;
+        while ((n = fs.readSync(srcFd, buf, 0, buf.length, null)) > 0) {
+          total += n;
+          if (total > MAX_ASSET_BYTES) throw new Error(`${url} exceeds ${MAX_ASSET_BYTES} bytes.`);
+          const slice = buf.subarray(0, n);
+          hash.update(slice);
+          writeAll(fd, slice);
+        }
+      } finally {
+        fs.closeSync(srcFd);
+      }
+    } else {
+      for await (const chunk of await fetchChunks(asset)) {
+        total += chunk.length;
+        if (total > MAX_ASSET_BYTES) throw new Error(`${url} exceeds ${MAX_ASSET_BYTES} bytes.`);
+        hash.update(chunk);
+        writeAll(fd, chunk);
+      }
+    }
+  } finally {
+    fs.closeSync(fd);
+  }
+  const got = hash.digest("hex");
   if (!want || want !== got) {
+    fs.rmSync(destPath, { force: true });
     throw new Error(`Checksum mismatch for ${asset}: expected ${want ?? "nothing listed"}, got ${got}. Nothing was changed.`);
   }
-  return file;
 }
 
 /** Where `foxreach install-program` puts the program, as install.sh does. */
@@ -172,12 +261,11 @@ export async function installProgram({ to = programPath(), log = console.log } =
   if (!asset) throw new Error(`No foxreach build for ${process.platform} on ${process.arch}.`);
   const latest = await latestVersion();
   log(`Downloading foxreach ${latest} (${asset}) from ${RELEASES}`);
-  const file = await verifiedAsset(asset);
   const dir = path.dirname(to);
   fs.mkdirSync(dir, { recursive: true });
   const fresh = freshName(dir, "install");
   try {
-    fs.writeFileSync(fresh, file, { mode: 0o755 });
+    await streamVerifiedAsset(asset, fresh);
     fs.chmodSync(fresh, 0o755);
     signForMac(fresh);
     const says = spawnSync(fresh, ["version"], { encoding: "utf8", timeout: 30_000 });
@@ -199,7 +287,7 @@ export async function installProgram({ to = programPath(), log = console.log } =
 }
 
 async function latestVersion() {
-  const info = (await download("BUILDINFO.txt")).toString("utf8");
+  const info = await downloadText("BUILDINFO.txt");
   const m = /^foxreach (\d+(?:\.\d+)*)\s*$/m.exec(info);
   if (!m) throw new Error("The latest release does not say its version (BUILDINFO.txt).");
   return m[1];
@@ -239,12 +327,11 @@ export async function update({ check = false, force = false, log = console.log }
   }
 
   log(`Downloading foxreach ${latest} (${asset}) from ${RELEASES}`);
-  const file = await verifiedAsset(asset);
 
   // Next to the program, so the final rename replaces it in one step (same filesystem).
   const fresh = freshName(dir, "update");
   try {
-    fs.writeFileSync(fresh, file, { mode: 0o755 });
+    await streamVerifiedAsset(asset, fresh);
     fs.chmodSync(fresh, 0o755);
     signForMac(fresh);
     const says = spawnSync(fresh, ["version"], { encoding: "utf8", timeout: 30_000 });

@@ -1,0 +1,48 @@
+# Runs test/memory_safety.py: a real native host and a real MCP server are sent too much (too many
+# clients, an oversized message, uploads over the limit in one batch), the add-on's scripts are
+# counted for the listeners, timers and recordings they keep, and the sources are read for
+# native-memory primitives. It starts no browser.
+#
+# The tests that drive a browser (test/e2e.py and others) are run by hand, not here.
+name: memory
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["**"]
+    paths:
+      - bridge/**
+      - extension/**
+      - manager/src/**
+      - scripts/build_install.py
+      - scripts/browsers.py
+      - test/memory_safety.py
+      - test/harness.py
+      - .bun-version
+      - .github/workflows/memory.yml
+  pull_request:
+    paths:
+      - bridge/**
+      - extension/**
+      - manager/src/**
+      - scripts/build_install.py
+      - scripts/browsers.py
+      - test/memory_safety.py
+      - test/harness.py
+      - .bun-version
+      - .github/workflows/memory.yml
+
+permissions:
+  contents: read
+
+jobs:
+  memory:
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+      - uses: astral-sh/setup-uv@v6
+      - name: What foxreach keeps in memory stays bounded
+        run: uv run --python 3.15 test/memory_safety.py

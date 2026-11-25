@@ -87,6 +87,8 @@ export function proofMatches(token, challenge, proof) {
   return got.length === want.length && crypto.timingSafeEqual(got, want);
 }
 
+const MAX_PROOF_LINE_CHARS = 4096;
+
 /**
  * Whether a host answers on this socket: "yes", "no" (nothing listens), or, with a token (Windows),
  * "impostor" when whatever listens does not prove it knows the token, and "silent" when it does
@@ -95,10 +97,14 @@ export function proofMatches(token, challenge, proof) {
 function alive(socket, token = null, timeoutMs = 800) {
   return new Promise((resolve) => {
     const probe = net.connect(socket);
+    probe.setEncoding("utf8");
     const challenge = token ? crypto.randomBytes(32).toString("hex") : null;
     let buffer = "";
     let timer;
+    let settled = false;
     const done = (answer) => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timer);
       probe.destroy();
       resolve(answer);
@@ -111,6 +117,7 @@ function alive(socket, token = null, timeoutMs = 800) {
       probe.write(`${JSON.stringify({ challenge })}\n`);
     });
     probe.on("data", (data) => {
+      if (buffer.length + data.length > MAX_PROOF_LINE_CHARS) return done("impostor");
       buffer += data;
       const end = buffer.indexOf("\n");
       if (end === -1) return;

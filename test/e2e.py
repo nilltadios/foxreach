@@ -77,6 +77,10 @@ fetch('/api/data?x=1');
     "/frames": f"""<!doctype html><meta charset=utf-8><title>Frames</title><style>body{{margin:0}}
 iframe{{position:absolute;left:0;top:0;width:500px;height:300px;border:0}}</style>
 <iframe id=f src="{OTHER_SITE}/inner"></iframe>""",
+    "/frames-dialog": f"""<!doctype html><meta charset=utf-8><title>Frames dialog</title><p>Outer text</p>
+<iframe id=f src="{OTHER_SITE}/inner-dialog"></iframe>""",
+    "/inner-dialog": """<!doctype html><meta charset=utf-8><title>Inner dialog</title><p>inner</p>
+<script>setTimeout(() => alert("inner dialog words"), 700)</script>""",
     "/inner": f"""<!doctype html><meta charset=utf-8><title>Inner</title>{RECORDER}<style>body{{margin:0}}
 #ib{{position:absolute;left:50px;top:50px;width:150px;height:40px}}
 #ii{{position:absolute;left:50px;top:120px;width:150px;height:30px}}</style>
@@ -221,6 +225,14 @@ def events(mcp, tab, frame=None):
 def clear(mcp, tab, frame=None):
     kw = {"frame_id": frame} if frame else {}
     mcp.call("javascript", tabId=tab, code="window.events.length = 0; 1", **kw)
+
+
+def expect_text(fn):
+    """What the call says, whether it answers or refuses."""
+    try:
+        return fn()
+    except ToolError as e:
+        return str(e)
 
 
 def expect_error(fn, pattern):
@@ -1271,6 +1283,8 @@ def popup_tests(browser, mcp):
     page = tab_id(mcp.call("tabs_create", url=f"{MAIN}/main"))
     run("document.getElementById('paused').click(); setTimeout(() => arguments[0](1), 200)")
     check("pause stops agents", expect_error(lambda: mcp.call("read_page", tabId=page), "paused"))
+    check("pause stops status(tabId) from probing a page", expect_error(lambda: mcp.call("status", tabId=page), "paused"))
+    check("...while plain status still reports paused", json.loads(mcp.call("status"))["paused"] is True)
     run("document.getElementById('paused').click(); setTimeout(() => arguments[0](1), 200)")
     check("resume restores agents", "Press me" in mcp.call("read_page", tabId=page))
 
@@ -1332,6 +1346,27 @@ def popup_tests(browser, mcp):
     mcp.call("navigate", tabId=page, url=f"{MAIN}/main")
     log = until("activity", lambda t: "blocked a page load" in t and "localhost" in t)
     check("the activity log shows the blocked page load", "blocked a page load" in log and "localhost" in log, log[:400])
+    # The history is the tab's, not the agent's: back and forward stop at a site blocked since.
+    set_blocked("")
+    mcp.call("navigate", tabId=page, url=f"{OTHER_SITE}/second")
+    mcp.call("navigate", tabId=page, url=f"{MAIN}/second")
+    before = run(f"browser.foxreachInput.call({{tabId: {page}, method: 'historyUrl', args: {{delta: -1}}}}).then((r) => arguments[0](r.url), (e) => arguments[0]('ERR:' + e))")
+    check("the address one step back is read from the tab's history", before == f"{OTHER_SITE}/second", before)
+    ahead = run(f"browser.foxreachInput.call({{tabId: {page}, method: 'historyUrl', args: {{delta: 1}}}}).then((r) => arguments[0](r.url), (e) => arguments[0]('ERR:' + e))")
+    check("...and there is none ahead at the end of it", ahead is None, ahead)
+    set_blocked("localhost")
+    check("back into a site blocked since is refused",
+          expect_error(lambda: mcp.call("navigate", tabId=page, url="back"), r"blocked agents on this site \(localhost\)"))
+    listed = mcp.call("tabs_list")
+    check("...and the tab stays where it was", f"<{MAIN}/second>" in listed, listed)
+    set_blocked("")
+    mcp.call("navigate", tabId=page, url="back")
+    mcp.call("navigate", tabId=page, url="back")
+    set_blocked("localhost")
+    check("forward into a site blocked since is refused",
+          expect_error(lambda: mcp.call("navigate", tabId=page, url="forward"), r"blocked agents on this site \(localhost\)"))
+    listed = mcp.call("tabs_list")
+    check("...and the tab stays where it was", f"<{MAIN}/main>" in listed, listed)
     set_blocked("127.0.0.1")
     run("document.getElementById('blocked').value = ''; document.getElementById('save-blocked').click(); setTimeout(() => arguments[0](1), 200)")
     check("unblocking restores access", "Press me" in mcp.call("read_page", tabId=page))
@@ -1352,6 +1387,22 @@ def popup_tests(browser, mcp):
         const row = document.querySelector('#tabs input[data-tab-id="{share}"]');
         row.click(); setTimeout(() => done(1), 300);""")
     check("user can stop sharing", expect_error(lambda: mcp.call("read_page", tabId=share), "not available to agents"))
+
+    # Unsharing a tab that an agent itself opened must stop tabs_close(mine=True) from closing it.
+    unshare_agent = McpClient(mcp_socket, name="unshare-agent")
+    opened_mine = tab_id(unshare_agent.call("tabs_create", url=f"{MAIN}/second"))
+    until("tabs", lambda t: "Second page" in t)
+    run(f"""const done = arguments[0];
+        const row = document.querySelector('#tabs input[data-tab-id="{opened_mine}"]');
+        if (row && row.checked) row.click();
+        setTimeout(() => done(1), 300);""")
+    check("unsharing an agent-opened tab blocks access",
+          expect_error(lambda: unshare_agent.call("read_page", tabId=opened_mine), "not available to agents"))
+    unshare_agent.call("tabs_close", mine=True)
+    still_open = run(f"browser.tabs.get({opened_mine}).then((t) => arguments[0](!!t), () => arguments[0](false))")
+    check("tabs_close(mine=True) does not close an unshared tab", still_open is True, still_open)
+    run(f"browser.tabs.remove({opened_mine}).then(() => arguments[0](1), () => arguments[0](0))")
+    unshare_agent.close()
 
     # Only listed sites. In this build the browser grants every site, so the list alone decides.
     def press(element, label):
@@ -1380,9 +1431,51 @@ def popup_tests(browser, mcp):
     mcp.call("navigate", tabId=page, url=f"{MAIN}/frames")
     tree = mcp.call("read_page", tabId=page)
     check("a frame from a site not on the list is not read", "Frames" in tree and "Inner button" not in tree and "not allowed on this frame" in tree, tree)
+    check("point click into an unlisted subframe is refused", expect_error(lambda: mcp.call("click", tabId=page, x=100, y=70), "not allowed on localhost yet"))
+    check("hover into an unlisted subframe is refused", expect_error(lambda: mcp.call("hover", tabId=page, x=100, y=70), "not allowed on localhost yet"))
+    check("drag from an unlisted subframe is refused", expect_error(lambda: mcp.call("drag", tabId=page, from_x=100, from_y=70, to_x=140, to_y=70), "not allowed on localhost yet"))
+    check("scroll on an unlisted subframe is refused", expect_error(lambda: mcp.call("scroll", tabId=page, x=100, y=70, dy=20), "not allowed on localhost yet"))
+    check("read_console skips unlisted subframes", "inner frame says hi" not in mcp.call("read_console", tabId=page))
+    check("read_network hides unlisted-site URLs", OTHER_SITE not in mcp.call("read_network", tabId=page))
     check("navigating to a site not on the list is refused", expect_error(lambda: mcp.call("navigate", tabId=page, url=f"{OTHER_SITE}/second"), "not allowed on localhost yet"))
     run("document.getElementById('site').value = 'HTTP://LocalHost:1/x'; document.querySelector('#add-site button').click(); setTimeout(() => arguments[0](1), 300)")
-    check("a site typed into the popup is added as a host name", "Inner button" in mcp.call("read_page", tabId=page) and "localhost" in text_of("sites"), text_of("sites"))
+    frame_tree = mcp.call("read_page", tabId=page)
+    check("a site typed into the popup is added as a host name", "Inner button" in frame_tree and "localhost" in text_of("sites"), text_of("sites"))
+    # Focus the subframe input while allowed, then remove localhost from allowed sites:
+    # trusted keyboard input and console reads must refuse/omit the now-unlisted subframe.
+    mcp.call("click", tabId=page, ref=ref_of(frame_tree, "Inner input"))
+    run("""[...document.querySelectorAll('#sites li')].find((li) => li.textContent.startsWith('localhost')).querySelector('button').click();
+        setTimeout(() => arguments[0](1), 300)""")
+    check("typing into a focused unlisted subframe is refused", expect_error(lambda: mcp.call("type_text", tabId=page, text="nope"), "not allowed on localhost yet"))
+    check("press_key into a focused unlisted subframe is refused", expect_error(lambda: mcp.call("press_key", tabId=page, keys="Enter"), "not allowed on localhost yet"))
+    check("read_console drops subframe messages once the site is removed", "inner frame says hi" not in mcp.call("read_console", tabId=page))
+    # A ref into that frame was handed out while its site was on the list: it opens nothing now.
+    inner_ref = ref_of(frame_tree, "Inner input")
+    for tool, more in (("click", {}), ("hover", {}), ("scroll_to", {}), ("form_input", {"value": "x"}), ("read_page", {})):
+        check(f"{tool} with a ref into a frame of a site taken off the list is refused",
+              expect_error(lambda tool=tool, more=more: mcp.call(tool, tabId=page, ref=inner_ref, **more), "not allowed on localhost yet"))
+    found = expect_text(lambda: mcp.call("find", tabId=page, query="Inner button"))
+    check("find does not look into that frame", "#ib" not in found, found)
+    dropped = pathlib.Path(tempfile.mkdtemp(prefix="foxreach-e2e-drop-")) / "drop.txt"
+    dropped.write_text("dropped")
+    check("a file dropped at a point in that frame is refused",
+          expect_error(lambda: mcp.call("file_upload", tabId=page, x=100, y=70, paths=[str(dropped)]), "not allowed on localhost yet"))
+    # A frame of a site not on the list opens a dialog over the whole tab: its text is that site's,
+    # and answering it is acting on that site.
+    mcp.call("navigate", tabId=page, url=f"{MAIN}/frames-dialog")
+    time.sleep(1.5)
+    said = expect_text(lambda: mcp.call("handle_dialog", tabId=page))
+    check("a dialog opened by a frame of a site not on the list is not read out", "inner dialog words" not in said and "not allowed on (localhost)" in said, said)
+    said = expect_text(lambda: mcp.call("read_page", tabId=page))
+    check("...nor shown by a tool the dialog blocks", "inner dialog words" not in said and "ask the user to answer it" in said, said)
+    said = expect_text(lambda: mcp.call("handle_dialog", tabId=page, action="dismiss"))
+    check("...and an agent cannot answer it", "inner dialog words" not in said and "agents cannot answer it" in said, said)
+    run("document.getElementById('site').value = 'localhost'; document.querySelector('#add-site button').click(); setTimeout(() => arguments[0](1), 300)")
+    said = expect_text(lambda: mcp.call("handle_dialog", tabId=page))
+    check("with the site on the list, the dialog is read", 'alert: "inner dialog words"' in said, said)
+    check("...and answered", "Dismissed alert" in mcp.call("handle_dialog", tabId=page, action="dismiss"))
+    run("""[...document.querySelectorAll('#sites li')].find((li) => li.textContent.startsWith('localhost')).querySelector('button').click();
+        setTimeout(() => arguments[0](1), 300)""")
     mcp.call("navigate", tabId=page, url=f"{MAIN}/main")
     run("""[...document.querySelectorAll('#sites li')].find((li) => li.textContent.startsWith('127.0.0.1')).querySelector('button').click();
         setTimeout(() => arguments[0](1), 300)""")
@@ -1459,6 +1552,9 @@ def popup_tests(browser, mcp):
     check("status with ask false (foxreach test) only reports, asking no one",
           probed.get("agentAccess") == "unasked" and "quiet-prober" not in text_of("agent-requests"),
           (probed, text_of("agent-requests")))
+    check("unapproved status(tabId) is refused without probing",
+          expect_error(lambda: quiet.call("status", ask=False, tabId=page), "not allowed")
+          and "quiet-prober" not in text_of("agent-requests"))
     quiet.close()
     looker = McpClient(mcp_socket, name="looker")
     looked = json.loads(looker.call("status"))
@@ -1504,6 +1600,7 @@ def popup_tests(browser, mcp):
     thread.join(10)
     check("Refuse fails the call", "refused" in answers.get("two", ""), answers)
     check("...and the agent's later calls, without asking", expect_error(lambda: two.call("tabs_list"), "refused") and not text_of("agent-requests"))
+    check("...including status(tabId)", expect_error(lambda: two.call("status", tabId=page), "refused"))
     two.close()
     three, thread = asking("regular", "three")
     press("agent-requests", "Always")
@@ -1523,6 +1620,31 @@ def popup_tests(browser, mcp):
     check("the activity log shows who was refused", "newcomer: tabs_list" in log, log[:300])
     run("document.getElementById('ask').click(); setTimeout(() => arguments[0](1), 300)")
     check("with asking off, the test's own agent works again", "Press me" in mcp.call("read_page", tabId=page))
+
+    # Fail-closed secret inspection on an uninjectable page (an extension page, where executeScript
+    # is refused): screenshot and javascript must refuse rather than returning an unchecked picture.
+    rob = run("""browser.tabs.create({ url: browser.runtime.getURL('welcome/welcome.html'), active: false }).then(async (t) => {
+        await browser.runtime.sendMessage({ popup: 'share', tabId: t.id, value: true });
+        arguments[0](t.id);
+    }, (e) => arguments[0]('ERR:' + e))""")
+    check("opened an uninjectable shared tab for fail-closed check", isinstance(rob, int), rob)
+    if isinstance(rob, int):
+        time.sleep(0.4)
+        check("screenshot fails closed when secretBoxes cannot inspect the page",
+              expect_error(lambda: mcp.image(tabId=rob), "could not check this page"))
+        check("javascript is refused on a page foxreach cannot read at all",
+              expect_error(lambda: mcp.call("javascript", tabId=rob, code="1"), "Cannot read this page|could not check"))
+        run(f"browser.tabs.remove({rob}).then(() => arguments[0](1), () => arguments[0](0))")
+
+    # A page that can be read, but whose check for fields kept from agents fails: the test makes the
+    # check throw, from the add-on's own script world in that page. No agent script runs then.
+    in_page = lambda code: run(f"browser.tabs.executeScript({page}, {{code: {json.dumps(code)}}}).then(() => arguments[0](1), (e) => arguments[0]('ERR:' + e))")  # noqa: E731
+    check("the page's check for kept fields is made to fail", in_page("document.querySelectorAll = () => { throw new Error('made to fail by the test'); }; 1") == 1)
+    check("javascript is refused when the page cannot be checked for fields kept from agents",
+          expect_error(lambda: mcp.call("javascript", tabId=page, code="1 + 1"), "could not check"))
+    in_page("delete document.querySelectorAll; 1")
+    check("...and runs again once it can", mcp.call("javascript", tabId=page, code="1 + 1") == "2")
+
     mcp.call("tabs_close", tabId=page)
 
 

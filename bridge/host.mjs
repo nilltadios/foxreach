@@ -1,9 +1,10 @@
 // Native messaging host. The browser starts it and owns its lifetime. It relays between the extension
 // (stdin/stdout, 4-byte length prefix) and local MCP servers (a private Unix socket, JSON lines).
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
-import { allOpenProfiles, namedProfile, openProfiles } from "./addon.mjs";
+import { allOpenProfiles, allProfiles, namedProfile, openProfiles } from "./addon.mjs";
 import { parentApp, windowsBrowser } from "./browsers.mjs";
 import { describeParent, fixedSocket, folder, proofOf, register } from "./connected.mjs";
 import { appendHistory } from "./history.mjs";
@@ -12,6 +13,16 @@ import { WIN, processesError, profileArg, profileNameArg } from "./win.mjs";
 
 // The browser accepts at most 1 MB per message; 300k UTF-16 units cannot exceed that once encoded.
 const CHUNK_CHARS = 300_000;
+const MAX_FROM_BROWSER_BYTES = 64 * 1024 * 1024;
+const MAX_CLIENTS = 64;
+const MAX_CLIENT_LINE_CHARS = 96 * 1024 * 1024;
+const MAX_CLIENT_WRITE_BUFFER_BYTES = 64 * 1024 * 1024;
+const STDOUT_HIGH_WATER_BYTES = 16 * 1024 * 1024;
+const SLAB_COMPACT_MIN_BYTES = 65_536;
+const SLAB_COMPACT_FACTOR = 4;
+const LINE_TIMEOUT_MS = 30_000;
+// Set once this host is stopping over an error (fail): what the browser still sends is not read.
+let failing = false;
 
 const sock = socketPath();
 const debug = (text) => {
@@ -30,9 +41,11 @@ let nextClient = 1;
 const STOP_MARK = "foxreach-agents-stopped";
 // Windows: the profiles this host may serve, when it cannot tell which one (two open at once).
 let candidates = [];
+const MAC = (process.env.FOXREACH_PLATFORM || process.platform) === "darwin";
 function findProfile() {
   if (process.env.FOXREACH_HOST_PROFILE) return process.env.FOXREACH_HOST_PROFILE;
   if (WIN) return windowsProfile();
+  if (MAC) return macProfile();
   try {
     for (const fd of fs.readdirSync(`/proc/${process.ppid}/fd`)) {
       let target;
@@ -44,9 +57,28 @@ function findProfile() {
       if (path.basename(target) === ".parentlock") return path.dirname(target);
     }
   } catch {
-    // no /proc (macOS), or the parent is gone
+    // no /proc, or the parent is gone
   }
   return null;
+}
+/**
+ * macOS has no /proc: ask lsof which .parentlock file the parent browser holds open, else fall back
+ * to the open profiles of that browser (or all known browsers), refusing agents if any candidate is stopped.
+ */
+function macProfile() {
+  const lsof = fs.existsSync("/usr/sbin/lsof") ? "/usr/sbin/lsof" : "lsof";
+  const r = spawnSync(lsof, ["-Fn", "-p", String(process.ppid)], { encoding: "utf8" });
+  if (!r.error && r.status === 0) {
+    for (const line of r.stdout.split("\n")) {
+      if (line.startsWith("n") && path.basename(line.slice(1)) === ".parentlock") {
+        return path.dirname(line.slice(1));
+      }
+    }
+  }
+  const app = parentApp();
+  const open = app ? openProfiles(app) : allOpenProfiles();
+  candidates = open;
+  return open.length === 1 ? open[0] : null;
 }
 /**
  * Windows has no /proc: the profile named on the browser's command line (-profile <folder> or
@@ -90,24 +122,70 @@ appendHistory({ event: "start", ...historyId, browser: parent.name, packaging: p
 // (a page's "leave page?" prompt), so it counts only if the connection ends soon after.
 let quitSaid = 0;
 const QUIT_COUNTS_MS = 30_000;
+/** Null, or what to answer an agent with: the user stopped agents here, or maybe here. */
 function agentsStopped() {
   profile ??= findProfile();
-  if (profile === null) return candidates.some((c) => fs.existsSync(path.join(c, STOP_MARK)));
-  return fs.existsSync(path.join(profile, STOP_MARK));
+  if (profile !== null) return fs.existsSync(path.join(profile, STOP_MARK)) ? STOPPED : null;
+  // Which profile this is could not be told. With some open ones to choose from, a stop in any of
+  // them counts; with none found at all, a stop in any profile foxreach can find does. Not knowing
+  // must never let agents into a profile the user stopped them in.
+  const maybe = candidates.length ? candidates : allProfiles();
+  const stopped = maybe.filter((c) => fs.existsSync(path.join(c, STOP_MARK)));
+  return stopped.length ? stoppedMaybeHere(stopped) : null;
 }
 const STOPPED = "The user stopped agents in this browser profile (foxreach is still installed there). " +
   "Ask the user to let agents use it again, from the foxreach manager or with: foxreach addon start --profile <folder>.";
+const stoppedMaybeHere = (stopped) => `The user stopped agents in ${stopped.length === 1 ? "a browser profile" : "browser profiles"} ` +
+  `(${stopped.join(", ")}), and foxreach cannot tell which profile this browser is using, so it refuses agents here as well. ` +
+  "Ask the user to let agents use it again, from the foxreach manager or with: foxreach addon start --profile <folder>.";
+
+// What waits to go to the browser, in order. While the browser reads slower than agents send,
+// their sockets are paused, so the wait stays in the agents and not in this process's memory.
+const outQueue = [];
+let outQueuedBytes = 0;
+let outDraining = false;
+let clientsPaused = false;
+function setClientsPaused(paused) {
+  if (clientsPaused === paused) return;
+  clientsPaused = paused;
+  for (const c of clients.values()) {
+    if (paused) c.pause();
+    else c.resume();
+  }
+}
+function flushOut() {
+  while (outQueue.length) {
+    const item = outQueue.shift();
+    outQueuedBytes -= item.frame.length;
+    const ok = process.stdout.write(item.frame, item.done);
+    if (!ok) {
+      outDraining = true;
+      setClientsPaused(true);
+      process.stdout.once("drain", () => {
+        outDraining = false;
+        flushOut();
+      });
+      return;
+    }
+  }
+  if (outQueuedBytes < STDOUT_HIGH_WATER_BYTES) setClientsPaused(false);
+}
 
 function toBrowser(message, done) {
   const body = Buffer.from(JSON.stringify(message));
   const header = Buffer.alloc(4);
   header.writeUInt32LE(body.length);
-  process.stdout.write(Buffer.concat([header, body]), done);
+  const frame = Buffer.concat([header, body]);
+  outQueue.push({ frame, done });
+  outQueuedBytes += frame.length;
+  if (outQueuedBytes >= STDOUT_HIGH_WATER_BYTES) setClientsPaused(true);
+  if (!outDraining) flushOut();
 }
 
 /** Tell the add-on why this host stops, then stop once the message is out (pipe writes are
  * asynchronous on Windows, and exiting at once could lose it). */
 function fail(message, code) {
+  failing = true;
   toBrowser({ hostError: message }, () => process.exit(code));
   setTimeout(() => process.exit(code), 2000).unref();
 }
@@ -138,18 +216,85 @@ function fromBrowser(message) {
   }
   const split = String(message.id).indexOf(":");
   const client = clients.get(Number(String(message.id).slice(0, split)));
-  client?.write(`${JSON.stringify({ ...message, id: Number(String(message.id).slice(split + 1)) })}\n`);
+  if (client) toClient(client, `${JSON.stringify({ ...message, id: Number(String(message.id).slice(split + 1)) })}\n`);
+}
+
+/**
+ * Write to an agent's socket, unless the agent has stopped reading: one that already has more than
+ * MAX_CLIENT_WRITE_BUFFER_BYTES waiting is dropped, so what it does not read cannot grow this
+ * process. (What waits is then at most that limit and one more message.)
+ */
+function toClient(conn, text) {
+  if (conn.writableLength > MAX_CLIENT_WRITE_BUFFER_BYTES) {
+    debug("dropping an agent that does not read its replies");
+    conn.destroy();
+    return;
+  }
+  conn.write(text);
 }
 
 let hello = null;
-let stdinBuffer = Buffer.alloc(0);
+// Chunked stdin accumulator: avoids O(n^2) Buffer.concat on large replies and never leaves a
+// zero-length or tiny subarray pinning a multi-megabyte ArrayBuffer while idle.
+let stdinChunks = [];
+let stdinBytes = 0;
+function compactRemainder(rem) {
+  if (rem.length === 0) return null;
+  if (rem.buffer.byteLength > SLAB_COMPACT_MIN_BYTES && rem.buffer.byteLength > rem.length * SLAB_COMPACT_FACTOR) {
+    return Buffer.from(rem);
+  }
+  return rem;
+}
+function peekStdinLength() {
+  if (stdinChunks[0].length >= 4) return stdinChunks[0].readUInt32LE(0);
+  const joined = Buffer.concat(stdinChunks, stdinBytes);
+  stdinChunks = [joined];
+  return joined.readUInt32LE(0);
+}
+function takeStdin(n) {
+  if (stdinChunks.length === 1) {
+    const only = stdinChunks[0];
+    if (only.length === n) {
+      stdinChunks = [];
+      stdinBytes = 0;
+      return only;
+    }
+    const frame = only.subarray(0, n);
+    const rem = compactRemainder(only.subarray(n));
+    stdinChunks = rem ? [rem] : [];
+    stdinBytes -= n;
+    return frame;
+  }
+  const joined = Buffer.concat(stdinChunks, stdinBytes);
+  const frame = joined.subarray(0, n);
+  const rem = compactRemainder(joined.subarray(n));
+  stdinChunks = rem ? [rem] : [];
+  stdinBytes = rem ? rem.length : 0;
+  return frame;
+}
 process.stdin.on("data", (data) => {
-  stdinBuffer = Buffer.concat([stdinBuffer, data]);
-  while (stdinBuffer.length >= 4) {
-    const length = stdinBuffer.readUInt32LE(0);
-    if (stdinBuffer.length < 4 + length) break;
-    fromBrowser(JSON.parse(stdinBuffer.subarray(4, 4 + length)));
-    stdinBuffer = stdinBuffer.subarray(4 + length);
+  if (failing || !data.length) return;
+  stdinChunks.push(data);
+  stdinBytes += data.length;
+  while (stdinBytes >= 4) {
+    const length = peekStdinLength();
+    if (length > MAX_FROM_BROWSER_BYTES) {
+      stdinChunks = [];
+      stdinBytes = 0;
+      debug(`oversized native message from browser: ${length} bytes`);
+      fail(`Browser message exceeded ${MAX_FROM_BROWSER_BYTES} bytes.`, 5);
+      return;
+    }
+    if (stdinBytes < 4 + length) break;
+    const frame = takeStdin(4 + length);
+    let message;
+    try {
+      message = JSON.parse(frame.subarray(4).toString("utf8"));
+    } catch (e) {
+      debug(`malformed browser JSON: ${e.message}`);
+      continue;
+    }
+    fromBrowser(message);
   }
 });
 
@@ -200,11 +345,38 @@ process.stdin.on("end", () => shutdown());
 process.on("SIGTERM", () => shutdown("SIGTERM"));
 
 function serveClient(conn) {
+  if (clients.size >= MAX_CLIENTS) {
+    conn.destroy();
+    return;
+  }
   const clientId = nextClient++;
   clients.set(clientId, conn);
+  if (clientsPaused) conn.pause();
   let buffer = "";
+  let lineTimer = null;
+  const clearLineTimer = () => {
+    if (lineTimer !== null) {
+      clearTimeout(lineTimer);
+      lineTimer = null;
+    }
+  };
+  const armLineTimer = () => {
+    clearLineTimer();
+    if (!buffer.length) return;
+    lineTimer = setTimeout(() => {
+      buffer = "";
+      conn.destroy();
+    }, LINE_TIMEOUT_MS);
+    lineTimer.unref?.();
+  };
   conn.setEncoding("utf8");
   conn.on("data", (data) => {
+    if (buffer.length + data.length > MAX_CLIENT_LINE_CHARS) {
+      buffer = "";
+      clearLineTimer();
+      conn.destroy();
+      return;
+    }
     buffer += data;
     let end;
     while ((end = buffer.indexOf("\n")) !== -1) {
@@ -222,19 +394,23 @@ function serveClient(conn) {
       // Windows: an agent asks the host to prove it is the one its info file names (bridge/mcp.mjs).
       if (request && typeof request.challenge === "string") {
         const token = registration?.info.token;
-        if (token) conn.write(`${JSON.stringify({ proof: proofOf(token, request.challenge.slice(0, 200)) })}\n`);
+        if (token) toClient(conn, `${JSON.stringify({ proof: proofOf(token, request.challenge.slice(0, 200)) })}\n`);
         continue;
       }
       const { id, client, tool, args } = request ?? {};
-      if (agentsStopped()) {
-        conn.write(`${JSON.stringify({ id, error: STOPPED })}\n`);
+      const stopped = agentsStopped();
+      if (stopped) {
+        toClient(conn, `${JSON.stringify({ id, error: stopped })}\n`);
         continue;
       }
       sendRequest({ id: `${clientId}:${id}`, client: String(client ?? "agent").slice(0, 80), tool: String(tool), args });
     }
+    armLineTimer();
   });
   // The add-on keeps what the user allowed per connection; tell it when one ends.
   conn.on("close", () => {
+    buffer = "";
+    clearLineTimer();
     if (clients.delete(clientId)) toBrowser({ closed: clientId });
   });
   conn.on("error", () => {});
@@ -264,6 +440,11 @@ function isAlive(file) {
       const server = net.createServer(serveClient);
       // Windows: a pipe is not a file, and umask means nothing to it.
       const oldMask = WIN ? null : process.umask(0o177);
+      server.on("error", (e) => {
+        if (oldMask !== null) process.umask(oldMask);
+        debug(`listen error on ${file}: ${e.message}`);
+        fail(`Cannot listen on ${file}: ${e.message}`, 5);
+      });
       server.listen(file, () => {
         if (oldMask !== null) process.umask(oldMask);
         debug(`listening on ${file}`);

@@ -48,7 +48,10 @@ function allowSite(host) {
     });
   }
   const sent = send({ popup: "wantSite", host });
-  browser.permissions.request({ origins: originsOf(host) }).then(() => send({ popup: "state" }), () => {});
+  browser.permissions.request({ origins: originsOf(host) }).then(
+    (granted) => send(granted ? { popup: "state" } : { popup: "unwantSite", host }),
+    () => send({ popup: "unwantSite", host })
+  );
   return sent;
 }
 

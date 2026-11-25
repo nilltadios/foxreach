@@ -6,6 +6,11 @@ const RECONNECT_MS = 2000;
 const RECONNECT_BUSY_MS = 30000;
 const NET_LIMIT = 1000;
 const LOG_LIMIT = 200;
+const PENDING_LIMIT = 5000;
+const MAX_OPENED_BY = 50;
+const MAX_PARTIAL_BYTES = 96 * 1024 * 1024;
+const MAX_PARTIAL_ENTRIES = 16;
+const PARTIAL_TTL_MS = 120_000;
 const RESULT_LIMIT = 500000;
 const SAVED_RESULT_LIMIT = 16 * 1024 * 1024;
 const JS_TIMEOUT_S = 30;
@@ -18,11 +23,15 @@ const INPUT_SETTLE_MS = 120;
 const INPUT_NAV_TIMEOUT_MS = 10000;
 const SCREENSHOT_LOAD_TIMEOUT_MS = 8000;
 const RECORD_MAX_FRAMES = 150;
+const RECORD_MAX_TOTAL_BYTES = 128 * 1024 * 1024;
+// Under the native host's limit for one message from the browser (MAX_FROM_BROWSER_BYTES, bridge/host.mjs).
+const MAX_REPLY_BYTES = 60 * 1024 * 1024;
 const RECORD_WIDTH = 900;
 const RECORDED_TOOLS = new Set(["click", "hover", "drag", "type_text", "press_key", "scroll", "scroll_to", "form_input", "file_upload", "navigate", "tabs_select"]);
 
 const trusted = typeof browser.foxreachInput !== "undefined";
 const recordings = new Map();
+let recordingBytes = 0;
 const consoleCleared = new Map();
 const openedBy = new Map();
 // Which connection (one agent session, numbered by the host) opened each agent tab, for
@@ -35,6 +44,7 @@ const agentTabs = new Set();
 const network = new Map();
 const activity = [];
 const partial = new Map();
+let partialBytes = 0;
 // siteAccess: "all", or "listed" for only the sites in allowedHosts. Set at first start.
 // hiddenFields: kinds of form field whose values agents never see (content.js, secretKind).
 const HIDDEN_DEFAULT = { typed: false, cards: true, ids: true, answers: true, address: false, phone: false, email: false, name: false, birthday: false };
@@ -192,8 +202,17 @@ async function assertAgentAllowed(conn, name) {
   if (deniedConns.has(conn)) throw new Error(`The user refused the agent "${name}".`);
   const request = requestApproval(conn, name);
   const answer = await new Promise((resolve) => {
-    request.waiters.push(resolve);
-    setTimeout(() => resolve("unanswered"), APPROVAL_WAIT_MS);
+    let settled = false;
+    const finish = (outcome) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      const idx = request.waiters.indexOf(finish);
+      if (idx !== -1) request.waiters.splice(idx, 1);
+      resolve(outcome);
+    };
+    const timer = setTimeout(() => finish("unanswered"), APPROVAL_WAIT_MS);
+    request.waiters.push(finish);
   });
   if (answer === "allow") return;
   if (answer === "deny") throw new Error(`The user refused the agent "${name}".`);
@@ -207,14 +226,37 @@ function answerAgent(conn, mode) {
   if (mode === "deny") deniedConns.add(conn);
   else allowedConns.add(conn);
   if (mode === "always" && !settings.approvedAgents.includes(request.name)) settings.approvedAgents.push(request.name);
-  for (const done of request.waiters) done(mode === "deny" ? "deny" : "allow");
+  for (const done of [...request.waiters]) done(mode === "deny" ? "deny" : "allow");
+}
+
+function deletePartial(id) {
+  const entry = partial.get(id);
+  if (!entry) return;
+  partial.delete(id);
+  partialBytes = Math.max(0, partialBytes - entry.bytes);
+}
+
+function deleteRecording(tabId) {
+  const rec = recordings.get(tabId);
+  if (!rec) return null;
+  recordings.delete(tabId);
+  recordingBytes = Math.max(0, recordingBytes - rec.bytes);
+  return rec;
 }
 
 function forgetConnection(conn) {
-  agentRequests.get(conn)?.waiters.forEach((done) => done("unanswered"));
+  const req = agentRequests.get(conn);
+  if (req) for (const done of [...req.waiters]) done("unanswered");
   agentRequests.delete(conn);
   allowedConns.delete(conn);
   deniedConns.delete(conn);
+  const prefix = `${conn}:`;
+  for (const id of [...partial.keys()]) {
+    if (String(id).startsWith(prefix)) deletePartial(id);
+  }
+  for (const [tabId, rec] of [...recordings]) {
+    if (rec.conn === conn) deleteRecording(tabId);
+  }
   updateBadge();
 }
 
@@ -257,6 +299,34 @@ async function assertFrameAllowed(tabId, frameId) {
   await assertSiteAllowed(owner);
 }
 
+/**
+ * Enforce blocked/unlisted site policy on a frame resolved by the privileged Experiment layer
+ * (viewport hit-testing or focus traversal) before delivering trusted input into it.
+ */
+async function assertResolvedFrameAllowed(tabId, resolved) {
+  if (!resolved) return;
+  if (resolved.frameId) {
+    const frames = await allFrames(tabId);
+    const frame = frames.find((f) => f.frameId === resolved.frameId);
+    if (frame) {
+      const owner = ownerUrl(frames, frame);
+      if (hostBlocked(owner)) throw new Error("The user has blocked agents on this frame's site.");
+      await assertSiteAllowed(owner);
+      return;
+    }
+  }
+  if (resolved.url) {
+    if (hostBlocked(resolved.url)) throw new Error("The user has blocked agents on this frame's site.");
+    await assertSiteAllowed(resolved.url);
+  }
+}
+
+/** A page agents may be on: its site is not blocked, and is one the user allows. */
+async function assertPageAllowed(url) {
+  if (hostBlocked(url)) throw new Error(`The user has blocked agents on this site (${new URL(url).hostname}).`);
+  await assertSiteAllowed(url);
+}
+
 async function accessibleTab(tabId) {
   if (!Number.isInteger(tabId)) throw new Error("tabId is required. Use tabs_list or tabs_create.");
   if (!agentTabs.has(tabId)) {
@@ -267,17 +337,39 @@ async function accessibleTab(tabId) {
     agentTabs.delete(tabId);
     throw new Error(`Tab ${tabId} no longer exists.`);
   }
-  if (hostBlocked(tab.url)) throw new Error(`The user has blocked agents on this site (${new URL(tab.url).hostname}).`);
-  await assertSiteAllowed(tab.url);
+  await assertPageAllowed(tab.url);
   return tab;
+}
+
+/**
+ * Whether agents may read and answer the tab's open dialog. Any frame can open one over the whole
+ * tab, so it belongs to the page that opened it: a frame of a site the user has blocked or not
+ * allowed keeps its dialog's text to itself, like the rest of what it shows. When the browser
+ * does not say which page that was, every frame of the tab must be one agents may read.
+ */
+async function dialogAllowed(tabId, state) {
+  if (state.url && isWeb(state.url)) return !hostBlocked(state.url) && siteAllowed(state.url);
+  const frames = await allFrames(tabId);
+  for (const f of frames) {
+    const owner = ownerUrl(frames, f);
+    if (hostBlocked(owner) || !(await siteAllowed(owner))) return false;
+  }
+  return true;
+}
+
+/** What agents are told of a dialog they may not read: who has to answer it, never its text. */
+function dialogOfAnotherSite(state) {
+  const from = state.url && isWeb(state.url) && !hostBlocked(state.url) ? ` (${hostOf(state.url)})` : "";
+  return `A ${state.type} dialog is open and is blocking the page. It comes from a frame of a site agents are not allowed on${from}, ` +
+    "so its text is not shown and agents cannot answer it: ask the user to answer it in the browser.";
 }
 
 async function assertNoDialog(tabId) {
   if (!trusted) return;
   const state = await privileged(tabId, "dialogState");
-  if (state.open) {
-    throw new Error(`A ${state.type} dialog is open and is blocking the page: ${JSON.stringify(state.message)}. Use handle_dialog.`);
-  }
+  if (!state.open) return;
+  if (!(await dialogAllowed(tabId, state))) throw new Error(dialogOfAnotherSite(state));
+  throw new Error(`A ${state.type} dialog is open and is blocking the page: ${JSON.stringify(state.message)}. Use handle_dialog.`);
 }
 
 async function adoptTab(tab) {
@@ -362,8 +454,8 @@ async function eachFrame(tabId, op, args) {
   const results = await Promise.all(
     frames.map(async (f) => {
       const owner = ownerUrl(frames, f);
-      if (f.frameId && hostBlocked(owner)) return { frame: { frameId: f.frameId, url: "blocked site" }, error: "the user has blocked agents on this frame's site" };
-      if (f.frameId && !(await siteAllowed(owner))) return { frame: f, error: "agents are not allowed on this frame's site" };
+      if (f.frameId && hostBlocked(owner)) return { frame: { frameId: f.frameId, url: "blocked site" }, skipped: true, error: "the user has blocked agents on this frame's site" };
+      if (f.frameId && !(await siteAllowed(owner))) return { frame: f, skipped: true, error: "agents are not allowed on this frame's site" };
       try {
         const value = await withTimeout(
           browser.tabs.sendMessage(tabId, { foxreachOp: op, args }, { frameId: f.frameId }),
@@ -415,14 +507,28 @@ const sameElement = (a, b) => !!a && !!b && a.frameId === b.frameId && (a.ref ? 
  * secretKind). Clicking and typing still work there. A frame foxreach may not read (another site
  * the user has not allowed) is skipped: agent code in an allowed frame cannot read across sites.
  */
-async function assertNoFilledSecret(tabId) {
+async function assertNoFilledSecret(tabId, targetFrameId = 0) {
   const results = await eachFrame(tabId, "filledSecret", {});
   const hit = results.find((r) => r.value?.field);
-  if (!hit) return;
-  const where = `${hit.value.field}${hit.frame.frameId ? ` in frame ${hit.frame.frameId}` : ""}`;
-  throw new Error(`javascript does not run in this tab while a password or another field the user keeps from agents holds a value (${where}), ` +
-    "so agent code cannot read it. read_page, find, click and type_text still work. Once the form is submitted or the " +
-    "field is cleared, javascript works again.");
+  if (hit) {
+    const where = `${hit.value.field}${hit.frame.frameId ? ` in frame ${hit.frame.frameId}` : ""}`;
+    throw new Error(`javascript does not run in this tab while a password or another field the user keeps from agents holds a value (${where}), ` +
+      "so agent code cannot read it. read_page, find, click and type_text still work. Once the form is submitted or the " +
+      "field is cleared, javascript works again.");
+  }
+  // Fail closed when the top frame, target frame, or an allowed frame fails to answer:
+  // blocked, unlisted, moz-extension: and data: frames have separate/opaque origins unless targeted.
+  if (!results.some((r) => r.frame.frameId === 0 && r.value)) {
+    throw new Error("javascript does not run in this tab: foxreach could not check the page for fields the user keeps from agents.");
+  }
+  const unchecked = results.find((r) =>
+    !r.value && !r.skipped &&
+    (r.frame.frameId === 0 || r.frame.frameId === targetFrameId || !/^(?:moz-extension|data):/.test(r.frame.url ?? ""))
+  );
+  if (unchecked) {
+    const where = unchecked.frame.frameId ? `frame ${unchecked.frame.frameId}` : "the page";
+    throw new Error(`javascript does not run in this tab: foxreach could not check ${where} for fields the user keeps from agents (${unchecked.error ?? "no reply"}).`);
+  }
 }
 
 /** Run agent typing with every frame told it is the agent's, so content.js does not count the
@@ -540,6 +646,9 @@ async function withModList(modifiers) {
 
 async function dispatchMouse(tabId, point, { action, button = 0, count = 1, modifiers }) {
   modifiers = await withModList(modifiers);
+  if (trusted && !point.frameId) {
+    await assertResolvedFrameAllowed(tabId, await privileged(tabId, "pointFrame", { x: point.x, y: point.y }));
+  }
   const result = trusted
     ? await privileged(tabId, "mouse", { frameId: point.frameId, x: point.x, y: point.y, action, button, count, modifiers })
     : await contentCall(tabId, point.frameId, "untrustedMouse", { x: point.x, y: point.y, action, button, count });
@@ -560,13 +669,18 @@ const inputNote = (point, res) =>
  * when leaving about:blank, once the tab has left it: the blank page's own late events look the same.
  */
 function waitForLoad(tabId, { leavingBlank = false, timeoutMs = NAV_TIMEOUT_MS } = {}) {
-  return new Promise((resolve) => {
+  let cancel = () => {};
+  const promise = new Promise((resolve) => {
     let loading = false;
+    let settled = false;
     const finish = (timedOut) => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timer);
       browser.tabs.onUpdated.removeListener(listener);
       resolve(timedOut);
     };
+    cancel = () => finish(false);
     const listener = async (id, change, tab) => {
       if (id !== tabId) return;
       if (change.status === "loading") loading = true;
@@ -575,6 +689,7 @@ function waitForLoad(tabId, { leavingBlank = false, timeoutMs = NAV_TIMEOUT_MS }
     const timer = setTimeout(() => finish(true), timeoutMs);
     browser.tabs.onUpdated.addListener(listener);
   });
+  return { promise, cancel };
 }
 
 async function untilIdle(tabId, timeoutMs = 2500) {
@@ -604,16 +719,26 @@ async function settle(tabId, options) {
   // A dialog during load would otherwise hold this up for the whole timeout.
   const load = waitForLoad(tabId, options);
   const stopWatching = { done: false };
-  const dialog = (async () => {
-    while (!stopWatching.done) {
-      await sleep(250);
-      const state = await privileged(tabId, "dialogState").catch(() => ({ open: false }));
-      if (state.open) return "dialog";
+  let outcome;
+  try {
+    if (trusted) {
+      const dialog = (async () => {
+        while (!stopWatching.done) {
+          await sleep(250);
+          if (stopWatching.done) return null;
+          const state = await privileged(tabId, "dialogState").catch(() => ({ open: false }));
+          if (state.open) return "dialog";
+        }
+        return null;
+      })();
+      outcome = await Promise.race([load.promise, dialog]);
+    } else {
+      outcome = await load.promise;
     }
-    return null;
-  })();
-  const outcome = await (trusted ? Promise.race([load, dialog]) : load);
-  stopWatching.done = true;
+  } finally {
+    stopWatching.done = true;
+    load.cancel();
+  }
   const tab = await browser.tabs.get(tabId);
   const suffix = outcome === "dialog" ? " A dialog is open; use handle_dialog." : outcome === true ? " The page is still loading." : "";
   return `Tab ${tabId}: ${tabLine(tab)}.${suffix}`;
@@ -705,11 +830,21 @@ async function frameOffset(tabId, frameId, frames, { asked = new Map(), whole = 
  * it may hold such a field; one that cannot even be placed refuses the picture too.
  */
 async function secretBoxes(tabId) {
-  const results = await eachFrame(tabId, "secretRects", {}).catch(() => []);
+  let results;
+  try {
+    results = await eachFrame(tabId, "secretRects", {});
+  } catch (e) {
+    throw new Error(`No picture: foxreach could not check this page for fields the user keeps from agents (${e.message}). Use read_page instead.`);
+  }
   const boxes = [];
   const frames = await allFrames(tabId);
   const asked = new Map();
   const REFUSE = "No picture: a password or another field the user keeps from agents, in a frame, holds a value, and foxreach cannot place it to cover it. Use read_page, or take the picture once the field is cleared or submitted.";
+  // Fail closed if the top frame itself could not be inspected.
+  const top = results.find((r) => !r.frame.frameId);
+  if (!top || !top.value) {
+    throw new Error("No picture: foxreach could not check this page for fields the user keeps from agents. Use read_page instead.");
+  }
   // Frames it could not look into. A frame inside one is covered with it.
   const unchecked = new Set(results.filter((r) => r.frame.frameId && !r.value).map((r) => r.frame.frameId));
   const byId = new Map(frames.map((f) => [f.frameId, f]));
@@ -768,15 +903,20 @@ async function capture(tabId, options) {
   const scale = options?.scale ?? 1;
   const image = await decodeImage(dataUrl);
   const canvas = document.createElement("canvas");
-  canvas.width = image.width;
-  canvas.height = image.height;
-  const g = canvas.getContext("2d");
-  g.drawImage(image, 0, 0);
-  g.fillStyle = "#000000";
-  const pad = 2;
-  for (const b of boxes) g.fillRect((b.x - left - pad) * scale, (b.y - top - pad) * scale, (b.width + 2 * pad) * scale, (b.height + 2 * pad) * scale);
-  const format = options?.format === "jpeg" ? "image/jpeg" : "image/png";
-  return canvas.toDataURL(format, (options?.quality ?? 92) / 100);
+  try {
+    canvas.width = image.width;
+    canvas.height = image.height;
+    const g = canvas.getContext("2d");
+    g.drawImage(image, 0, 0);
+    g.fillStyle = "#000000";
+    const pad = 2;
+    for (const b of boxes) g.fillRect((b.x - left - pad) * scale, (b.y - top - pad) * scale, (b.width + 2 * pad) * scale, (b.height + 2 * pad) * scale);
+    const format = options?.format === "jpeg" ? "image/jpeg" : "image/png";
+    return canvas.toDataURL(format, (options?.quality ?? 92) / 100);
+  } finally {
+    canvas.width = 0;
+    canvas.height = 0;
+  }
 }
 
 /* ---------- tools ---------- */
@@ -784,8 +924,16 @@ async function capture(tabId, options) {
 const TOOLS = {
   async status(args, client, { access } = {}) {
     // With a tab: whether that page is being painted (takes PAINT_PROBE_MS).
+    // Probing a tab inspects and injects into a page, so unlike plain status it requires
+    // the agent to be allowed and access not paused.
     let page;
     if (args?.tabId !== undefined) {
+      if (settings.paused) throw new Error("The user has paused agent access from the foxreach toolbar button.");
+      if (access !== "allowed") {
+        if (access === "refused") throw new Error(`The user refused the agent "${client}".`);
+        if (access === "unasked") throw new Error(`The user has not allowed the agent "${client}" to use the browser yet.`);
+        throw new Error(`The user has not yet allowed the agent "${client}" to use the browser. The user is being asked ${askedWhere()}: ask the user to answer it, then try again.`);
+      }
       await accessibleTab(args.tabId);
       const state = await paintState(args.tabId);
       const note = paintNote(state);
@@ -833,7 +981,7 @@ const TOOLS = {
     await adoptTab(tab);
     if (context?.conn) createdBy.set(tab.id, context.conn);
     await untilIdle(tab.id);
-    const open = context?.conn ? [...createdBy.values()].filter((c) => c === context.conn).length : 0;
+    const open = context?.conn ? [...createdBy].filter(([id, c]) => c === context.conn && agentTabs.has(id)).length : 0;
     const hint = open >= OPEN_TABS_HINT
       ? ` You have ${open} tabs open in the user's browser; close the ones you are done with (tabs_close, or tabs_close with mine: true for all of yours).`
       : "";
@@ -845,8 +993,9 @@ const TOOLS = {
 
   async tabs_close({ tabId, mine = false }, client, context) {
     if (mine) {
-      // Only tabs this session opened: never one the user shared, nor another agent's.
-      const ids = [...createdBy].filter(([, c]) => context?.conn && c === context.conn).map(([id]) => id);
+      // Only tabs this session opened that are still available to agents: never one the user
+      // shared, unshared, or another agent's.
+      const ids = [...createdBy].filter(([id, c]) => context?.conn && c === context.conn && agentTabs.has(id)).map(([id]) => id);
       if (ids.length) await browser.tabs.remove(ids);
       return { text: ids.length ? `Closed your ${ids.length} tab(s): ${ids.join(", ")}.` : "You have no tabs open." };
     }
@@ -874,10 +1023,32 @@ const TOOLS = {
       return TOOLS.tabs_create({ url }, client, context);
     }
     await accessibleTab(tabId);
-    if (url === "back" || url === "forward" || url === "reload") {
+    if (url === "reload") {
       const done = settle(tabId);
-      await { back: browser.tabs.goBack, forward: browser.tabs.goForward, reload: browser.tabs.reload }[url](tabId);
+      await browser.tabs.reload(tabId);
       return { text: await done };
+    }
+    if (url === "back" || url === "forward") {
+      // The history is the tab's, not the agent's: it can hold a page from before the tab was
+      // shared, or one whose site the user has since blocked or taken off the list.
+      const step = { back: browser.tabs.goBack, forward: browser.tabs.goForward };
+      if (trusted) {
+        const next = await privileged(tabId, "historyUrl", { delta: url === "back" ? -1 : 1 });
+        if (next.url) await assertPageAllowed(next.url);
+      }
+      const done = settle(tabId);
+      await step[url](tabId);
+      const text = await done;
+      // A build that cannot read the history beforehand learns where it led only now: step out again.
+      try {
+        await assertPageAllowed((await browser.tabs.get(tabId)).url);
+      } catch (e) {
+        const undone = settle(tabId);
+        await step[url === "back" ? "forward" : "back"](tabId);
+        await undone;
+        throw e;
+      }
+      return { text };
     }
     const target = await checkUrl(url);
     const done = settle(tabId, { leavingBlank: target !== "about:blank" });
@@ -969,7 +1140,9 @@ const TOOLS = {
     if (!dialog.open && trusted) dialog = await privileged(tabId, "dialogState").catch(() => ({}));
     return {
       text: `Clicked ${res.target ?? "the element"} at (${Math.round(point.x)}, ${Math.round(point.y)}).${inputNote(point, res)}${missed}${menu}${moved}` +
-        (dialog.open ? ` A ${dialog.type} dialog opened: ${JSON.stringify(dialog.message)}. Use handle_dialog.` : ""),
+        (!dialog.open ? "" : (await dialogAllowed(tabId, dialog))
+          ? ` A ${dialog.type} dialog opened: ${JSON.stringify(dialog.message)}. Use handle_dialog.`
+          : ` ${dialogOfAnotherSite(dialog)}`),
     };
   },
 
@@ -985,6 +1158,8 @@ const TOOLS = {
     await accessibleTab(tabId);
     await assertNoDialog(tabId);
     if (!trusted) throw new Error("drag needs trusted input, which this build does not have.");
+    await assertResolvedFrameAllowed(tabId, await privileged(tabId, "pointFrame", { x: from_x, y: from_y }));
+    await assertResolvedFrameAllowed(tabId, await privileged(tabId, "pointFrame", { x: to_x, y: to_y }));
     const res = await privileged(tabId, "drag", { from: { x: from_x, y: from_y }, to: { x: to_x, y: to_y }, modifiers: await withModList(modifiers) });
     pointers.set(tabId, { x: to_x, y: to_y });
     if (res.blockedByDialog) return { text: `Dragged.${DIALOG_NOTE}` };
@@ -1000,6 +1175,7 @@ const TOOLS = {
       const point = await targetPoint(tabId, { ref });
       await dispatchMouse(tabId, point, { action: "click" });
     }
+    if (trusted) await assertResolvedFrameAllowed(tabId, await privileged(tabId, "focusFrame", {}));
     const target = await focusTarget(tabId);
     if (target && !target.editable && !allow_non_text) {
       throw new Error(`Nothing was typed: focus is on ${describeFocus(target)}, which is not a text field. ${NOT_TEXT_HINT}`);
@@ -1007,7 +1183,13 @@ const TOOLS = {
     const delay = Math.round(Number(delay_ms) || 0);
     if (delay < 0 || delay > MAX_KEY_DELAY_MS) throw new Error(`delay_ms must be between 0 and ${MAX_KEY_DELAY_MS}.`);
     if (delay * [...text].length > MAX_SLOW_TYPING_MS) throw new Error(`That would take over ${MAX_SLOW_TYPING_MS / 1000} s; use a shorter delay_ms or less text.`);
-    const typeNow = (t) => (trusted ? privileged(tabId, "type", { text: t }) : contentCall(tabId, 0, "untrustedType", { text: t }));
+    const typeNow = async (t) => {
+      if (trusted) {
+        await assertResolvedFrameAllowed(tabId, await privileged(tabId, "focusFrame", {}));
+        return privileged(tabId, "type", { text: t });
+      }
+      return contentCall(tabId, 0, "untrustedType", { text: t });
+    };
     const res = await asAgentInput(tabId, async () => {
       if (!delay) return typeNow(text);
       // One character per call, with a pause before the next: prompts that move focus to the next
@@ -1039,6 +1221,7 @@ const TOOLS = {
     await assertNoDialog(tabId);
     if (!keys) throw new Error("keys is required, for example \"Enter\" or \"mod+a Delete\".");
     keys = await withMod(keys);
+    if (trusted) await assertResolvedFrameAllowed(tabId, await privileged(tabId, "focusFrame", {}));
     const target = await focusTarget(tabId);
     const destructive = keys.trim().split(/\s+/).find((k) => DESTRUCTIVE_KEY.test(k));
     if (destructive && target && !target.editable && !allow_non_text) {
@@ -1070,6 +1253,9 @@ const TOOLS = {
     else {
       const v = await contentCall(tabId, 0, "viewport", {});
       point = { x: v.width / 2, y: v.height / 2, frameId: 0 };
+    }
+    if (trusted && !point.frameId) {
+      await assertResolvedFrameAllowed(tabId, await privileged(tabId, "pointFrame", { x: point.x, y: point.y }));
     }
     const res = trusted
       ? await privileged(tabId, "wheel", { frameId: point.frameId, x: point.x, y: point.y, dx, dy })
@@ -1110,6 +1296,7 @@ const TOOLS = {
       if (typeof x !== "number" || typeof y !== "number") throw new Error("Give ref for a file input, or x and y for a drop zone.");
       if (!trusted) throw new Error("Dropping files needs trusted input, which this build does not have.");
       await assertNoDialog(tabId);
+      await assertResolvedFrameAllowed(tabId, await privileged(tabId, "pointFrame", { x, y }));
       const dropped = await privileged(tabId, "dropFiles", { x, y, files });
       if (dropped.blockedByDialog) return { text: `Dropping was interrupted.${DIALOG_NOTE}` };
       if (!dropped.accepted) throw new Error(`${dropped.target} at (${x}, ${y}) does not accept dropped files.`);
@@ -1172,7 +1359,7 @@ const TOOLS = {
     await assertNoDialog(tabId);
     if (!code) throw new Error("code is required.");
     await assertFrameAllowed(tabId, frame_id);
-    await assertNoFilledSecret(tabId);
+    await assertNoFilledSecret(tabId, frame_id);
     const timeoutMs = Math.round(Math.min(Math.max(Number(timeout) || JS_TIMEOUT_S, 1), JS_TIMEOUT_MAX_S) * 1000);
     // full: the bridge saves the result to a file (save_to), so it may be larger than a reply.
     const limit = full ? SAVED_RESULT_LIMIT : RESULT_LIMIT;
@@ -1187,7 +1374,18 @@ const TOOLS = {
     await accessibleTab(tabId);
     await assertNoDialog(tabId);
     if (!trusted) throw new Error("read_console needs trusted input, which this build does not have.");
-    let entries = await privileged(tabId, "console", {});
+    const frames = await allFrames(tabId);
+    const frameIds = [];
+    for (const f of frames) {
+      if (!f.frameId) {
+        frameIds.push(0);
+        continue;
+      }
+      const owner = ownerUrl(frames, f);
+      if (hostBlocked(owner) || !(await siteAllowed(owner))) continue;
+      frameIds.push(f.frameId);
+    }
+    let entries = await privileged(tabId, "console", { frameIds });
     const clearedAt = consoleCleared.get(tabId) ?? 0;
     entries = entries.filter((e) => e.time > clearedAt);
     if (clear && entries.length) consoleCleared.set(tabId, entries[entries.length - 1].time);
@@ -1207,10 +1405,18 @@ const TOOLS = {
 
   async read_network({ tabId, url_pattern, limit = 50, clear = false }) {
     await accessibleTab(tabId);
-    let entries = network.get(tabId) ?? [];
+    const raw = network.get(tabId) ?? [];
+    if (clear) {
+      network.delete(tabId);
+      clearPendingForTab(tabId);
+    }
+    let entries = [];
+    for (const e of raw) {
+      if (hostBlocked(e.url) || !(await siteAllowed(e.url))) continue;
+      entries.push(e);
+    }
     if (url_pattern) entries = entries.filter((e) => e.url.includes(url_pattern));
     const lines = entries.slice(-limit).map((e) => `${e.method} ${e.status ?? e.error ?? "pending"} ${e.type} ${e.ms ?? "?"}ms ${e.url}`);
-    if (clear) network.delete(tabId);
     return { text: lines.join("\n") || "No requests captured." };
   },
 
@@ -1221,22 +1427,35 @@ const TOOLS = {
     return { text: `Window resized.${v ? ` Viewport is ${v.width}x${v.height}.` : ""}` };
   },
 
-  async record({ tabId, action }) {
+  async record({ tabId, action }, client, context) {
     await accessibleTab(tabId);
     if (action === "start") {
-      recordings.set(tabId, { frames: [], point: null, label: "start" });
-      await captureFrame(tabId);
+      deleteRecording(tabId);
+      recordings.set(tabId, { frames: [], bytes: 0, point: null, label: "start", conn: context?.conn ?? null });
+      try {
+        await captureFrame(tabId);
+      } catch (e) {
+        deleteRecording(tabId);
+        throw e;
+      }
       return { text: "Recording. A frame is captured after each action in this tab." };
     }
     const rec = recordings.get(tabId);
     if (!rec) throw new Error("This tab is not recording.");
-    recordings.delete(tabId);
-    if (action === "discard") return { text: "Recording discarded." };
-    if (action !== "stop") throw new Error("action must be start, stop or discard.");
+    if (action === "discard") {
+      deleteRecording(tabId);
+      return { text: "Recording discarded." };
+    }
+    if (action !== "stop") {
+      deleteRecording(tabId);
+      throw new Error("action must be start, stop or discard.");
+    }
     rec.label = "end";
-    recordings.set(tabId, rec);
-    await captureFrame(tabId);
-    recordings.delete(tabId);
+    try {
+      await captureFrame(tabId);
+    } finally {
+      deleteRecording(tabId);
+    }
     return { gif: bytesToBase64(encodeGif(rec.frames)), frames: rec.frames.length, text: `Recorded ${rec.frames.length} frames.` };
   },
 
@@ -1263,11 +1482,10 @@ const TOOLS = {
   async handle_dialog({ tabId, action = "status", text }) {
     await accessibleTab(tabId);
     if (!trusted) throw new Error("handle_dialog needs trusted input, which this build does not have.");
-    if (action === "status") {
-      const s = await privileged(tabId, "dialogState");
-      return { text: s.open ? `${s.type}: ${JSON.stringify(s.message)}` : "No dialog is open." };
-    }
-    if (action !== "accept" && action !== "dismiss") throw new Error("action must be status, accept or dismiss.");
+    if (action !== "status" && action !== "accept" && action !== "dismiss") throw new Error("action must be status, accept or dismiss.");
+    const open = await privileged(tabId, "dialogState");
+    if (open.open && !(await dialogAllowed(tabId, open))) throw new Error(dialogOfAnotherSite(open));
+    if (action === "status") return { text: open.open ? `${open.type}: ${JSON.stringify(open.message)}` : "No dialog is open." };
     const s = await privileged(tabId, "dialogRespond", { action, text });
     return { text: `${action === "accept" ? "Accepted" : "Dismissed"} ${s.type}: ${JSON.stringify(s.message)}.` };
   },
@@ -1316,9 +1534,32 @@ async function handleRequest({ id, client, tool, args }) {
         throw e;
       });
     }
-    send({ id, result: await runTool(tool, args ?? {}, client, context) });
+    const result = await runTool(tool, args ?? {}, client, context);
+    assertReplyFits(result);
+    send({ id, result });
   } catch (e) {
     send({ id, error: e.message });
+  }
+}
+
+/**
+ * The native host refuses a message from the browser over 64 MiB and stops, for every agent: a
+ * result that large (a long recording, say) is refused here instead, for the one agent that asked.
+ * Text of up to a third of the limit fits whatever it holds (at most 3 bytes per UTF-16 unit, and
+ * JSON's escapes at most double ASCII); only above that is the message measured.
+ */
+function assertReplyFits(result) {
+  let chars = 0;
+  const walk = (v, depth) => {
+    if (typeof v === "string") chars += v.length;
+    else if (v && typeof v === "object" && depth < 4) for (const x of Object.values(v)) walk(x, depth + 1);
+  };
+  walk(result, 0);
+  if (chars <= MAX_REPLY_BYTES / 3) return;
+  const bytes = new TextEncoder().encode(JSON.stringify(result)).length;
+  if (bytes > MAX_REPLY_BYTES) {
+    throw new Error(`The result is too large to return (${Math.round(bytes / 1048576)} MiB; at most ${MAX_REPLY_BYTES / 1048576}). ` +
+      "Ask for less at a time: a shorter recording, a smaller picture, or part of the text.");
   }
 }
 
@@ -1356,12 +1597,17 @@ async function withPointer(dataUrl, pointer, region, scale, format, quality) {
   const image = await decodeImage(dataUrl);
   if (x < 0 || y < 0 || x >= image.width || y >= image.height) return dataUrl;
   const canvas = document.createElement("canvas");
-  canvas.width = image.width;
-  canvas.height = image.height;
-  const g = canvas.getContext("2d");
-  g.drawImage(image, 0, 0);
-  drawPointer(g, x, y);
-  return canvas.toDataURL(`image/${format}`, quality / 100);
+  try {
+    canvas.width = image.width;
+    canvas.height = image.height;
+    const g = canvas.getContext("2d");
+    g.drawImage(image, 0, 0);
+    drawPointer(g, x, y);
+    return canvas.toDataURL(`image/${format}`, quality / 100);
+  } finally {
+    canvas.width = 0;
+    canvas.height = 0;
+  }
 }
 
 async function captureFrame(tabId) {
@@ -1371,27 +1617,45 @@ async function captureFrame(tabId) {
   const image = await decodeImage(url);
   const scale = Math.min(1, RECORD_WIDTH / image.width);
   const canvas = document.createElement("canvas");
-  canvas.width = Math.round(image.width * scale);
-  canvas.height = Math.round(image.height * scale);
-  const g = canvas.getContext("2d");
-  g.drawImage(image, 0, 0, canvas.width, canvas.height);
-  if (rec.point) {
-    g.strokeStyle = "#d9480f";
-    g.lineWidth = 3;
-    g.beginPath();
-    g.arc(rec.point.x * scale, rec.point.y * scale, 14, 0, 2 * Math.PI);
-    g.stroke();
-    rec.point = null;
+  let pixels;
+  let width;
+  let height;
+  try {
+    canvas.width = Math.round(image.width * scale);
+    canvas.height = Math.round(image.height * scale);
+    width = canvas.width;
+    height = canvas.height;
+    const g = canvas.getContext("2d");
+    g.drawImage(image, 0, 0, width, height);
+    if (rec.point) {
+      g.strokeStyle = "#d9480f";
+      g.lineWidth = 3;
+      g.beginPath();
+      g.arc(rec.point.x * scale, rec.point.y * scale, 14, 0, 2 * Math.PI);
+      g.stroke();
+      rec.point = null;
+    }
+    const pointer = pointers.get(tabId);
+    if (pointer) drawPointer(g, pointer.x * scale, pointer.y * scale);
+    g.font = "14px sans-serif";
+    const labelW = g.measureText(rec.label).width + 12;
+    g.fillStyle = "#1a1a1a";
+    g.fillRect(0, height - 24, labelW, 24);
+    g.fillStyle = "#ffffff";
+    g.fillText(rec.label, 6, height - 7);
+    const rgba = g.getImageData(0, 0, width, height).data;
+    pixels = quantizeRgba(rgba, width, height);
+  } finally {
+    canvas.width = 0;
+    canvas.height = 0;
   }
-  const pointer = pointers.get(tabId);
-  if (pointer) drawPointer(g, pointer.x * scale, pointer.y * scale);
-  g.font = "14px sans-serif";
-  const width = g.measureText(rec.label).width + 12;
-  g.fillStyle = "#1a1a1a";
-  g.fillRect(0, canvas.height - 24, width, 24);
-  g.fillStyle = "#ffffff";
-  g.fillText(rec.label, 6, canvas.height - 7);
-  rec.frames.push({ width: canvas.width, height: canvas.height, rgba: g.getImageData(0, 0, canvas.width, canvas.height).data });
+  // Checked again here: the capture above waited, and another action in the tab may have added
+  // its frame, or ended the recording, in the meantime.
+  if (recordings.get(tabId) !== rec || rec.frames.length >= RECORD_MAX_FRAMES) return;
+  if (recordingBytes + pixels.byteLength > RECORD_MAX_TOTAL_BYTES) return;
+  rec.frames.push({ width, height, pixels });
+  rec.bytes += pixels.byteLength;
+  recordingBytes += pixels.byteLength;
 }
 
 function send(message) {
@@ -1402,15 +1666,50 @@ function send(message) {
   }
 }
 
+function sweepStalePartial(now = Date.now()) {
+  for (const [id, entry] of [...partial]) {
+    if (now - entry.updatedAt > PARTIAL_TTL_MS) deletePartial(id);
+  }
+}
+
 function onHostMessage(message) {
   if (message.chunk) {
+    sweepStalePartial();
     const { id, i, n, data } = message.chunk;
-    const parts = partial.get(id) ?? [];
-    parts[i] = data;
-    partial.set(id, parts);
-    if (parts.filter((p) => p !== undefined).length === n) {
-      partial.delete(id);
-      handleRequest(JSON.parse(parts.join("")));
+    if (!Number.isInteger(i) || !Number.isInteger(n) || n <= 0 || i < 0 || i >= n || typeof data !== "string") return;
+    let entry = partial.get(id);
+    if (!entry) {
+      if (partial.size >= MAX_PARTIAL_ENTRIES) deletePartial(partial.keys().next().value);
+      entry = { parts: new Array(n), n, received: 0, bytes: 0, updatedAt: Date.now() };
+      partial.set(id, entry);
+    }
+    if (entry.n !== n) {
+      deletePartial(id);
+      return;
+    }
+    const prevLen = entry.parts[i]?.length ?? 0;
+    const delta = data.length - prevLen;
+    if (partialBytes + delta > MAX_PARTIAL_BYTES) {
+      deletePartial(id);
+      send({ id, error: "Chunked request exceeded the 96 MiB reassembly limit." });
+      return;
+    }
+    if (entry.parts[i] === undefined) entry.received++;
+    entry.parts[i] = data;
+    entry.bytes += delta;
+    partialBytes += delta;
+    entry.updatedAt = Date.now();
+    if (entry.received === entry.n) {
+      const joined = entry.parts.join("");
+      deletePartial(id);
+      let req;
+      try {
+        req = JSON.parse(joined);
+      } catch (e) {
+        send({ id, error: `Malformed chunked request: ${e.message}` });
+        return;
+      }
+      handleRequest(req);
     }
     return;
   }
@@ -1437,7 +1736,11 @@ function connectHost() {
     const busy = hostError !== null;
     hostError = hostError ?? p.error?.message ?? "The native host exited.";
     port = null;
-    // A new host numbers its connections from 1 again.
+    // A new host numbers its connections from 1 again; discard in-flight chunks and recordings too.
+    partial.clear();
+    partialBytes = 0;
+    recordings.clear();
+    recordingBytes = 0;
     for (const conn of [...agentRequests.keys(), ...allowedConns, ...deniedConns]) forgetConnection(conn);
     createdBy.clear();
     setTimeout(() => {
@@ -1454,7 +1757,8 @@ function connectHost() {
 // crash (bridge/history.mjs). Only the full build hears of the quit.
 function watchQuit() {
   if (!trusted) return;
-  privileged(null, "untilQuit").then(() => {
+  privileged(null, "untilQuit").then((r) => {
+    if (!r?.quitting) return;
     send({ bye: "quit" });
     setTimeout(watchQuit, 1000); // a page may cancel the quit: listen for the next one
   }, () => {});
@@ -1556,7 +1860,7 @@ browser.runtime.onMessage.addListener(async (msg, sender) => {
       break;
     case "share":
       if (msg.value) await adoptTab(await browser.tabs.get(msg.tabId));
-      else agentTabs.delete(msg.tabId);
+      else clearTabState(msg.tabId);
       break;
     case "wantSite": {
       // The popup asks the browser for the site at the same moment (from the toolbar panel, through
@@ -1606,24 +1910,36 @@ browser.runtime.onMessage.addListener(async (msg, sender) => {
 
 /* ---------- tab and network bookkeeping ---------- */
 
+function clearPendingForTab(tabId) {
+  for (const [reqId, item] of [...pending]) {
+    if (item.tabId === tabId) pending.delete(reqId);
+  }
+}
+
+function clearTabState(tabId) {
+  agentTabs.delete(tabId);
+  createdBy.delete(tabId);
+  network.delete(tabId);
+  openedBy.delete(tabId);
+  deleteRecording(tabId);
+  consoleCleared.delete(tabId);
+  pointers.delete(tabId);
+  clearPendingForTab(tabId);
+  updateBadge();
+}
+
 browser.tabs.onCreated.addListener((tab) => {
   // A page's popup or target=_blank stays with the agent that caused it.
   if (tab.openerTabId !== undefined && agentTabs.has(tab.openerTabId)) {
     adoptTab(tab);
     if (createdBy.has(tab.openerTabId)) createdBy.set(tab.id, createdBy.get(tab.openerTabId));
-    openedBy.set(tab.openerTabId, [...(openedBy.get(tab.openerTabId) ?? []), tab.id]);
+    const list = openedBy.get(tab.openerTabId) ?? [];
+    list.push(tab.id);
+    if (list.length > MAX_OPENED_BY) list.shift();
+    openedBy.set(tab.openerTabId, list);
   }
 });
-browser.tabs.onRemoved.addListener((tabId) => {
-  agentTabs.delete(tabId);
-  createdBy.delete(tabId);
-  network.delete(tabId);
-  openedBy.delete(tabId);
-  recordings.delete(tabId);
-  consoleCleared.delete(tabId);
-  pointers.delete(tabId);
-  updateBadge();
-});
+browser.tabs.onRemoved.addListener(clearTabState);
 
 const FILTER = { urls: ["<all_urls>"] };
 const pending = new Map();
@@ -1637,7 +1953,8 @@ browser.webRequest.onBeforeRequest.addListener((d) => {
     return { cancel: true };
   }
   const entry = { method: d.method, url: d.url, type: d.type, start: d.timeStamp };
-  pending.set(d.requestId, entry);
+  if (pending.size >= PENDING_LIMIT) pending.delete(pending.keys().next().value);
+  pending.set(d.requestId, { tabId: d.tabId, entry });
   const list = network.get(d.tabId) ?? [];
   list.push(entry);
   if (list.length > NET_LIMIT) list.shift();
@@ -1646,18 +1963,18 @@ browser.webRequest.onBeforeRequest.addListener((d) => {
 }, FILTER, ["blocking"]);
 
 browser.webRequest.onCompleted.addListener((d) => {
-  const entry = pending.get(d.requestId);
-  if (!entry) return;
-  entry.status = d.statusCode;
-  entry.ms = Math.round(d.timeStamp - entry.start);
+  const item = pending.get(d.requestId);
+  if (!item) return;
+  item.entry.status = d.statusCode;
+  item.entry.ms = Math.round(d.timeStamp - item.entry.start);
   pending.delete(d.requestId);
 }, FILTER);
 
 browser.webRequest.onErrorOccurred.addListener((d) => {
-  const entry = pending.get(d.requestId);
-  if (!entry) return;
-  entry.error = d.error;
-  entry.ms = Math.round(d.timeStamp - entry.start);
+  const item = pending.get(d.requestId);
+  if (!item) return;
+  item.entry.error = d.error;
+  item.entry.ms = Math.round(d.timeStamp - item.entry.start);
   pending.delete(d.requestId);
 }, FILTER);
 

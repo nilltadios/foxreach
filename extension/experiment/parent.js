@@ -21,6 +21,24 @@ const resHandler = () =>
   Services.io.getProtocolHandler("resource").QueryInterface(Components.interfaces.nsIResProtocolHandler);
 
 let registered = false;
+const activeQuitObservers = new Set();
+const activeTimers = new Set();
+
+function trackedTimeout(fn, ms) {
+  let id;
+  id = setTimeout(() => {
+    activeTimers.delete(id);
+    fn();
+  }, ms);
+  activeTimers.add(id);
+  return id;
+}
+
+function clearTrackedTimeout(id) {
+  if (id === undefined) return;
+  activeTimers.delete(id);
+  clearTimeout(id);
+}
 
 function register(extension) {
   if (registered) return;
@@ -46,12 +64,12 @@ function query(bc, name, data, timeoutMs = QUERY_TIMEOUT_MS) {
   }
   let timer;
   const timeout = new Promise((_, reject) => {
-    timer = setTimeout(
+    timer = trackedTimeout(
       () => reject(new ExtensionError(`Timed out in the page after ${timeoutMs} ms (${name}).`)),
       timeoutMs
     );
   });
-  return Promise.race([actor.sendQuery(name, data), timeout]).finally(() => clearTimeout(timer));
+  return Promise.race([actor.sendQuery(name, data), timeout]).finally(() => clearTrackedTimeout(timer));
 }
 
 /** Find a frame by id inside one tab's own tree, so an id can never reach another tab. */
@@ -117,14 +135,19 @@ function openDialog(browser) {
  */
 function orDialog(browser, work) {
   let timer;
+  let stopped = false;
   const watch = new Promise((resolve) => {
     const poll = () => {
+      if (stopped) return;
       if (openDialog(browser)) resolve({ blockedByDialog: true });
-      else timer = setTimeout(poll, DIALOG_POLL_MS);
+      else timer = trackedTimeout(poll, DIALOG_POLL_MS);
     };
-    timer = setTimeout(poll, DIALOG_POLL_MS);
+    timer = trackedTimeout(poll, DIALOG_POLL_MS);
   });
-  return Promise.race([work, watch]).finally(() => clearTimeout(timer));
+  return Promise.race([work, watch]).finally(() => {
+    stopped = true;
+    clearTrackedTimeout(timer);
+  });
 }
 
 function dialogState(browser) {
@@ -134,6 +157,9 @@ function dialogState(browser) {
     open: true,
     type: prompt.args?.inPermitUnload ? "beforeunload" : prompt.args?.promptType,
     message: prompt.ui.infoBody?.textContent ?? "",
+    // The page that opened it, which can be a frame of another site than the tab's:
+    // background.js shows the text to agents only when that site is one they may read.
+    url: prompt.args?.promptPrincipal?.URI?.spec ?? null,
   };
 }
 
@@ -155,16 +181,38 @@ function dialogRespond(browser, { action, text }) {
 const QUIT_TOPICS = ["quit-application-requested", "quit-application-granted"];
 function untilQuit() {
   return new Promise((resolve) => {
-    const observer = () => {
-      for (const t of QUIT_TOPICS) Services.obs.removeObserver(observer, t);
-      resolve({ quitting: true });
+    const entry = {
+      observer() {
+        if (!activeQuitObservers.delete(entry)) return;
+        for (const t of QUIT_TOPICS) Services.obs.removeObserver(entry.observer, t);
+        resolve({ quitting: true });
+      },
+      cancel() {
+        for (const t of QUIT_TOPICS) {
+          try {
+            Services.obs.removeObserver(entry.observer, t);
+          } catch {
+            // already removed
+          }
+        }
+        resolve({ quitting: false });
+      },
     };
-    for (const t of QUIT_TOPICS) Services.obs.addObserver(observer, t);
+    activeQuitObservers.add(entry);
+    for (const t of QUIT_TOPICS) Services.obs.addObserver(entry.observer, t);
   });
 }
 
 this.foxreachInput = class extends ExtensionAPI {
   onShutdown() {
+    for (const entry of [...activeQuitObservers]) {
+      activeQuitObservers.delete(entry);
+      entry.cancel();
+    }
+    for (const id of [...activeTimers]) {
+      activeTimers.delete(id);
+      clearTimeout(id);
+    }
     if (!registered) return;
     ChromeUtils.unregisterWindowActor(ACTOR);
     resHandler().setSubstitution(RES_HOST, null);
@@ -227,11 +275,40 @@ this.foxreachInput = class extends ExtensionAPI {
         return query(frameOf(browser, frameId), "evaluate", { code }, limit);
       },
       async console(browser, args) {
-        const frames = browser.browsingContext.getAllBrowsingContextsInSubtree();
+        const top = browser.browsingContext;
+        const allow = Array.isArray(args?.frameIds) ? new Set(args.frameIds) : null;
+        const frames = top.getAllBrowsingContextsInSubtree().filter((bc) => {
+          if (!allow) return true;
+          return allow.has(bc === top ? 0 : bc.id);
+        });
         const results = await Promise.allSettled(frames.map((bc) => query(bc, "console", args)));
         return results
           .flatMap((r) => (r.status === "fulfilled" ? r.value : []))
           .sort((a, b) => a.time - b.time);
+      },
+      // Frame lookup for background.js to enforce blocked/unlisted site policy before
+      // coordinate-based or focus-based trusted input descends into a cross-site iframe.
+      async pointFrame(browser, { x, y }) {
+        const { bc } = await resolvePoint(browser.browsingContext, x, y);
+        return {
+          frameId: bc === browser.browsingContext ? 0 : bc.id,
+          url: bc.currentWindowGlobal?.documentURI?.spec ?? "",
+        };
+      },
+      async focusFrame(browser) {
+        const bc = await resolveFocus(browser.browsingContext);
+        return {
+          frameId: bc === browser.browsingContext ? 0 : bc.id,
+          url: bc.currentWindowGlobal?.documentURI?.spec ?? "",
+        };
+      },
+      // The address one step back (delta -1) or forward (1) in the tab's history, null at its end:
+      // background.js checks that site before it lets an agent go there.
+      historyUrl(browser, { delta }) {
+        const history = browser.browsingContext.sessionHistory;
+        const index = history ? history.index + delta : -1;
+        if (index < 0 || index >= history.count) return { url: null };
+        return { url: history.getEntryAtIndex(index).URI.spec };
       },
       // A point in a frame, in the tab's viewport: screenshots cover secret fields inside iframes.
       viewportPoint: (browser, { frameId, x, y }) => toViewport(frameOf(browser, frameId), x, y),
@@ -250,7 +327,9 @@ this.foxreachInput = class extends ExtensionAPI {
           try {
             const browser = browserOf(tabId);
             const work = handlers[method](browser, args ?? {});
-            return await (method.startsWith("dialog") || method === "viewportPoint" ? work : orDialog(browser, work));
+            return await (method.startsWith("dialog") || method === "viewportPoint" || method === "pointFrame" || method === "focusFrame" || method === "historyUrl"
+              ? work
+              : orDialog(browser, work));
           } catch (e) {
             if (e instanceof ExtensionError) throw e;
             throw new ExtensionError(`${method}: ${e?.message ?? e}`);

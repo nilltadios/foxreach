@@ -47,6 +47,9 @@ export function socketBrowser(socket = socketPath(), proc = "/proc") {
 }
 
 const TIMEOUT_MS = 15_000;
+const MAX_PROBE_OUT_CHARS = 1 * 1024 * 1024;
+const MAX_PROBE_ERR_CHARS = 64 * 1024;
+const MAX_PROBE_CONCURRENCY = 4;
 
 /** The argv an agent's foxreach entry runs, or null. Entries are objects or TOML/YAML text. */
 export function entryArgv(entry) {
@@ -83,14 +86,33 @@ export function probe(argv, { timeoutMs = TIMEOUT_MS } = {}) {
       settled = true;
       clearTimeout(timer);
       child.kill();
+      if (child.exitCode === null && child.signalCode === null) {
+        setTimeout(() => {
+          try {
+            if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+          } catch {
+            // already gone
+          }
+        }, 1000).unref();
+      }
       resolve(r);
     };
     const timer = setTimeout(() => finish({ ok: false, error: "No answer within 15 seconds." }), timeoutMs);
     const send = (msg) => child.stdin.write(`${JSON.stringify(msg)}\n`);
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
     child.on("error", (e) => finish({ ok: false, error: `Cannot start ${argv[0]}: ${e.message}` }));
     child.on("exit", (code) => finish({ ok: false, error: `The command exited (${code}) before answering. ${err.trim().split("\n").pop() ?? ""}`.trim() }));
-    child.stderr.on("data", (d) => (err += d));
+    child.stderr.on("data", (d) => {
+      err += d;
+      if (err.length > MAX_PROBE_ERR_CHARS) err = err.slice(-MAX_PROBE_ERR_CHARS);
+    });
     child.stdout.on("data", (d) => {
+      if (out.length + d.length > MAX_PROBE_OUT_CHARS) {
+        out = "";
+        finish({ ok: false, error: "The command output exceeded the 1 MiB limit." });
+        return;
+      }
       out += d;
       let nl;
       while ((nl = out.indexOf("\n")) >= 0) {
@@ -135,17 +157,31 @@ export async function testAgents({ only = null } = {}) {
     const unknown = only.filter((id) => !list.some((a) => a.id === id));
     if (unknown.length) throw new Error(`Unknown agent: ${unknown.join(", ")}`);
   }
-  const rows = await Promise.all(list.map(async (a) => {
-    let entry;
-    try {
-      entry = a.format.current(a.file);
-    } catch (e) {
-      return { id: a.id, name: a.name, ok: false, error: e.message };
+  const rows = new Array(list.length);
+  let nextIndex = 0;
+  const worker = async () => {
+    while (nextIndex < list.length) {
+      const i = nextIndex++;
+      const a = list[i];
+      let entry;
+      try {
+        entry = a.format.current(a.file);
+      } catch (e) {
+        rows[i] = { id: a.id, name: a.name, ok: false, error: e.message };
+        continue;
+      }
+      if (!entry) {
+        rows[i] = only ? { id: a.id, name: a.name, ok: false, error: "foxreach is not set in this agent." } : null;
+        continue;
+      }
+      const argv = entryArgv(entry);
+      if (!argv) {
+        rows[i] = { id: a.id, name: a.name, ok: false, error: "Cannot read the command in its entry." };
+        continue;
+      }
+      rows[i] = { id: a.id, name: a.name, command: argv.join(" "), ...(await probe(argv)) };
     }
-    if (!entry) return only ? { id: a.id, name: a.name, ok: false, error: "foxreach is not set in this agent." } : null;
-    const argv = entryArgv(entry);
-    if (!argv) return { id: a.id, name: a.name, ok: false, error: "Cannot read the command in its entry." };
-    return { id: a.id, name: a.name, command: argv.join(" "), ...(await probe(argv)) };
-  }));
+  };
+  await Promise.all(Array.from({ length: Math.min(MAX_PROBE_CONCURRENCY, list.length) }, worker));
   return rows.filter(Boolean);
 }

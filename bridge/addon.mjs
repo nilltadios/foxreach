@@ -371,19 +371,36 @@ function recordedProfiles() {
   }
 }
 
+/** The profiles a browser found by findBrowsers has: [{name, path, isDefault}]. */
+function profilesOf(b) {
+  // A browser's own folders when it has them (Tor Browser), on macOS Application Support;
+  // inside a Flatpak, XDG_CONFIG_HOME is ~/.var/app/<id>/config (no dot), where newer builds keep
+  // the folders that are ~/.config/... outside it (Firefox keeps its profiles in config/mozilla/firefox).
+  const roots = b.appId ? b.kind.roots.flatMap((r) => (r.startsWith(".config/") ? [r, r.slice(1)] : [r])) : b.kind.roots;
+  return b.roots ? b.roots.flatMap((r) => iniProfiles(r))
+    : MAC || WIN ? rootsOf(b.kind, b.home).flatMap((r) => iniProfiles(r))
+    : roots.flatMap((r) => iniProfiles(path.join(b.home, r)));
+}
+
+/**
+ * Every profile foxreach can find, open or not: those of the browsers installed here (Flatpaks and
+ * Tor Browser too, as browserStatus lists them), those a profiles.ini of any Firefox-based browser
+ * in this home names (also when its browser is gone), and the recorded ones.
+ */
+export function allProfiles(h = home()) {
+  const out = new Set(findBrowsers({ h }).flatMap((b) => profilesOf(b)).map((p) => p.path));
+  for (const k of KINDS) for (const r of rootsOf(k, h)) for (const p of iniProfiles(r)) out.add(p.path);
+  for (const p of Object.keys(recordedProfiles())) out.add(p);
+  return [...out];
+}
+
 /** Every browser with its profiles and the add-on in each, as data. */
 export function browserStatus({ h = home() } = {}) {
   const recorded = recordedProfiles();
   const browsers = findBrowsers({ h });
   const placed = new Set();
   const rows = browsers.map((b) => {
-    // Profiles: a browser's own folders when it has them (Tor Browser), on macOS Application Support;
-    // inside a Flatpak, XDG_CONFIG_HOME is ~/.var/app/<id>/config (no dot), where newer builds keep
-    // the folders that are ~/.config/... outside it (Firefox keeps its profiles in config/mozilla/firefox).
-    const roots = b.appId ? b.kind.roots.flatMap((r) => (r.startsWith(".config/") ? [r, r.slice(1)] : [r])) : b.kind.roots;
-    const profiles = b.roots ? b.roots.flatMap((r) => iniProfiles(r))
-      : MAC || WIN ? rootsOf(b.kind, b.home).flatMap((r) => iniProfiles(r))
-      : roots.flatMap((r) => iniProfiles(path.join(b.home, r)));
+    const profiles = profilesOf(b);
     for (const [p, spec] of Object.entries(recorded)) {
       if (spec === b.spec && !profiles.some((x) => x.path === p)) profiles.push({ name: path.basename(p), path: p, isDefault: false });
     }
@@ -406,18 +423,35 @@ export function browserStatus({ h = home() } = {}) {
   return rows;
 }
 
+const MAX_UPDATES_BYTES = 1 * 1024 * 1024;
+const UPDATES_TIMEOUT_MS = 30_000;
+
 /** The newest released build: {version, link, hash}. The signed one, or with full the full one;
  * both lists come from the GitHub releases, never from a checkout. */
 export async function latestAddon({ full = false } = {}) {
   const url = full ? UPDATES_FULL : UPDATES;
   let r;
   try {
-    r = await fetch(url, { redirect: "follow" });
+    r = await fetch(url, { redirect: "follow", signal: AbortSignal.timeout(UPDATES_TIMEOUT_MS) });
   } catch (e) {
     throw new Error(`Cannot reach ${url}: ${e.message ?? e}`);
   }
   if (!r.ok) throw new Error(`${url}: HTTP ${r.status}`);
-  const updates = (await r.json())?.addons?.[ADDON_ID]?.updates ?? [];
+  let text;
+  if (r.body) {
+    const chunks = [];
+    let total = 0;
+    for await (const chunk of r.body) {
+      total += chunk.byteLength;
+      if (total > MAX_UPDATES_BYTES) throw new Error(`${url} exceeds ${MAX_UPDATES_BYTES} bytes.`);
+      chunks.push(Buffer.from(chunk));
+    }
+    text = Buffer.concat(chunks, total).toString("utf8");
+  } else {
+    text = await r.text();
+    if (Buffer.byteLength(text) > MAX_UPDATES_BYTES) throw new Error(`${url} exceeds ${MAX_UPDATES_BYTES} bytes.`);
+  }
+  const updates = JSON.parse(text)?.addons?.[ADDON_ID]?.updates ?? [];
   const num = (v) => String(v).split(".").map(Number);
   const newer = (a, b) => {
     const pa = num(a.version), pb = num(b.version);

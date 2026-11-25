@@ -7,7 +7,6 @@ import fs from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import readline from "node:readline";
 import { notConnectedMessage } from "./browsers.mjs";
 import { lastEndNote, recentSessions } from "./history.mjs";
 import { SERVER_ICONS } from "./icon.mjs";
@@ -22,6 +21,10 @@ import { VERSION } from "./version.mjs";
 const SUPPORTED_PROTOCOLS = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
 const CALL_TIMEOUT_MS = 180_000;
 const MAX_UPLOAD_BYTES = 64 * 1024 * 1024;
+const MAX_PROOF_LINE_CHARS = 4096;
+const MAX_FROM_HOST_CHARS = 64 * 1024 * 1024;
+const MAX_STDIN_LINE_CHARS = 16 * 1024 * 1024;
+const PROBE_TIMEOUT_MS = 2000;
 const ALLOW_HIDDEN_UPLOADS = process.env.FOXREACH_ALLOW_HIDDEN_UPLOADS === "1";
 const SAVE_EXTENSIONS = [".png", ".jpg", ".jpeg", ".gif", ".webp"];
 const TEXT_SAVE_EXTENSIONS = [".json", ".txt", ".csv", ".tsv", ".md", ".log"];
@@ -37,6 +40,11 @@ const MIME = {
 const SOCKET = socketPath();
 let clientName = "agent";
 let conn = null;
+let connecting = null;
+// The socket of a connection being opened, and how often this agent has changed browser: an
+// attempt begun for the browser it has since left is ended, and never becomes its connection.
+let dialing = null;
+let switches = 0;
 // The browser this agent works with, when several are connected: {socket, label, by}. "agent" when
 // it chose with browser_select, "default" for the user's default, "auto" when it was the only one.
 let chosen = null;
@@ -84,17 +92,35 @@ async function target() {
   throw e;
 }
 
+function abortWaiting(socket, error) {
+  for (const [id, entry] of [...waiting]) {
+    if (entry.conn !== socket) continue;
+    waiting.delete(id);
+    entry.done({ id, error });
+  }
+}
+
 function useBrowser(b, by) {
   chosen = { socket: b.socket, token: b.token, label: label(b), by };
-  conn?.destroy(); // the next call connects to the new one
+  const prev = conn;
+  const dial = dialing;
   conn = null;
+  connecting = null;
+  dialing = null;
+  switches++;
+  if (prev) {
+    abortWaiting(prev, "Switched browser during this call.");
+    prev.destroy(); // the next call connects to the new one
+  }
+  dial?.destroy();
 }
 let nextId = 1;
 const waiting = new Map();
 
-async function connect() {
-  if (conn) return conn;
+async function openConnection() {
+  const mine = switches;
   const SOCKET = await target();
+  if (mine !== switches) throw new Error("Switched browser while connecting.");
   // Windows: the pipe must prove it knows the token in its host's private info file before it is
   // trusted with anything: any local user could have taken a pipe name that came free.
   const token = !fixedSocket() && WIN ? chosen?.token : null;
@@ -110,23 +136,52 @@ async function connect() {
       }
     }
     const c = net.connect(SOCKET);
+    dialing = c;
     c.setEncoding("utf8");
     let buffer = "";
+    let settled = false;
     const challenge = token ? crypto.randomBytes(32).toString("hex") : null;
     let proven = !token;
+    const settleReject = (err) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(proofTimer);
+      if (dialing === c) dialing = null;
+      reject(err);
+    };
+    const settleResolve = () => {
+      if (settled) return;
+      if (mine !== switches) {
+        c.destroy();
+        settleReject(new Error("Switched browser while connecting."));
+        return;
+      }
+      settled = true;
+      clearTimeout(proofTimer);
+      dialing = null;
+      conn = c;
+      resolve(c);
+    };
     const proofTimer = token ? setTimeout(() => {
       c.destroy();
-      reject(new Error(`${SOCKET} did not prove it is the browser's foxreach host.`));
+      settleReject(new Error(`${SOCKET} did not prove it is the browser's foxreach host.`));
     }, 5000) : null;
     c.on("connect", () => {
       if (!token) {
-        conn = c;
-        resolve(c);
+        settleResolve();
         return;
       }
       c.write(`${JSON.stringify({ challenge })}\n`);
     });
     c.on("data", (data) => {
+      const limit = proven ? MAX_FROM_HOST_CHARS : MAX_PROOF_LINE_CHARS;
+      if (buffer.length + data.length > limit) {
+        buffer = "";
+        c.destroy();
+        if (!proven) settleReject(new Error(`${SOCKET} sent too much data before proving it is the browser's foxreach host.`));
+        else abortWaiting(c, "The browser sent an oversized message.");
+        return;
+      }
       buffer += data;
       let end;
       while ((end = buffer.indexOf("\n")) !== -1) {
@@ -141,34 +196,48 @@ async function connect() {
           clearTimeout(proofTimer);
           if (!proofMatches(token, challenge, reply?.proof)) {
             c.destroy();
-            reject(new Error(`${SOCKET} is not the browser's foxreach host (wrong proof); nothing was sent to it.`));
+            settleReject(new Error(`${SOCKET} is not the browser's foxreach host (wrong proof); nothing was sent to it.`));
             return;
           }
           proven = true;
-          conn = c;
-          resolve(c);
+          settleResolve();
           continue;
         }
         if (!reply) continue;
-        waiting.get(reply.id)?.(reply);
-        waiting.delete(reply.id);
+        const entry = waiting.get(reply.id);
+        if (entry && entry.conn === c) {
+          waiting.delete(reply.id);
+          entry.done(reply);
+        }
       }
     });
     c.on("error", (e) => {
-      if (!conn) {
-        clearTimeout(proofTimer);
+      if (!settled) {
         // The profiles the hint offers are the ones browser_open can start.
-        reject(new Error(notConnectedMessage(e.code, SOCKET, undefined, openableProfiles()) + lastEndNote()));
+        settleReject(new Error(notConnectedMessage(e.code, SOCKET, undefined, openableProfiles()) + lastEndNote()));
       }
     });
     c.on("close", () => {
-      conn = null;
-      for (const [id, done] of waiting) {
-        done({ id, error: "The browser disconnected during this call. Is it still open?" });
+      buffer = "";
+      if (!settled) {
+        settleReject(new Error(notConnectedMessage("ECONNRESET", SOCKET, undefined, openableProfiles()) + lastEndNote()));
       }
-      waiting.clear();
+      if (conn === c) conn = null;
+      abortWaiting(c, "The browser disconnected during this call. Is it still open?");
     });
   });
+}
+
+async function connect() {
+  if (conn) return conn;
+  if (connecting) return connecting;
+  const attempt = openConnection();
+  connecting = attempt;
+  try {
+    return await attempt;
+  } finally {
+    if (connecting === attempt) connecting = null;
+  }
 }
 
 async function callBrowser(tool, args, timeoutMs = CALL_TIMEOUT_MS) {
@@ -179,9 +248,12 @@ async function callBrowser(tool, args, timeoutMs = CALL_TIMEOUT_MS) {
       waiting.delete(id);
       resolve({ id, error: `The browser did not answer within ${Math.round(timeoutMs / 1000)} s.` });
     }, timeoutMs);
-    waiting.set(id, (r) => {
-      clearTimeout(timer);
-      resolve(r);
+    waiting.set(id, {
+      conn: c,
+      done: (r) => {
+        clearTimeout(timer);
+        resolve(r);
+      },
     });
     c.write(`${JSON.stringify({ id, client: clientName, tool, args })}\n`);
   });
@@ -313,14 +385,14 @@ function realTarget(file, depth = 0) {
   }
 }
 
-async function readUploads(paths) {
-  let total = 0;
+async function readUploads(paths, budget = { total: 0 }) {
   const files = [];
   for (const file of paths) {
     const { real, size } = await uploadable(file);
-    total += size;
-    if (total > MAX_UPLOAD_BYTES) throw new Error(`Uploads are limited to ${MAX_UPLOAD_BYTES / 1048576} MiB.`);
+    if (budget.total + size > MAX_UPLOAD_BYTES) throw new Error(`Uploads are limited to ${MAX_UPLOAD_BYTES / 1048576} MiB.`);
     const data = await fs.readFile(real);
+    budget.total += data.length;
+    if (budget.total > MAX_UPLOAD_BYTES) throw new Error(`Uploads are limited to ${MAX_UPLOAD_BYTES / 1048576} MiB.`);
     files.push({
       name: path.basename(file),
       type: MIME[path.extname(file).toLowerCase()] ?? "application/octet-stream",
@@ -347,14 +419,14 @@ function withModKey(name, args) {
 }
 
 /** Work only the agent's machine can do: read local files going in. */
-async function prepare(name, rawArgs) {
+async function prepare(name, rawArgs, budget = { total: 0 }) {
   if (!TOOLS.some((t) => t.name === name)) throw new Error(`Unknown tool ${name}.`);
   const args = withModKey(name, rawArgs);
   if (args.save_to !== undefined) checkSavePath(args.save_to, name); // before the browser does the work
   if (name === "javascript") return prepareScript(args);
   if (name !== "file_upload") return args;
   const { paths = [], ...rest } = args;
-  return { ...rest, files: await readUploads(paths) };
+  return { ...rest, files: await readUploads(paths, budget) };
 }
 
 /**
@@ -370,7 +442,9 @@ async function prepareScript({ file, args, code, save_to, ...rest }) {
     }
     const { real, size } = await readable(file, "javascript file");
     if (size > MAX_SCRIPT_BYTES) throw new Error(`file is over ${MAX_SCRIPT_BYTES / 1048576} MiB: ${real}`);
-    parts.push(await fs.readFile(real, "utf8"));
+    const content = await fs.readFile(real, "utf8");
+    if (Buffer.byteLength(content) > MAX_SCRIPT_BYTES) throw new Error(`file is over ${MAX_SCRIPT_BYTES / 1048576} MiB: ${real}`);
+    parts.push(content);
   }
   if (code !== undefined && code !== "") parts.push(code);
   if (file === undefined && (code === undefined || code === "")) throw new Error("javascript needs code, file, or both.");
@@ -489,11 +563,17 @@ const OPEN_WAIT_MS = 45_000;
 function socketAnswers(file) {
   return new Promise((resolve) => {
     const c = net.connect(file);
-    c.on("connect", () => {
+    let settled = false;
+    const done = (ok) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
       c.destroy();
-      resolve(true);
-    });
-    c.on("error", () => resolve(false));
+      resolve(ok);
+    };
+    const timer = setTimeout(() => done(false), PROBE_TIMEOUT_MS);
+    c.on("connect", () => done(true));
+    c.on("error", () => done(false));
   });
 }
 
@@ -565,9 +645,12 @@ async function callToolOnce(name, args) {
     const prepared = await prepare(name, args);
     return { content: await present(name, args, await callBrowser(name, prepared, callTimeout(name, args))) };
   }
-  const actions = await Promise.all(
-    (args.actions ?? []).map(async (a) => ({ tool: a.tool, args: await prepare(a.tool, a.args ?? {}) }))
-  );
+  // Prepare actions sequentially with one shared upload budget so batch cannot bypass MAX_UPLOAD_BYTES.
+  const budget = { total: 0 };
+  const actions = [];
+  for (const a of args.actions ?? []) {
+    actions.push({ tool: a.tool, args: await prepare(a.tool, a.args ?? {}, budget) });
+  }
   const { parts, failed } = await callBrowser("batch", { actions, stop_on_error: args.stop_on_error }, callTimeout("batch", args));
   const content = [];
   for (const part of parts) {
@@ -618,8 +701,7 @@ function reply(message) {
   process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", ...message })}\n`);
 }
 
-const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
-rl.on("line", async (line) => {
+async function handleStdinLine(line) {
   if (!line.trim()) return;
   let message;
   try {
@@ -634,5 +716,25 @@ rl.on("line", async (line) => {
   } catch (e) {
     reply({ id: message.id, error: { code: e.code ?? -32603, message: e.message } });
   }
+}
+
+process.stdin.setEncoding("utf8");
+let stdinBuf = "";
+process.stdin.on("data", (chunk) => {
+  if (stdinBuf.length + chunk.length > MAX_STDIN_LINE_CHARS) {
+    stdinBuf = "";
+    reply({ id: null, error: { code: -32600, message: "Request line too large" } });
+    process.exit(1);
+  }
+  stdinBuf += chunk;
+  let end;
+  while ((end = stdinBuf.indexOf("\n")) !== -1) {
+    const line = stdinBuf.slice(0, end).replace(/\r$/, "");
+    stdinBuf = stdinBuf.slice(end + 1);
+    void handleStdinLine(line);
+  }
 });
-rl.on("close", () => process.exit(0));
+process.stdin.on("end", () => {
+  if (stdinBuf.trim()) void handleStdinLine(stdinBuf.replace(/\r$/, "")).finally(() => process.exit(0));
+  else process.exit(0);
+});

@@ -7,6 +7,7 @@ const WHEEL_START_MS = 200;
 const WHEEL_POLL_MS = 60;
 const WHEEL_MAX_POLLS = 40;
 const DRAG_STEPS = 8;
+const MAX_KEY_REPEAT = 1000;
 
 const NAMED_KEYS = {
   Enter: 13, Tab: 9, Escape: 27, Backspace: 8, Delete: 46, Insert: 45,
@@ -608,9 +609,12 @@ const HANDLERS = {
     const onWheel = (e) => (handledByPage ||= e.defaultPrevented);
     const root = win.windowRoot;
     root.addEventListener("wheel", onWheel, { mozSystemGroup: true });
-    win.windowUtils.sendWheelEvent(x, y, dx, dy, 0, win.WheelEvent.DOM_DELTA_PIXEL, 0, 0, 0, 0, null);
-    await pause(WHEEL_START_MS);
-    root.removeEventListener("wheel", onWheel, { mozSystemGroup: true });
+    try {
+      win.windowUtils.sendWheelEvent(x, y, dx, dy, 0, win.WheelEvent.DOM_DELTA_PIXEL, 0, 0, 0, 0, null);
+      await pause(WHEEL_START_MS);
+    } finally {
+      root.removeEventListener("wheel", onWheel, { mozSystemGroup: true });
+    }
     if (handledByPage) return { method: "page", handledByPage: true, moved: false };
     // Wheel scrolling is animated. Report where it ends, not a position part-way through.
     for (let i = 0, last = null; scroller && i < WHEEL_MAX_POLLS; i++) {
@@ -630,15 +634,16 @@ const HANDLERS = {
   },
 
   keys(win, { keys, repeat = 1 }) {
+    const times = Math.min(Math.max(Math.trunc(Number(repeat) || 1), 1), MAX_KEY_REPEAT);
     const tip = textInputProcessor(win);
     syncFocus(win);
-    for (let i = 0; i < repeat; i++) {
+    for (let i = 0; i < times; i++) {
       for (const combo of keys.trim().split(/\s+/)) {
         pressCombo(win, tip, combo);
         syncFocus(win); // Tab, Enter and shortcuts can move focus
       }
     }
-    return { pressed: keys, repeat };
+    return { pressed: keys, repeat: times };
   },
 
   async type(win, { text }) {
@@ -670,17 +675,26 @@ const HANDLERS = {
     // A page cannot see DataTransfer items added under another principal, so build it under its own.
     const sandbox = Cu.Sandbox(win, { sandboxPrototype: win, wantXrays: false, sameZoneAs: win });
     sandbox.__files = Cu.cloneInto(files, sandbox);
-    const data = Cu.evalInSandbox(
-      `(() => {
-        const transfer = new DataTransfer();
-        for (const f of __files) {
-          const bytes = Uint8Array.from(atob(f.data), (c) => c.charCodeAt(0));
-          transfer.items.add(new File([bytes], f.name, { type: f.type || "application/octet-stream" }));
-        }
-        return transfer;
-      })()`,
-      sandbox
-    );
+    let data;
+    try {
+      data = Cu.evalInSandbox(
+        `(() => {
+          const transfer = new DataTransfer();
+          for (const f of __files) {
+            const bin = atob(f.data);
+            const bytes = new Uint8Array(bin.length);
+            for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+            transfer.items.add(new File([bytes], f.name, { type: f.type || "application/octet-stream" }));
+          }
+          return transfer;
+        })()`,
+        sandbox
+      );
+    } finally {
+      // Remove the cloned base64 payload from the sandbox global so a page holding a dropped File
+      // cannot keep the base64 copy pinned in RAM via the File's realm prototype chain.
+      delete sandbox.__files;
+    }
     const send = (type) => {
       const ev = new win.DragEvent(type, {
         bubbles: true, cancelable: true, composed: true, view: win, clientX: x, clientY: y, dataTransfer: data,

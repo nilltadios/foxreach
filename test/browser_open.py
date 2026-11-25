@@ -185,12 +185,13 @@ def main():
         mcp.close()
 
         # The same profile recorded and detected: listed once, with the recorded browser.
-        record.write_text(f"{second}\t0\t{work}/no-such-browser\n")
+        record.write_text(f"{second}\t0\t{work}/no-such-browser\n{stopped}\t0\t{work}/no-such-browser\n")
         mcp = McpClient(b.socket)
         ok, text = call(mcp, "browser_open")
         check("a recorded profile that is also detected is listed once, with the recorded browser",
               not ok and text.count(f"- {second} (") == 1 and entry(second, f"{work}/no-such-browser") in text
               and entry(b.profile, command) in text, text)
+        check("a stopped recorded profile is excluded from browser_open", str(stopped) not in text, text)
         ok, text = call(mcp, "browser_open", profile="second")
         check("...and opened with the recorded browser", not ok and f"Could not start {work}/no-such-browser" in text, text)
         mcp.close()

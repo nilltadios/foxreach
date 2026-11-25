@@ -4,8 +4,21 @@
   if (globalThis.__foxreach) return;
   globalThis.__foxreach = true;
 
+  const MAX_REFS = 20_000;
+  const MAX_REFOUND = 2000;
+  const PRESS_WATCH_TIMEOUT_MS = 10_000;
+  const MAX_PAINT_PROBE_MS = 10_000;
+
   const refs = new Map();
   const refOf = new WeakMap();
+  const refRegistry = typeof FinalizationRegistry !== "undefined"
+    ? new FinalizationRegistry((id) => {
+      if (refs.get(id)?.el.deref() === undefined) {
+        refs.delete(id);
+        refound.delete(id);
+      }
+    })
+    : null;
   let nextRef = 1;
 
   const SKIP = new Set(["script", "style", "noscript", "template", "head", "meta", "link"]);
@@ -84,12 +97,32 @@
    * found again, but only when exactly one element in the page has the same id and role, or the
    * same role and name. Anything less certain stays an error.
    */
+  function pruneRefs() {
+    for (const [id, entry] of refs) {
+      if (entry.el.deref() === undefined) {
+        refs.delete(id);
+        refound.delete(id);
+      }
+    }
+    while (refs.size >= MAX_REFS) {
+      const oldest = refs.keys().next().value;
+      // Its element may still be in the page: forget the element's id too, so that it gets a new
+      // one when it is read again, and not the one given up here.
+      const el = refs.get(oldest).el.deref();
+      if (el) refOf.delete(el);
+      refs.delete(oldest);
+      refound.delete(oldest);
+    }
+  }
+
   function refFor(el, role = roleOf(el), name) {
     let id = refOf.get(el);
     if (!id) {
+      if (refs.size >= MAX_REFS) pruneRefs();
       id = `r${nextRef++}`;
       refOf.set(el, id);
       refs.set(id, { el: new WeakRef(el), role, name: name ?? nameOf(el), id: el.id || null, tag: el.localName });
+      refRegistry?.register(el, id);
     }
     return id;
   }
@@ -125,6 +158,8 @@
     if (again) {
       entry.el = new WeakRef(again);
       refOf.set(again, id);
+      refRegistry?.register(again, id);
+      if (refound.size >= MAX_REFOUND) refound.delete(refound.values().next().value);
       refound.add(id);
       return again;
     }
@@ -419,12 +454,20 @@
    * redraws between measuring and pressing can put something else under the point.
    */
   let pressWatch = null;
+  function clearPressWatch() {
+    const w = pressWatch;
+    pressWatch = null;
+    if (!w) return;
+    clearTimeout(w.timer);
+    removeEventListener("mousedown", w.listener, { capture: true });
+  }
   function watchPress({ ref }) {
+    clearPressWatch();
     const el = getRef(ref);
-    const w = { el, hit: null };
-    pressWatch = w;
-    addEventListener("mousedown", (e) => {
+    const w = { el, hit: null, listener: null, timer: null };
+    w.listener = (e) => {
       if (pressWatch !== w) return;
+      clearTimeout(w.timer);
       const path = e.composedPath();
       const host = el.getRootNode() instanceof ShadowRoot ? el.getRootNode().host : null;
       // On the element, inside it, on an ancestor (the element lets presses through), or on the
@@ -432,12 +475,17 @@
       const inside = path.includes(el) || (path[0]?.contains?.(el) ?? false) || (host !== null && path.includes(host));
       const t = path[0];
       w.hit = { inside, target: t?.localName ? `${t.localName}${t.id ? `#${t.id}` : ""}` : String(t) };
-    }, { capture: true, once: true });
+    };
+    w.timer = setTimeout(() => {
+      if (pressWatch === w) clearPressWatch();
+    }, PRESS_WATCH_TIMEOUT_MS);
+    pressWatch = w;
+    addEventListener("mousedown", w.listener, { capture: true, once: true });
     return { ok: true };
   }
   function pressResult() {
     const hit = pressWatch?.hit ?? null;
-    pressWatch = null;
+    clearPressWatch();
     return { hit };
   }
 
@@ -448,22 +496,33 @@
    * as when the display is off.
    */
   let paintProbe = null;
-  function paintStart() {
-    const probe = { frames: 0, since: performance.now(), done: false };
-    paintProbe = probe;
-    const tick = () => {
-      if (probe.done) return;
-      probe.frames++;
-      requestAnimationFrame(tick);
-    };
-    requestAnimationFrame(tick);
-    return { ok: true };
-  }
-  function paintRead() {
+  function stopPaintProbe() {
     const probe = paintProbe;
     paintProbe = null;
     if (!probe) return null;
     probe.done = true;
+    cancelAnimationFrame(probe.rafId);
+    clearTimeout(probe.stopTimer);
+    return probe;
+  }
+  function paintStart() {
+    stopPaintProbe();
+    const probe = { frames: 0, since: performance.now(), done: false, rafId: 0, stopTimer: null };
+    paintProbe = probe;
+    const tick = () => {
+      if (probe.done) return;
+      probe.frames++;
+      probe.rafId = requestAnimationFrame(tick);
+    };
+    probe.stopTimer = setTimeout(() => {
+      if (paintProbe === probe) stopPaintProbe();
+    }, MAX_PAINT_PROBE_MS);
+    probe.rafId = requestAnimationFrame(tick);
+    return { ok: true };
+  }
+  function paintRead() {
+    const probe = stopPaintProbe();
+    if (!probe) return null;
     return { frames: probe.frames, ms: Math.round(performance.now() - probe.since), hidden: document.hidden };
   }
 
@@ -497,7 +556,9 @@
     if (el.localName !== "input" || el.type !== "file") throw new Error(`Ref ${ref} is not a file input.`);
     const transfer = new DataTransfer();
     for (const f of files) {
-      const bytes = Uint8Array.from(atob(f.data), (c) => c.charCodeAt(0));
+      const bin = atob(f.data);
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
       transfer.items.add(new File([bytes], f.name, { type: f.type || "application/octet-stream" }));
     }
     el.files = transfer.files;

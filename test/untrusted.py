@@ -176,6 +176,16 @@ try:
     mar.command("WebDriver:ExecuteAsyncScript", {"script": "browser.runtime.sendMessage({popup: 'setBlocked', value: 'localhost'}).then(() => arguments[0](1))", "args": [], "scriptTimeout": 8000})
     after = m.call("javascript", tabId=tab, code=probe.replace("PROBE", "blockprobe"))
     check("a request to a blocked site is never sent", after.startswith('"refused') and not any("blockprobe" in p for p in seen), after)
+    # This build cannot read a tab's history beforehand, so it checks where back led and steps out
+    # again: here to a site that left the list after the tab was on it.
+    say = lambda msg: mar.command("WebDriver:ExecuteAsyncScript", {"script": f"browser.runtime.sendMessage({json.dumps(msg)}).then(() => arguments[0](1))", "args": [], "scriptTimeout": 8000})  # noqa: E731
+    say({"popup": "setBlocked", "value": ""})
+    m.call("navigate", tabId=tab, url=f"http://localhost:{PORT}/")
+    m.call("navigate", tabId=tab, url=url)
+    say({"popup": "listedOnly"})
+    check("back into a site no longer on the list is refused", "not allowed on localhost yet" in refused(lambda: m.call("navigate", tabId=tab, url="back")))
+    listed_tabs = m.call("tabs_list")
+    check("...and the tab is back where it was", f"<{url}>" in listed_tabs, listed_tabs)
     m.close()
 finally:
     b.cleanup(); srv.shutdown()
