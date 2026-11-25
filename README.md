@@ -15,7 +15,7 @@ There are two builds of the add-on. Pick by browser:
 | Browser | Build | Input |
 |---|---|---|
 | Firefox release and beta, distro `firefox` packages, the Firefox Flatpak | Signed build, see [Install](#install) | Script events (`isTrusted=false`), which a few sites ignore; no `drag`, `read_console`, `handle_dialog`, file drops |
-| LibreWolf; Firefox Developer Edition, Nightly | Full build, see [Setup from a checkout](#setup-from-a-checkout). Tested: LibreWolf 159.0.1 (AppImage, Flatpak) and 160.0 (macOS app), Developer Edition 161.0b1 | Real input, all tools |
+| LibreWolf; Firefox Developer Edition, Nightly | Full build, see [Setup from a checkout](#setup-from-a-checkout). Tested with LibreWolf (AppImage, Flatpak, macOS app) and Developer Edition | Real input, all tools |
 | Firefox ESR, Floorp, Waterfox, Zen | Either; the full build is expected to work, since they honor the same two prefs, but is not tested | |
 
 Mozilla signs privileged code only for its own add-ons, so the full build cannot be signed, and
@@ -81,7 +81,7 @@ On Windows, see [Windows](#windows).
    skips this step. For any other agent, give it the command `~/.local/bin/foxreach mcp`.
    Agents that are running pick the server up in their next session (Claude desktop and
    Antigravity: after a restart). OpenClaw, GitHub Copilot CLI, Qwen Code, Kimi Code, MiMo Code,
-   MiniMax Code, Mistral Vibe and DeepSeek Harness were checked on 2026-11-12 by installing each
+   MiniMax Code, Mistral Vibe and DeepSeek Harness were checked by installing each
    in a throwaway container and confirming with its own tools that it reads foxreach's entry
    (`test/agents_container/run.sh`).
 
@@ -261,9 +261,9 @@ profiles inside its own folder, so the dedicated profile is `~/.var/app/<id>/fox
 Tested with two Flatpaks ([test/flatpak_browser.py](test/flatpak_browser.py)): each finds the manifest,
 starts the host in its sandbox, and an agent outside reads a page, clicks and takes a screenshot.
 
-- **LibreWolf 159.0.1-1** (`io.gitlab.librewolf-community`): the full add-on, with trusted input.
+- **LibreWolf** (`io.gitlab.librewolf-community`): the full add-on, with trusted input.
   `setup_profile.py` installed and verified its dedicated profile.
-- **Firefox 159.0.1** (`org.mozilla.firefox`): an official release, which refuses unsigned add-ons. The
+- **Firefox** (`org.mozilla.firefox`): an official release, which refuses unsigned add-ons. The
   test loads the build without privileged code for the run; `setup_profile.py` cannot install into
   it. It takes the signed build.
 
@@ -288,9 +288,9 @@ the same version.
   (the signed build: `docs/updates-signed.json`, which holds only signed builds, so neither build
   ever replaces the other). The browser checks about once a day and installs a newer version in the
   background. Firefox has this on by default and LibreWolf leaves it on (`extensions.update.enabled`).
-  The signed build from 0.4.0 is the one listed on addons.mozilla.org, which has no `update_url`:
-  Firefox then asks addons.mozilla.org for updates. Signed 0.3.x copies (unlisted) reach 0.4.0
-  through `docs/updates-signed.json` and from there update the same way.
+  The signed build is the one listed on addons.mozilla.org, which has no `update_url`: Firefox
+  asks addons.mozilla.org for updates. An older signed copy from before the listing reaches the
+  listed build through `docs/updates-signed.json` and from there updates the same way.
 - **The program, installed from a release, updates with one command:**
 
   ```bash
@@ -342,7 +342,7 @@ publish it as latest. Releases run one at a time (one `release` concurrency grou
 failure deletes the leftover draft and starts again; a published release is never changed.
 Do not add a file to a published release by hand: one that is not in `SHA256SUMS` and has no
 attestation makes the next release refuse to carry that release's files, until it is removed
-(v0.4.0 holds such a file, a signed add-on uploaded by hand; signed builds go to `docs/` instead).
+(one early release holds such a file, a signed add-on uploaded by hand; signed builds go to `docs/` instead).
 
 foxreach (`v<version>`):
 
@@ -396,7 +396,7 @@ Builds are reproducible: the same commit gives the same add-on, byte for byte, a
 version in [.bun-version](.bun-version) the same `foxreach` program.
 
 ```bash
-uv run --python 3.15 scripts/verify_release.py 0.3.0
+uv run --python 3.15 scripts/verify_release.py <version>
 ```
 
 That downloads the release, rebuilds every file from the tag, and compares. The signed add-on must
@@ -414,10 +414,10 @@ holds both sets, with matching hashes and one manager AppImage, `.zsync` and Fla
 architecture:
 
 ```bash
-scripts/check_release_complete.sh v0.4.1     # or manager-v<version>; needs gh
+scripts/check_release_complete.sh v<version>     # or manager-v<version>; needs gh
 ```
 
-Releases up to 0.2.0 predate this and cannot be rebuilt byte for byte. Tags are not signed.
+The earliest releases predate this and cannot be rebuilt byte for byte. Tags are not signed.
 
 ## Undo
 
@@ -543,7 +543,9 @@ The toolbar button shows the bridge's status and recent agent activity, and it h
   (or the profile's ⋮ menu in the manager app); `foxreach addon start --profile <folder>` undoes
   it. It leaves a file named `foxreach-agents-stopped` in the profile, and the native host refuses
   every agent call there at once, even while the browser runs. The host finds its profile from the
-  `.parentlock` file the browser that started it holds open.
+  `.parentlock` file the browser that started it holds open (on macOS, which has no `/proc`, by
+  asking `lsof`). If it cannot tell which profile it is in and finds none open to choose from, it
+  refuses agents while any profile it can find is stopped, and names that profile.
 - **Agents:** a program that connects for the first time waits until you answer its request there:
   Allow (until it disconnects), Always (that name, from now on), or Refuse. Its call waits up to a
   minute, then fails and says why. `status` needs no approval; for an agent that would have to
@@ -647,6 +649,33 @@ Read this before installing into a profile you browse with.
 - The full build holds every site as far as the browser is concerned, because its privileged code
   could reach them anyway; there the list of sites is enforced by foxreach itself.
 
+### What is proved, and what is tested
+
+`proofs/` holds a model, in Lean 4, of the rules in this section and in "What you control": which
+tabs, sites, frames, fields and dialogs a call may reach, for every tool
+([proofs/Foxreach/Tools.lean](proofs/Foxreach/Tools.lean) is the table of tools). Lean checks that
+in this model no call that succeeds reaches a tab you have not shared or a site that is blocked or
+not on the list, that an agent's script does not run while a field kept from agents holds a value,
+and that a paused add-on, or an agent you have not allowed, stops every call that touches a page
+(`foxreach_promise_proved` and `every_tool_keeps_the_promise`, in [proofs/Foxreach](proofs/Foxreach)).
+That a page reading leaves such a field's value out, and that a picture covers it, is how the
+model is written, not something it proves: those two are tested.
+
+- **The proofs are about the model**, which is written by hand from the code. Nothing derives one
+  from the other: the browser tests ([test/e2e.py](test/e2e.py) and the others below) are what
+  show the code keeps the model's rules. [test/proofs.py](test/proofs.py) checks that the proofs
+  are complete and that the table names every tool the code offers; which checks a tool makes was
+  read from its code.
+- **Three tools are answered before any browser is asked:** `browser_open`, `browsers_list` and
+  `browser_select`. Pause and the approval of agents live in a browser, so they do not apply to
+  these. `browser_open` leaves out a profile where you stopped agents; the two lists tell an agent
+  which browsers are connected.
+- **Memory.** JavaScript cannot corrupt memory by itself, so for the bridge and the add-on the
+  question is how much they hold on to: buffers, recordings, listeners and timers have limits,
+  which [test/memory_safety.py](test/memory_safety.py) exercises. These limits are tested, not
+  proved. The manager app is Rust, with `unsafe` in two files only. The runtimes (Bun, the
+  browser) and the crates the manager is built from are outside both the proofs and these tests.
+
 ## Limits
 
 - **Firefox release and beta** (and distro packages, the Snap and the Flatpak built from them) require
@@ -661,16 +690,15 @@ Read this before installing into a profile you browse with.
   dmg) are made.
 - **Windows: the program and the signed build only**, tried with LibreWolf on Windows 11 x64 (see
   [Windows](#windows)); the full build's setup scripts and the manager app are Linux and macOS
-  only, and an unsigned `foxreach.exe` may not start where Smart App Control is on. On macOS: tested with LibreWolf 160.0 on Apple
+  only, and an unsigned `foxreach.exe` may not start where Smart App Control is on. On macOS: tested with LibreWolf on Apple
   silicon (`setup_profile.py`, `test/e2e.py`, `test/binary.py` and the tests that need no browser);
   the signed build in release Firefox on a Mac, and an Intel Mac, are not yet tested.
 - **Snap browsers** are not handled.
 - **A new profile in Mozilla's own builds opens first-run prompts** (terms of use, welcome). While one
   covers the window the browser will not bring a tab to the front; `tabs_select` says so, and the
   other tools keep working on the tab. Answer the prompt once.
-- **Browser updates can break input.** The privileged code uses internal APIs, and one was removed
-  as recently as 159. Run the test suite after a browser update. Tested on LibreWolf 159.0.1 and
-  Firefox Developer Edition 161.0b1.
+- **Browser updates can break input.** The privileged code uses internal APIs, and a browser
+  release has removed one before. Run the test suite after a browser update.
 - **`find` uses no language model,** so it works with any agent, but it relies on labels and synonyms.
   It can miss an unlabeled field ("search bar" misses Hacker News' footer box); use `read_page` there.
 - **`read_network`** lists requests, without headers or bodies.
@@ -683,7 +711,7 @@ Read this before installing into a profile you browse with.
 ## Tests
 
 ```bash
-uv run --python 3.15 test/e2e.py             # expect: 293 passed, 0 failed, exit 0 (about 90 s)
+uv run --python 3.15 test/e2e.py             # expect: every line PASS, 0 failed, exit 0 (a few minutes)
 ```
 
 The tests use `FOXREACH_BROWSER` (a path or a command), else the only browser installed.
@@ -709,6 +737,8 @@ The tests use `FOXREACH_BROWSER` (a path or a command), else the only browser in
 | `test/update_cli.py` | `foxreach update` against a local stand-in release: checksum and version checks refuse bad downloads and change nothing, a good one replaces the program and keeps `.previous`, and the version warning names the right command; starts no browser |
 | `test/signed_firefox.py [--xpi FILE]` | Release Firefox (or LibreWolf, `--browser`) installs the Mozilla-signed build as signed and refuses it unsigned |
 | `test/connect_errors.py` | What an agent is told when the browser cannot be reached, for each cause; starts no browser |
+| `test/memory_safety.py` | What foxreach keeps in memory stays bounded: a host and an MCP server are sent too much (too many clients, an oversized message, uploads over the limit in one batch), and the add-on's scripts are counted for listeners, timers and recordings they keep. Starts no browser |
+| `test/proofs.py` | The Lean proofs in `proofs/` build from scratch, leave nothing unproved, and rest on Lean's own axioms only; a gap planted in a copy is reported. Starts no browser; needs Lean (`lake`). The proofs are about a model of the access rules, which the browser tests tie to the code |
 | `test/agents_container/run.sh` | In a throwaway Podman container, installs OpenClaw, Copilot CLI, Qwen, Kimi, MiMo, MiniMax, Mistral Vibe and DeepSeek Harness, runs `foxreach agents add`, and checks with each agent's own tools that it reads the entry; needs network |
 | `test/background_focus.py` | With the browser behind another app, typed text reaches a widget that keeps it only after a focus event, and the user's front tab sees no focus event; needs a running headful browser (see the file) |
 

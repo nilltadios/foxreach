@@ -42,7 +42,9 @@ from sign import SIGNED_UPDATES, build_store, signed_path  # noqa: E402
 DOCS = ROOT / "docs"
 RELEASE = ROOT / "dist/release"
 ADDON_ID = "foxreach@foxreach.local"
-# Offered only to browsers at least this new: the version tested on (README.md, "Browser updates").
+# Offered only to browsers at least this new: the oldest version the tests have run on. It is
+# recorded here and not in README.md, which names no version ("Browser updates can break input"
+# there says why it matters).
 MIN_BROWSER = "159.0"
 
 
